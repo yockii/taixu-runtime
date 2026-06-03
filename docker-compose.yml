@@ -1,0 +1,28 @@
+# Mindverse Phase 0.1 docker-compose
+#
+# data 用 named volume：Windows bind-mount 对 SQLite 文件锁支持极差（IO err 4618 / 持久 Windows
+# 文件锁），data 库驻 WSL2 VM 内即可消除。
+# sandbox 仍 bind-mount 到宿主 ./sandbox/，便于作者直观看生命体写出的文件。
+
+services:
+  runtime:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mindverse-runtime:phase0
+    container_name: mindverse-phase0
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MINDVERSE_DATA: /app/data
+    volumes:
+      - mindverse-data:/app/data
+      - ./sandbox:/sandbox
+    ports:
+      - "3000:3000"
+    mem_limit: 6g
+    cpus: 3
+
+volumes:
+  mindverse-data:
+    name: mindverse-data

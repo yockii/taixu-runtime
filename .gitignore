@@ -1,0 +1,64 @@
+# 凭证 / 配置（绝不入库）
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+*-secrets.yaml
+
+# 本地数据（生命体加密包 / SQLite / 沙箱）
+data/
+sandbox/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.age
+lifeform-*.age
+
+# Go 编译产物
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.txt
+
+# 模型权重（按需下载，不入库）
+assets/models/
+*.gguf
+*.bin
+*.safetensors
+
+# 前端
+web/node_modules/
+web/.svelte-kit/
+web/build/
+web/.env
+web/.vercel/
+web/dist/
+
+# Node / pnpm
+node_modules/
+.pnpm-store/
+npm-debug.log*
+pnpm-debug.log*
+
+# IDE / 工具状态
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# 临时
+*.tmp
+*.log
+*.bak
+__pycache__/
+.pytest_cache/
+
+# Docker
+.docker-cache/

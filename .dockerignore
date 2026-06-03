@@ -1,0 +1,15 @@
+.git/
+.gitignore
+docs/
+data/
+web/node_modules/
+web/.svelte-kit/
+web/build/
+assets/models/
+*.md
+.env
+.env.*
+.vscode/
+.idea/
+*.log
+*.tmp
