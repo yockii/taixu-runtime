@@ -1,11 +1,7 @@
-// Mindverse Runtime · Phase 0.1 骨架入口。
+// Mindverse Runtime · Phase 0.2 入口（9 步循环 + 自适应节拍）。
 //
-// 流程：
-//  1. 打开 SQLite + 应用 schema 迁移
-//  2. 若无 Genome：Genesis 出生流程
-//  3. 进入 Embryonic -> Active 转换
-//  4. dummy 循环：每分钟一次 tick 打印日志（Phase 0.2 替换为完整 9 步循环）
-//  5. 收到 SIGINT/SIGTERM：优雅关停（Active -> Dormant）
+// 9 步：Perceive → UpdateState → RecordMemory → ConsiderReflect → CollectGoals → Arbitrate
+//        → Plan → Act → Feedback（Plan/Act/Feedback 三段在 ActionExecutor.Execute 内合）
 package main
 
 import (
@@ -17,14 +13,21 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
-	"time"
 
+	"mindverse/internal/actionexecutor"
+	"mindverse/internal/core"
 	"mindverse/internal/eventbus"
 	"mindverse/internal/genesis"
+	"mindverse/internal/goalarbitrator"
 	"mindverse/internal/lifecyclemanager"
 	"mindverse/internal/memoryengine"
-
-	"mindverse/internal/core"
+	"mindverse/internal/perception"
+	"mindverse/internal/reflectionengine"
+	"mindverse/internal/resourceledger"
+	"mindverse/internal/scheduler"
+	"mindverse/internal/shared"
+	"mindverse/internal/skillregistry/toolrunner"
+	"mindverse/internal/statemanager"
 )
 
 func main() {
@@ -36,8 +39,7 @@ func main() {
 		slog.Error("ensure data dir", "err", err)
 		os.Exit(1)
 	}
-
-	slog.Info("runtime starting", "db", dbPath, "phase", "0.1")
+	slog.Info("runtime starting", "db", dbPath, "phase", "0.2")
 
 	store, err := memoryengine.Open(dbPath)
 	if err != nil {
@@ -53,10 +55,10 @@ func main() {
 	bus := eventbus.New()
 	bus.Subscribe(eventbus.LifecycleTransitioned{}, func(e eventbus.Event) {
 		ev := e.(eventbus.LifecycleTransitioned)
-		slog.Info("lifecycle", "from", ev.FromState, "to", ev.ToState, "reason", ev.Reason, "life", ev.LifeID)
+		slog.Info("lifecycle", "from", ev.FromState, "to", ev.ToState, "reason", ev.Reason)
 	})
 
-	lifeID, err := loadOrBear(store, bus)
+	genome, lifeID, err := loadOrBear(store, bus)
 	if err != nil {
 		slog.Error("genesis", "err", err)
 		os.Exit(1)
@@ -80,22 +82,162 @@ func main() {
 		}
 	}
 
+	sm, err := statemanager.New(store, bus, lifeID)
+	if err != nil {
+		slog.Error("statemanager init", "err", err)
+		os.Exit(1)
+	}
+	mem, err := memoryengine.NewEngine(store, lifeID)
+	if err != nil {
+		slog.Error("memory engine init", "err", err)
+		os.Exit(1)
+	}
+	ledger, err := resourceledger.New(store, sm, lifeID)
+	if err != nil {
+		slog.Error("ledger init", "err", err)
+		os.Exit(1)
+	}
+	reflector := reflectionengine.New(store, mem, lifeID)
+	arbitrator := goalarbitrator.New(store, lifeID)
+
+	sandboxDir := envOr("MINDVERSE_SANDBOX", "/sandbox")
+	tools := toolrunner.New(store, lifeID, sandboxDir)
+	executor := actionexecutor.New(store, sm, tools, lifeID)
+	perceiver := perception.New(sm)
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if err := dummyLoop(ctx, store, lifeID, bus); err != nil {
-		slog.Error("loop", "err", err)
+	httpAddr := envOr("MINDVERSE_HTTP", ":3000")
+	_ = startHTTP(ctx, httpAddr, perceiver, sm)
+	slog.Info("http listening", "addr", httpAddr)
+
+	sched := scheduler.New(bus, store, sm, lifeID, func() core.LifecycleState {
+		s, _ := lm.Current(lifeID)
+		return s
+	}, perceiver)
+	if err := sched.Resume(); err != nil {
+		slog.Error("scheduler resume", "err", err)
+	}
+
+	onTick := func(cycleID int64) {
+		runCycle(cycleID, lifeID, genome, store, sm, mem, ledger, reflector, arbitrator, executor, perceiver, tools)
+	}
+	if err := sched.Run(ctx, onTick); err != nil {
+		slog.Error("scheduler run", "err", err)
 	}
 
 	if err := lm.Transition(lifeID, core.StateDormant, "shutdown"); err != nil {
 		slog.Error("dormant", "err", err)
 	}
-
 	slog.Info("runtime stopped")
 }
 
-// loadOrBear 加载现有 Genome；不存在则触发 Genesis。
-func loadOrBear(store *memoryengine.Store, bus *eventbus.Bus) (string, error) {
+// runCycle 9 步循环。
+func runCycle(cycleID int64, lifeID string, genome core.Genome,
+	store *memoryengine.Store, sm *statemanager.Manager, mem *memoryengine.Engine,
+	ledger *resourceledger.Ledger, reflector *reflectionengine.Engine, arbitrator *goalarbitrator.Arbitrator,
+	executor *actionexecutor.Executor, perceiver *perception.Perceiver, tools *toolrunner.Runner) {
+
+	// 1. Perceive
+	frame := perceiver.Perceive(cycleID)
+	if err := mem.AppendEvent(cycleID, "cycle.start", map[string]any{
+		"externals": len(frame.Externals),
+		"energy":    frame.Life.Energy,
+	}); err != nil {
+		slog.Warn("append cycle.start", "err", err)
+	}
+
+	// 2. UpdateState（任何外部交互降 social_need、提 motivation；记录事件）
+	for _, ext := range frame.Externals {
+		_ = mem.AppendEvent(cycleID, "external.request", map[string]any{
+			"id":      ext.ID,
+			"channel": ext.Channel,
+			"from":    ext.From,
+			"content": ext.Content,
+		})
+		sndelta := -0.08
+		motDelta := 0.04
+		if err := sm.Apply(statemanager.Delta{
+			SocialNeed: &sndelta, Motivation: &motDelta, Reason: "external.request",
+		}); err != nil {
+			slog.Warn("apply external delta", "err", err)
+		}
+	}
+
+	// 3. RecordMemory（已通过 AppendEvent 写 raw_trail；这里追加工作记忆汇总）
+	mem.PutWorking(cycleID, "perceive.summary", frame.SummaryLine())
+
+	// 4. ConsiderReflect
+	ls, ms := sm.Snapshot()
+	if reflector.ShouldReflect(genome, ls, ms) {
+		promoted, rid, err := reflector.Reflect("scheduler.cycle")
+		if err != nil {
+			slog.Warn("reflect", "err", err)
+		} else {
+			_ = mem.AppendEvent(cycleID, "reflect", map[string]any{"promoted": promoted, "id": rid})
+			slog.Info("reflect", "promoted", promoted, "id", rid)
+		}
+	}
+
+	// 5. CollectGoals
+	drives := statemanager.DeriveDrives(genome, ls, ms)
+	cands := arbitrator.CollectCandidates(frame, drives)
+
+	// 6. Arbitrate
+	values, err := store.LoadValues(lifeID)
+	if err != nil {
+		slog.Warn("load values", "err", err)
+		values = &core.Values{LifeID: lifeID, Weights: map[string]float64{}}
+	}
+	ids, err := arbitrator.Arbitrate(cands, values, 3)
+	if err != nil {
+		slog.Warn("arbitrate", "err", err)
+	}
+	if len(ids) > 0 {
+		_ = mem.AppendEvent(cycleID, "goals.enqueued", map[string]any{"ids": ids})
+	}
+
+	// 7-8-9. Plan / Act / Feedback — 最多取一个 pending goal 执行
+	now := shared.SystemClock.UnixSec()
+	g, err := store.NextPendingGoal(lifeID, now)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		slog.Warn("next pending goal", "err", err)
+	}
+	if g != nil {
+		res, err := executor.Execute(g, cycleID)
+		if err != nil {
+			slog.Warn("execute", "err", err, "goal", g.ID)
+		}
+		_ = mem.AppendEvent(cycleID, "action.done", map[string]any{
+			"goal_id": g.ID,
+			"success": res.Success,
+			"action":  res.Action,
+		})
+		if res.Success {
+			_ = mem.AppendEvent(cycleID, "tool.success", res.Action)
+			_ = ledger.Earn(resourceledger.Knowledge, 0.01, "action.success", "goal", "")
+		}
+		_ = ledger.Spend(resourceledger.Energy, 0.02, "action.cost", "goal", "")
+	}
+
+	// 后台维护：考虑封段 + 抽取语义 + cap 重置
+	if ep, err := mem.ConsiderSealEpisode(); err == nil && ep != nil {
+		slog.Info("episode sealed", "id", ep.ID, "events_in_seg", ep.RawEndID-ep.RawStartID+1)
+		_ = mem.AppendEvent(cycleID, "episode.sealed", map[string]any{"id": ep.ID})
+	}
+	if added, err := mem.ExtractSemantic(); err == nil && added > 0 {
+		_ = mem.AppendEvent(cycleID, "semantic.candidates", map[string]any{"added": added})
+	}
+	if reset, err := ledger.MaybeResetEnergyDailyCap(); err == nil && reset {
+		slog.Info("energy daily cap reset")
+		_ = mem.AppendEvent(cycleID, "energy.cap_reset", nil)
+	}
+
+	mem.ResetWorking()
+}
+
+func loadOrBear(store *memoryengine.Store, bus *eventbus.Bus) (core.Genome, string, error) {
 	g, err := store.LoadGenome()
 	if err == nil {
 		slog.Info("genome loaded",
@@ -106,51 +248,25 @@ func loadOrBear(store *memoryengine.Store, bus *eventbus.Bus) (string, error) {
 			"persistence", g.Persistence,
 			"risk_taking", g.RiskTaking,
 			"empathy", g.Empathy,
-			"born_at", g.BornAt,
 		)
-		return g.LifeID, nil
+		return *g, g.LifeID, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return "", err
+		return core.Genome{}, "", err
 	}
 
 	slog.Info("no genome; starting genesis")
 	lifeID, err := genesis.Bear(store)
 	if err != nil {
-		return "", err
+		return core.Genome{}, "", err
 	}
 	bus.Publish(eventbus.GenesisCompleted{LifeID: lifeID})
+	g2, err := store.LoadGenome()
+	if err != nil {
+		return core.Genome{}, lifeID, err
+	}
 	slog.Info("genesis completed", "life_id", lifeID)
-	return lifeID, nil
-}
-
-// dummyLoop Phase 0.1 占位循环：每分钟一次 tick。
-// Phase 0.2 替换为 9 步完整循环 + 自适应节拍。
-func dummyLoop(ctx context.Context, store *memoryengine.Store, lifeID string, bus *eventbus.Bus) error {
-	var cycleID int64
-	t := time.NewTicker(60 * time.Second)
-	defer t.Stop()
-
-	tick := func() {
-		cycleID++
-		now := time.Now().Unix()
-		bus.Publish(eventbus.TickStarted{LifeID: lifeID, CycleID: cycleID})
-		if err := store.AppendRawTrail(lifeID, cycleID, "dummy.tick", `{"note":"phase 0.1 placeholder"}`, now); err != nil {
-			slog.Warn("raw_trail append", "err", err)
-		}
-		slog.Info("tick", "cycle", cycleID)
-		bus.Publish(eventbus.TickFinished{LifeID: lifeID, CycleID: cycleID})
-	}
-
-	tick()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-t.C:
-			tick()
-		}
-	}
+	return *g2, lifeID, nil
 }
 
 func envOr(k, def string) string {
