@@ -2,7 +2,7 @@
 
 > 本文档定位：已识别风险登记、跨文档冲突待决议题、V0.1 → V0.2 演进留白、反模式清单。**所有盲点在此集中，不分散在各文档**。
 >
-> **状态**：V0.2.2 草稿。共登记 ~75 项风险（R01–R75）。注：R62/R63 编号预留。最新批 R69–R75 来自 Phase 0.4+ reflex / skill / tool 设计 + queue 控制阶段。
+> **状态**：V0.2.2 草稿。共登记 ~77 项风险（R01–R77）。注：R62/R63 编号预留。最新批 R69–R77 来自 Phase 0.4+ reflex / skill / tool / 抓取 / 上下文 / 知识感知决策阶段。
 
 ---
 
@@ -429,6 +429,49 @@
 > **仍待**：Phase 1+ 多用户阶段 toggle 是否仅自托管模式可开启；toggle 状态变更是否触发 reflex 通知（避免静默改）。
 > **影响**：`SKILLS-AND-TOOLS §5.4`、`R72`、反模式 H11。
 
+### R77 · 知识感知的 Values 仲裁（地基 Phase 0.5 / 完整 Phase 2）
+> 现状：`goal.Arbitrate` 机械打分（base + value 权重 + source 权重），**不知道生命体已学过什么、掌握到什么程度**。只能靠 interest_seed strength 盲衰减阻止重复学习，无法做"我已精通 X，边际收益低，转去做别的"这类知识感知决策。
+>
+> 用户提议：每个知识点有摘要 → 供 Values + LLM 整合决策（深入 / 转向 / 休息）。
+>
+> **分两层**（依赖：先有知识摘要，才能喂决策）：
+>
+> **地基（Phase 0.5，已选定实施）**：
+> - `interest_seed` 加列 `digest TEXT`（一段话"我已了解什么"）+ `mastery REAL` 0-1（自评掌握度）
+> - deliberative goal 完成时 LLM 调 `record_learning(seed_id, digest, mastery)` 回写
+> - `drives.Derive` 公式纳入 mastery：`strength_eff *= (1 - mastery)` —— 掌握越深派生越弱（知识感知的自然平息，替代盲衰减）
+>
+> **完整（Phase 2「数字人格」本色）**：
+> - LLM 仲裁：candidate 多于 1 时单次 LLM 调用「给定 values{表} + 已掌握{digests} + 候选{list}，现在该深入哪个 / 转向 / 休息？」→ tool call 返排序
+> - 混合优化：机械预筛（cap+dedup+mastery衰减）→ 仅 >1 候选竞争才上 LLM，省 token
+>
+> **仍待**：
+> - mastery 自评的可信度（LLM 可能高估 / 低估）—— 是否需客观信号校准（笔记长度 / 探索次数 / semantic 固化数）
+> - digest 与 semantic_confirmed 的关系（digest 是 per-seed 视角，semantic 是 per-fact；是否合并）
+> - LLM 仲裁的 token 成本 vs 决策质量权衡
+> **影响**：`03 §2.6 GoalArbitrator`、`02 §4 Values`、`internal/runtime/goal`、`internal/runtime/drives`、`internal/storage/interest.go`、`R74`、`09`（Phase 2）。
+
+### R76 · Deliberative agent loop 上下文增长与压缩（已部分修复 Phase 0.5）
+> 慎思 agent loop 的 `msgs` 随轮次单调增长；tool result（尤其网页 / 脚本输出）是大头。长学习任务若需多轮，上下文可能逼近模型窗口上限。
+>
+> 两种 horizon 机制不同：
+> - **单 goal 内**（loop 多轮）：上下文压缩
+> - **跨 goal / 跨 cycle**（学习跨天）：落盘 + 记忆（fs.write / note_to_self / episode / semantic memory），下 cycle 重载关键摘要而非保全程上下文
+>
+> **V0.2.2 部分修复**（已落地，单 goal 内）：
+> - `truncateToolResult`：单次 tool result 注入上限 6144 字符（网页走 web.fetch 提取正文后通常远低于此）
+> - 上下文探测用 `resp.Usage.PromptTokens`（模型实际所见上下文真实值，非估算）
+> - `ContextTokenBudget = 96000`（GLM-4 系列 128k 的 ~75%）；超过触发 `compactMessages`
+> - `compactMessages`：保留 system + user-goal + 最近 4 条全文；中间区段 tool body → elide 占位（保 tool_call_id 配对）；assistant 思考链不动
+> - 零额外 LLM 调用、确定性
+>
+> **仍待**：
+> - 跨 cycle 长学习的"重载关键摘要"机制（当前靠 fs + semantic memory 被动留存，无主动 resume 上下文构建）
+> - elide 后 LLM 若真需旧 tool 原文，只能重新调工具（成本）；是否值得引入 LLM 摘要式压缩（running summary）
+> - `MaxDeliberativeRounds=6` 是否随任务复杂度 / LifeState 动态
+> - PromptTokens 探测滞后一轮（先超才压）；是否需预测式
+> **影响**：`internal/runtime/action`、`05 §1`（记忆作长期上下文）、`R74`。
+
 ### R75 · Goal queue 无界堆积 + 同源种子反复入队（已部分修复 Phase 0.5）
 > 观察：Phase 0.4+ 实测一只生命体 goal_queue pending 数单调上涨（6 条 backlog 5 分钟）。
 >
@@ -458,19 +501,21 @@
 >
 > **影响**：`03 §2.6 GoalArbitrator`、`internal/runtime/goal`、`R74`。
 
-### R74 · Interest seed 探索语义升级
-> Reflex 写 `interest_seed`，Deliberative 抽中 → DriveKnowledge → action.go 仅 `fs.write` 一行 payload + `BumpInterestExplored`，**"探索"是空动作**：没真查资料、没真产生新知识、没生 SemanticCandidate。
+### R74 · Interest seed 探索语义升级（已大部修复 Phase 0.5）
+> 原问题：Reflex 写 `interest_seed`，Deliberative 抽中 → DriveKnowledge → action.go 旧版仅 `fs.write` 一行 payload + `BumpInterestExplored`（只 ++count 不降 strength），**"探索"是空动作** + 单一 seed 被反复抽取。Phase 0.4+ 实测 interest_seed#1 explored=32 仍 strength=0.9。
 >
-> 表现：单一 seed 被反复抽取（exploreFactor 衰减太慢 + BumpInterestExplored 不降 strength + 无 `last_explored_at` 冷却）→ 生命体重复做无意义的事。Phase 0.4+ 实测中 interest_seed#1 explored_count=4 后仍 strength=0.9。
+> **V0.2.2 已修复**：
+> - `action.Execute` 重写为 deliberative agent loop（commit 706fe5d）：LLM 真调研 → `web.fetch`（trafilatura 正文提取）/ `script.python` → 写笔记 / `enqueue_subgoal` / `explore_interest_seed`。已实测生命体自主写出结构化 markdown 学习笔记。
+> - `BumpInterestExplored` 现同时 `strength = MAX(0, strength - 0.15)`：探索消耗兴趣，与 `UpsertInterestSeed` 的"对话再提及 +0.15"对称。strength 降到 < 0.4 后 `drives.Derive` 不再派该 seed（自然平息重复学习）。
+> - 复燃路径：新对话再提同 seed → strength 回升 → 重新被探索。
+> - `goal.Arbitrate` dedup（R75）：同 seed 已 open 时不重复入队。
 >
-> **V0.2.2 锁定方向（待 Phase 0.5 实装）**：
-> - 加 `last_explored_at` 字段 + 冷却参数（默认 600s）
-> - `BumpInterestExplored` 同时降 strength（`-0.2` 模拟"探索消耗兴趣"）
-> - exploreFactor 改 `1/(1+0.5*explored)` 更激进
-> - DriveKnowledge action 升级：LLM 调研 → `web.fetch` / trafilatura → 抽要点 → 升 SemanticCandidate → ReflectionEngine 浅审固化
->
-> **仍待**：探索成果如何反向影响 interest_seed strength（满足度上升 → strength 下降 vs 上升）；多 seed 并存时的轮转策略；探索失败的衰减规则。
-> **影响**：`SKILLS-AND-TOOLS §7`、`internal/runtime/drives`、`internal/runtime/action`、`05 §4`。
+> **仍待**：
+> - 探索 → SemanticCandidate → ReflectionEngine 浅审固化的完整链尚未闭合（笔记落 sandbox，但未自动升语义记忆）
+> - 探索成果对 strength 的精细反馈（当前固定 -0.15；理想：satisfaction 高则降更多）
+> - 多 seed 并存时的轮转 / 优先级策略
+> - 探索失败（web.fetch 空 / LLM 放弃）是否也该降 strength
+> **影响**：`SKILLS-AND-TOOLS §7`、`internal/runtime/drives`、`internal/runtime/action`、`internal/storage/interest.go`、`05 §4`、`R76`。
 
 ---
 

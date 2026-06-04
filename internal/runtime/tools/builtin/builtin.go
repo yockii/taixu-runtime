@@ -41,10 +41,11 @@ func allTools() []tools.Tool {
 		// --- reflex lane ---
 		toolRecallRecent(),
 		toolNoteToSelf(),
-		// --- deliberative · 记忆 / 反思 / 兴趣 ---
+		// --- deliberative · 记忆 / 反思 ---
+		// 注：兴趣探索标记由引擎权威处理（action.finalize），不暴露为 LLM tool，
+		// 避免引擎 + LLM 双重 BumpInterestExplored 重复计数。
 		toolQueryMemory(),
 		toolSealEpisode(),
-		toolExploreInterestSeed(),
 		// --- deliberative · 目标管理 ---
 		toolEnqueueSubgoal(),
 		toolCompleteGoal(),
@@ -56,6 +57,9 @@ func allTools() []tools.Tool {
 		toolHTTPGet(),
 		toolHTTPPost(),
 		toolTimeNow(),
+		// --- deliberative · 网页抓取（Tier 分层；正文提取）---
+		toolWebFetch(),
+		toolWebRender(),
 		// --- deliberative · 脚本沙箱（容器内白名单包）---
 		// script.shell 故意不暴露（SKILLS-AND-TOOLS §7.1）。
 		toolScriptPython(),
@@ -233,38 +237,6 @@ func handleSealEpisode(_ context.Context, _ tools.Context, _ string) (string, er
 		return `{"ok":true,"episode_id":null}`, nil
 	}
 	return mustJSON(map[string]any{"ok": true, "episode_id": ep.ID, "events": ep.RawEndID - ep.RawStartID + 1}), nil
-}
-
-func toolExploreInterestSeed() tools.Tool {
-	return tools.Tool{
-		Name:        "explore_interest_seed",
-		Description: "标记一个兴趣种子已被探索过一次（推进 explored_count）。",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"seed_id": map[string]any{"type": "integer"},
-			},
-			"required": []string{"seed_id"},
-		},
-		Lanes:   []tools.Lane{tools.LaneDeliberative},
-		Handler: handleExploreInterestSeed,
-	}
-}
-
-func handleExploreInterestSeed(_ context.Context, _ tools.Context, argsJSON string) (string, error) {
-	var a struct {
-		SeedID int64 `json:"seed_id"`
-	}
-	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
-		return errJSON("invalid args"), err
-	}
-	if a.SeedID <= 0 {
-		return errJSON("invalid seed_id"), nil
-	}
-	if err := storage.BumpInterestExplored(a.SeedID, shared.SystemClock.UnixSec()); err != nil {
-		return errJSON("bump failed"), err
-	}
-	return `{"ok":true}`, nil
 }
 
 // -----------------------------------------------------------------------------
@@ -489,6 +461,65 @@ func toolTimeNow() tools.Tool {
 		Lanes:       []tools.Lane{tools.LaneDeliberative},
 		Handler: func(_ context.Context, tctx tools.Context, _ string) (string, error) {
 			r, err := toolrunner.TimeNow(tctx.CycleID)
+			return wrapRunnerResult(r, err)
+		},
+	}
+}
+
+func toolWebFetch() tools.Tool {
+	return tools.Tool{
+		Name: "web.fetch",
+		Description: "抓取网页并提取正文（自动剥导航/广告/页脚），返回 markdown。" +
+			"读文章 / 博客 / 文档站首选此工具，不要用 http.get（后者只给状态码）。" +
+			"静态页与 SPA 都支持（内部自动升级到无头浏览器渲染）。",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"url": map[string]any{"type": "string"},
+			},
+			"required": []string{"url"},
+		},
+		Lanes: []tools.Lane{tools.LaneDeliberative},
+		Handler: func(_ context.Context, tctx tools.Context, argsJSON string) (string, error) {
+			var a struct {
+				URL string `json:"url"`
+			}
+			if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+				return errJSON("invalid args"), err
+			}
+			if a.URL == "" {
+				return errJSON("empty url"), nil
+			}
+			r, err := toolrunner.WebFetch(tctx.CycleID, a.URL)
+			return wrapRunnerResult(r, err)
+		},
+	}
+}
+
+func toolWebRender() tools.Tool {
+	return tools.Tool{
+		Name: "web.render",
+		Description: "强制用无头浏览器渲染页面（执行 JS）后提取正文 markdown。" +
+			"仅当 web.fetch 返回内容明显不全（疑似重 JS 渲染站点）时才用。",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"url": map[string]any{"type": "string"},
+			},
+			"required": []string{"url"},
+		},
+		Lanes: []tools.Lane{tools.LaneDeliberative},
+		Handler: func(_ context.Context, tctx tools.Context, argsJSON string) (string, error) {
+			var a struct {
+				URL string `json:"url"`
+			}
+			if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+				return errJSON("invalid args"), err
+			}
+			if a.URL == "" {
+				return errJSON("empty url"), nil
+			}
+			r, err := toolrunner.WebRender(tctx.CycleID, a.URL)
 			return wrapRunnerResult(r, err)
 		},
 	}

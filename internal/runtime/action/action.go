@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,20 @@ const LLMRoundTimeout = 120 * time.Second
 
 // ToolDispatchTimeout 单次 tool dispatch 超时（http / script 可能较慢）。
 const ToolDispatchTimeout = 30 * time.Second
+
+// MaxToolResultChars 单次 tool result 注入回 msgs 的最大字符数。
+// 防 LLM 上下文随 agent loop 累积（fs.read / script 输出可能很长）。
+// 注：网页读取走 web.fetch（已提取正文 markdown，去导航/广告），通常远小于此；
+// 此截断主要兜底脚本 / 文件读取的超长输出。截断尾部附原长度供 LLM 判断。
+const MaxToolResultChars = 6144
+
+// ContextTokenBudget agent loop 单 goal 软上下文预算（token）。
+// 超过则机械压缩历史 tool result（保留思考链）。
+// GLM-4 系列窗口 128k；取 ~75% 作软线，留出本轮 completion 余量。
+const ContextTokenBudget = 96000
+
+// CompactKeepRecent 压缩时保留最近 N 条消息不动（确保最新 tool 结果完整）。
+const CompactKeepRecent = 4
 
 // Result 单次执行结果。
 type Result struct {
@@ -131,8 +146,17 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 			msgs = append(msgs, llm.Message{
 				Role:       "tool",
 				ToolCallID: tc.ID,
-				Content:    result,
+				Content:    truncateToolResult(result),
 			})
+		}
+
+		// 上下文压缩：用模型上一轮实际 PromptTokens 探测，超预算则机械 elide 旧 tool body。
+		if resp.Usage.PromptTokens > ContextTokenBudget {
+			if n := compactMessages(msgs); n > 0 {
+				slog.Info("deliberate context compacted",
+					"goal", g.ID, "round", round,
+					"prompt_tokens", resp.Usage.PromptTokens, "elided_chars", n)
+			}
 		}
 	}
 
@@ -154,8 +178,20 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 	return finalize(g, cycleID, startedAt, res, completedByLLM)
 }
 
-// finalize 公共收尾：state delta + action_log + bus 事件 + MarkGoal 兜底。
+// finalize 公共收尾：state delta + 兴趣探索标记 + action_log + bus 事件 + MarkGoal 兜底。
 func finalize(g *core.Goal, cycleID int64, startedAt int64, res Result, completedByLLM bool) (Result, error) {
+	// 兴趣探索标记（引擎权威，不依赖 LLM 自觉调工具）：
+	// goal 来自 interest_seed 派生（payload 含 "interest_seed#N"）且成功完成时，
+	// 推进该 seed 的 explored_count 并降 strength（storage.BumpInterestExplored）。
+	// strength 降到 < 0.4 后 drives.Derive 不再派 → 自然平息重复学习。
+	if res.Success {
+		if id := parseInterestSeedID(g.Payload); id > 0 {
+			if err := storage.BumpInterestExplored(id, shared.SystemClock.UnixSec()); err != nil {
+				slog.Warn("bump interest explored", "err", err, "seed", id)
+			}
+		}
+	}
+
 	energyDelta := -0.02
 	d := state.Delta{Energy: &energyDelta, Reason: "deliberate.cost"}
 	if res.Success {
@@ -206,18 +242,19 @@ func buildDeliberativeSystemPrompt(g *core.Goal) string {
 	sb.WriteString("- query_memory(layer, q?, limit?)  跨记忆层检索（layer: episodic/semantic/reflection）\n")
 	sb.WriteString("- recall_recent(limit?, q?)        最近 episode 摘要\n")
 	sb.WriteString("- enqueue_subgoal(intent, payload, priority?)  拆子任务入队\n")
-	sb.WriteString("- explore_interest_seed(seed_id)   推进兴趣探索计数\n")
 	sb.WriteString("- note_to_self(slot, content)      暂存想法到工作记忆\n")
 	sb.WriteString("- seal_episode()                   主动封段（重要节点）\n")
 	sb.WriteString("- fs.read / fs.write / fs.list / fs.mkdir   sandbox 文件系统\n")
-	sb.WriteString("- http.get / http.post             网络请求\n")
+	sb.WriteString("- web.fetch(url)                   抓网页并提取正文 markdown（读文章/文档首选）\n")
+	sb.WriteString("- http.get / http.post             调 JSON API（只回状态码，不适合读网页正文）\n")
+	sb.WriteString("- script.python / script.node      跑脚本（白名单包；不要自己抓网页，用 web.fetch）\n")
 	sb.WriteString("- time.now()                       当前时间戳\n")
 	sb.WriteString("- complete_goal(success)           完成 / 放弃时调用\n\n")
 	sb.WriteString("准则：\n")
 	sb.WriteString(fmt.Sprintf("- 最多 %d 轮 LLM 调用，超出会被强制截断\n", MaxDeliberativeRounds))
 	sb.WriteString("- 完成或确定无法完成时务必调 complete_goal\n")
 	sb.WriteString("- 慎思层不直接对外讲话；content 仅作内部思考记录\n")
-	sb.WriteString("- 若 payload 含 'interest_seed#N' 前缀，应调 explore_interest_seed(N)\n")
+	sb.WriteString("- 目标完成度由你判断；探索类目标产出笔记 / 记忆即视为达成\n")
 	return sb.String()
 }
 
@@ -231,4 +268,70 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// parseInterestSeedID 从 "interest_seed#123 xxx ..." 抽 id；非匹配返 0。
+// 用于引擎权威标记探索（finalize），drives.Derive 派生的 payload 即此格式。
+func parseInterestSeedID(s string) int64 {
+	const prefix = "interest_seed#"
+	i := strings.Index(s, prefix)
+	if i < 0 {
+		return 0
+	}
+	rest := s[i+len(prefix):]
+	var id int64
+	matched := false
+	for _, r := range rest {
+		if r < '0' || r > '9' {
+			break
+		}
+		id = id*10 + int64(r-'0')
+		matched = true
+	}
+	if !matched {
+		return 0
+	}
+	return id
+}
+
+// truncateToolResult 截断 tool dispatch 结果，防止 LLM 上下文累积。
+//
+// 末尾追加 "[truncated original_len=N]" 让 LLM 知道有内容被丢，可自行决定
+// 是否要再次缩小范围调用（如 fs.read 加 offset、web.fetch 换页）。
+func truncateToolResult(s string) string {
+	if len(s) <= MaxToolResultChars {
+		return s
+	}
+	return s[:MaxToolResultChars] + fmt.Sprintf("\n[truncated original_len=%d]", len(s))
+}
+
+// compactMessages 机械压缩 agent loop 历史，控制单 goal 内上下文增长（R76）。
+//
+// 策略：
+//   - system(0) + user-goal(1) 永远保留全文（目标不能丢）
+//   - 最近 CompactKeepRecent 条保留全文（最新 tool 结果完整可用）
+//   - 中间区段的 tool 消息 body → elide 成占位符（保留 tool_call_id 配对）
+//   - assistant 思考链不动（小且是推理脉络）
+//
+// 返回被 elide 的总字符数（0 表示无可压缩）。LLM 的 narration 已逐轮记录关键发现，
+// 故丢弃旧 tool 原文不致命；需要可重新调工具。
+func compactMessages(msgs []llm.Message) int {
+	upper := len(msgs) - CompactKeepRecent
+	elided := 0
+	for i := 2; i < upper; i++ {
+		m := &msgs[i]
+		if m.Role != "tool" {
+			continue
+		}
+		if strings.HasPrefix(m.Content, "[elided ") {
+			continue // 已压缩
+		}
+		if len(m.Content) <= 120 {
+			continue // 太短不值得
+		}
+		orig := len(m.Content)
+		m.Content = fmt.Sprintf("[elided %d chars to fit context; re-run tool if needed]", orig)
+		elided += orig
+	}
+	return elided
 }

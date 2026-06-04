@@ -27,6 +27,10 @@ FROM docker.m.daocloud.io/library/golang:1.25-alpine AS builder
 
 WORKDIR /src
 
+# 容器内默认 GOPROXY=proxy.golang.org 在国内常 TLS 超时；用 goproxy.cn。
+ENV GOPROXY=https://goproxy.cn,direct \
+    GOSUMDB=off
+
 COPY go.mod go.sum ./
 RUN go mod download
 
@@ -43,11 +47,15 @@ RUN go build -ldflags="-s -w" -trimpath -o /out/mindverse-setup  ./cmd/setup
 # ---------- 阶段 3：运行 ----------
 FROM docker.m.daocloud.io/library/alpine:3.20
 
-# 系统层：sqlite + Python3 + Node20 + 编译头（lxml/Pillow 装 wheel 时备用）
+# 系统层：sqlite + Python3 + Node20 + headless Chromium（rod Tier3 抓取）
 RUN apk add --no-cache \
     ca-certificates tzdata sqlite \
     python3 py3-pip \
-    nodejs npm
+    nodejs npm \
+    chromium-swiftshader
+
+# rod 默认会下载自己的 chromium；指向系统 chromium 避免运行时联网下载。
+ENV ROD_BROWSER_BIN=/usr/bin/chromium-browser
 
 # L0 Python baseline 白名单（docs/SKILLS-AND-TOOLS §5.2）
 # --break-system-packages：alpine 3.20 / PEP 668。镜像构建期一次性装，

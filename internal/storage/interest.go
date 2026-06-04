@@ -71,9 +71,22 @@ func ListAllInterestSeeds(lifeID string, limit int) ([]InterestSeed, error) {
 	return ListInterestSeeds(lifeID, 0.0, limit)
 }
 
-// BumpInterestExplored 慎思层探索一次后调，++ explored_count。
+// BumpInterestExplored 慎思层探索一次后调。
+//
+// 副作用（R74 实施）：
+//   - explored_count++
+//   - strength = MAX(0, strength - 0.15)  探索消耗兴趣，与 UpsertInterestSeed 的
+//     "新事件提到同 seed 时 +0.15" 对称；strength 降到 < 0.4 后 drives 不再派
+//   - last_seen_at = ts
+//
+// 行为：兴趣会随探索逐渐满足；新对话中再次涉及可让 strength 重燃。
 func BumpInterestExplored(id int64, ts int64) error {
-	_, err := db.Exec(`UPDATE interest_seed SET explored_count = explored_count + 1, last_seen_at = ? WHERE id = ?`, ts, id)
+	_, err := db.Exec(`
+		UPDATE interest_seed
+		SET explored_count = explored_count + 1,
+		    strength = MAX(0, strength - 0.15),
+		    last_seen_at = ?
+		WHERE id = ?`, ts, id)
 	return err
 }
 
