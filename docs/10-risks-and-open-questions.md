@@ -2,7 +2,7 @@
 
 > 本文档定位：已识别风险登记、跨文档冲突待决议题、V0.1 → V0.2 演进留白、反模式清单。**所有盲点在此集中，不分散在各文档**。
 >
-> **状态**：V0.2.2 草稿。共登记 ~74 项风险（R01–R74）。注：R62/R63 编号预留。最新批 R69–R74 来自 Phase 0.4+ reflex / skill / tool 设计阶段。
+> **状态**：V0.2.2 草稿。共登记 ~75 项风险（R01–R75）。注：R62/R63 编号预留。最新批 R69–R75 来自 Phase 0.4+ reflex / skill / tool 设计 + queue 控制阶段。
 
 ---
 
@@ -428,6 +428,35 @@
 > **UI**：ConfigPanel 加 toggle + 红字警告"等同 LLM 任意 pip install"。
 > **仍待**：Phase 1+ 多用户阶段 toggle 是否仅自托管模式可开启；toggle 状态变更是否触发 reflex 通知（避免静默改）。
 > **影响**：`SKILLS-AND-TOOLS §5.4`、`R72`、反模式 H11。
+
+### R75 · Goal queue 无界堆积 + 同源种子反复入队（已部分修复 Phase 0.5）
+> 观察：Phase 0.4+ 实测一只生命体 goal_queue pending 数单调上涨（6 条 backlog 5 分钟）。
+>
+> 三因叠加：
+> - `drives.Derive` 每 cycle 派 ~3 candidate（兴趣种子 + 其他 drive）
+> - `goal.Arbitrate` 旧版 `maxEnqueue=3` + 仅 score 阈值过滤，不看 backlog
+> - `action.Execute` 每 cycle 仅消化 1 条 → 净 +2/cycle
+> - 加剧：同一 `interest_seed#N` 每 cycle 重派 → 完全重复任务堆积
+>
+> 用户语：「目标不应一直堆积，应执行完后再产生新的才合理」（类比人类一次心里挂事数有限）。
+>
+> **V0.2.2 部分修复**（已落地）：
+> - `storage.CountActiveOrPendingGoals(lifeID)` 查 backlog
+> - `storage.HasOpenGoalWithPayloadSubstring(lifeID, sub)` 查重
+> - `goal.Arbitrate` 入队前：
+>   - 计算 headroom = `MaxOpenGoals - active_or_pending`；≤0 全跳过
+>   - 候选 payload 含 `interest_seed#N` 且该 seed 已 open → 跳过
+>   - 候选 payload 整串与 open 目标 payload 子串匹配 → 跳过
+>   - 否则入队，headroom--
+> - `MaxOpenGoals = 2`（一在飞 + 至多一 pending）
+>
+> **仍待**：
+> - `MaxOpenGoals` 是否随 LifeState 动态（高 energy 时 3，低 energy 时 1）
+> - payload substring dedup 误杀风险（若两 candidate 偶然 payload 子串相同但语义不同）
+> - 已 pending 但低于新候选 score 时是否替换（当前仅"先入先得"）
+> - drives 派生频率自适应（backlog 高时降派生 → 节省 LLM cost）
+>
+> **影响**：`03 §2.6 GoalArbitrator`、`internal/runtime/goal`、`R74`。
 
 ### R74 · Interest seed 探索语义升级
 > Reflex 写 `interest_seed`，Deliberative 抽中 → DriveKnowledge → action.go 仅 `fs.write` 一行 payload + `BumpInterestExplored`，**"探索"是空动作**：没真查资料、没真产生新知识、没生 SemanticCandidate。

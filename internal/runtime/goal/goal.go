@@ -1,11 +1,15 @@
 // Package goal 三源候选 + Values 仲裁（docs/03 §2.6）单例。
 //
-// Phase 0.2 启用两源：IntrinsicDrive + ExternalRequest。
+// Phase 0.5+：
+//   - 两源派生：IntrinsicDrive + ExternalRequest（对话已移至 reflex，外源此处不再用）
+//   - Backlog 控制（R75）：入队前检查 active+pending 数，超过 MaxOpenGoals 不入；
+//   - 去重（R74 / R75 兄弟问题）：同 interest_seed#N 已在飞时跳过，避免反复派同任务
 package goal
 
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"sync"
 
 	"mindverse/internal/bus"
@@ -14,6 +18,13 @@ import (
 	"mindverse/internal/shared"
 	"mindverse/internal/storage"
 )
+
+// MaxOpenGoals 队列内可同时存在的 active+pending 总数上限。
+// 类比人类一次心里挂的事数；多了也只是 backlog，不如先做完再想。
+const MaxOpenGoals = 2
+
+// interestSeedRe 用于从 payload 抽 "interest_seed#N" 前缀作 dedup key。
+var interestSeedRe = regexp.MustCompile(`interest_seed#\d+`)
 
 var (
 	mu     sync.Mutex
@@ -64,8 +75,29 @@ func CollectCandidates(frame perception.Frame, drives []core.Drive) []Candidate 
 	return out
 }
 
-// Arbitrate 打分并入队（score ≥ 0.6；上限 maxEnqueue）。返回入队的 Goal ID 列表。
+// Arbitrate 打分并入队。
+//
+// 入队规则（按生效顺序）：
+//  1. 计算 headroom = MaxOpenGoals - 当前 active+pending 数；headroom ≤ 0 → 全跳过
+//  2. score < 0.6 → 跳过该候选
+//  3. payload 含 interest_seed#N 且该 seed 已有 open 目标 → 跳过（dedup）
+//  4. payload 与已 open 目标的 payload 完全相同（intent 相同）→ 跳过
+//  5. 否则入队，headroom--
+//
+// maxEnqueue 是本轮单次入队的额外上限（与 headroom 取 min）。
 func Arbitrate(cands []Candidate, values *core.Values, maxEnqueue int) ([]int64, error) {
+	open, err := storage.CountActiveOrPendingGoals(lifeID)
+	if err != nil {
+		return nil, fmt.Errorf("count open goals: %w", err)
+	}
+	headroom := MaxOpenGoals - open
+	if headroom <= 0 {
+		return nil, nil
+	}
+	if maxEnqueue > headroom {
+		maxEnqueue = headroom
+	}
+
 	type scored struct {
 		c     Candidate
 		score float64
@@ -84,10 +116,20 @@ func Arbitrate(cands []Candidate, values *core.Values, maxEnqueue int) ([]int64,
 
 	var ids []int64
 	now := shared.SystemClock.UnixSec()
-	for i, s := range ranked {
-		if i >= maxEnqueue || s.score < 0.6 {
+	enqueued := 0
+	for _, s := range ranked {
+		if enqueued >= maxEnqueue {
 			break
 		}
+		if s.score < 0.6 {
+			break
+		}
+		if skip, err := shouldSkipDup(s.c); err != nil {
+			return ids, err
+		} else if skip {
+			continue
+		}
+
 		g := &core.Goal{
 			Source:          s.c.Source,
 			Intent:          s.c.Intent,
@@ -102,6 +144,7 @@ func Arbitrate(cands []Candidate, values *core.Values, maxEnqueue int) ([]int64,
 			return ids, err
 		}
 		ids = append(ids, id)
+		enqueued++
 		bus.Publish(bus.GoalEnqueued{
 			LifeID:   lifeID,
 			GoalID:   id,
@@ -112,6 +155,24 @@ func Arbitrate(cands []Candidate, values *core.Values, maxEnqueue int) ([]int64,
 		})
 	}
 	return ids, nil
+}
+
+// shouldSkipDup 判断该候选是否应因去重跳过。
+//
+// 优先级：interest_seed#N 精确匹配 > 整 payload 子串匹配。
+func shouldSkipDup(c Candidate) (bool, error) {
+	if seedKey := interestSeedRe.FindString(c.Payload); seedKey != "" {
+		dup, err := storage.HasOpenGoalWithPayloadSubstring(lifeID, seedKey)
+		if err != nil {
+			return false, fmt.Errorf("dedup seed: %w", err)
+		}
+		return dup, nil
+	}
+	dup, err := storage.HasOpenGoalWithPayloadSubstring(lifeID, c.Payload)
+	if err != nil {
+		return false, fmt.Errorf("dedup payload: %w", err)
+	}
+	return dup, nil
 }
 
 func score(c Candidate, values *core.Values) float64 {
