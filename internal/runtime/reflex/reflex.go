@@ -18,7 +18,6 @@ import (
 	"context"
 	crand "crypto/rand"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	mrand "math/rand/v2"
@@ -31,6 +30,7 @@ import (
 	"mindverse/internal/runtime/ledger"
 	"mindverse/internal/runtime/memory"
 	"mindverse/internal/runtime/state"
+	"mindverse/internal/runtime/tools"
 	"mindverse/internal/shared"
 	"mindverse/internal/storage"
 )
@@ -82,15 +82,18 @@ var (
 	rng    *mrand.Rand
 )
 
-// Init 绑定生命体 ID。
+// Init 绑定生命体 ID 并注册反射通道核心 tool。
 func Init(id string) error {
 	if id == "" {
 		return errors.New("reflex: empty life id")
 	}
 	mu.Lock()
-	defer mu.Unlock()
 	lifeID = id
 	rng = seededRNG()
+	mu.Unlock()
+	if err := registerCoreTools(); err != nil {
+		return fmt.Errorf("reflex: register core tools: %w", err)
+	}
 	return nil
 }
 
@@ -133,15 +136,16 @@ func runAgent(req IncomingRequest, mode Mode) {
 		{Role: "system", Content: system},
 		{Role: "user", Content: req.Content},
 	}
-	tools := availableTools()
+	reflexTools := tools.ListLLMTools(tools.LaneReflex)
+	tctx := tools.Context{LifeID: lifeID, Channel: req.Channel, From: req.From}
 
 	var totalUsage llm.Usage
 	rounds := 0
 	for round := 0; round < MaxAgentRounds; round++ {
 		rounds++
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-		resp, err := llm.ReasonWithTools(ctx, msgs, tools)
-		cancel()
+		llmCtx, cancelLLM := context.WithTimeout(context.Background(), 90*time.Second)
+		resp, err := llm.ReasonWithTools(llmCtx, msgs, reflexTools)
+		cancelLLM()
 		if err != nil {
 			emitCanned(req, "（思绪短路了一下）")
 			return
@@ -161,14 +165,15 @@ func runAgent(req IncomingRequest, mode Mode) {
 		}
 
 		// 3. 追加 assistant 消息 + 执行 tool_calls + tool 结果消息
-		assistantMsg := llm.Message{
+		msgs = append(msgs, llm.Message{
 			Role:      "assistant",
 			Content:   resp.Text,
 			ToolCalls: resp.ToolCalls,
-		}
-		msgs = append(msgs, assistantMsg)
+		})
 		for _, tc := range resp.ToolCalls {
-			result := dispatchTool(tc, req)
+			toolCtx, cancelTool := context.WithTimeout(context.Background(), 5*time.Second)
+			result, _ := tools.Dispatch(toolCtx, tools.LaneReflex, tctx, tc.Name, tc.ArgsJSON)
+			cancelTool()
 			msgs = append(msgs, llm.Message{
 				Role:       "tool",
 				ToolCallID: tc.ID,
@@ -296,136 +301,4 @@ func seededRNG() *mrand.Rand {
 	return mrand.New(mrand.NewPCG(s1, s2))
 }
 
-// --- tool dispatch ---
-
-func availableTools() []llm.Tool {
-	return []llm.Tool{
-		{
-			Name:        "update_mood",
-			Description: "调整自身情绪状态。在对话中感受到明显情绪波动时调用。每个字段范围 -0.2 至 +0.2，未提供字段视为不变。",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"energy":       map[string]any{"type": "number", "description": "能量变化 -0.2..+0.2"},
-					"satisfaction": map[string]any{"type": "number", "description": "满意度变化 -0.2..+0.2"},
-					"motivation":   map[string]any{"type": "number", "description": "动机变化 -0.2..+0.2"},
-					"anxiety":      map[string]any{"type": "number", "description": "焦虑变化 -0.2..+0.2"},
-					"stress":       map[string]any{"type": "number", "description": "压力变化 -0.2..+0.2"},
-					"confidence":   map[string]any{"type": "number", "description": "信心变化 -0.2..+0.2"},
-					"reason":       map[string]any{"type": "string", "description": "情绪变化的原因（用于记忆）"},
-				},
-				"required": []string{"reason"},
-			},
-		},
-		{
-			Name:        "add_interest",
-			Description: "记下一个未来想深入探索的兴趣点。当对话提到你感兴趣的技能/知识/话题/体验时调用。",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"content":  map[string]any{"type": "string", "description": "兴趣内容描述（如 'Rust 异步编程'）"},
-					"kind":     map[string]any{"type": "string", "enum": []string{"skill", "knowledge", "topic", "experience"}},
-					"strength": map[string]any{"type": "number", "description": "兴趣强度 0.3-1.0"},
-					"reason":   map[string]any{"type": "string", "description": "为什么感兴趣（用于记忆）"},
-				},
-				"required": []string{"content", "kind"},
-			},
-		},
-	}
-}
-
-// dispatchTool 执行一个 tool_call；返回简短结果给 LLM。
-func dispatchTool(tc llm.ToolCall, req IncomingRequest) string {
-	switch tc.Name {
-	case "update_mood":
-		return toolUpdateMood(tc.ArgsJSON, req)
-	case "add_interest":
-		return toolAddInterest(tc.ArgsJSON, req)
-	default:
-		return `{"ok":false,"err":"unknown tool"}`
-	}
-}
-
-type moodArgs struct {
-	Energy       *float64 `json:"energy"`
-	Satisfaction *float64 `json:"satisfaction"`
-	Motivation   *float64 `json:"motivation"`
-	Anxiety      *float64 `json:"anxiety"`
-	Stress       *float64 `json:"stress"`
-	Confidence   *float64 `json:"confidence"`
-	Reason       string   `json:"reason"`
-}
-
-func toolUpdateMood(argsJSON string, req IncomingRequest) string {
-	var a moodArgs
-	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
-		return `{"ok":false,"err":"invalid args"}`
-	}
-	d := state.Delta{
-		Energy:       clampMoodDelta(a.Energy),
-		Satisfaction: clampMoodDelta(a.Satisfaction),
-		Motivation:   clampMoodDelta(a.Motivation),
-		Anxiety:      clampMoodDelta(a.Anxiety),
-		Stress:       clampMoodDelta(a.Stress),
-		Confidence:   clampMoodDelta(a.Confidence),
-		Reason:       "reflex.mood:" + a.Reason,
-	}
-	if err := state.Apply(d); err != nil {
-		return `{"ok":false,"err":"apply failed"}`
-	}
-	_ = memory.AppendEvent(0, "reflex.mood_changed", map[string]any{
-		"reason": a.Reason,
-		"from":   req.From,
-	})
-	return `{"ok":true}`
-}
-
-func clampMoodDelta(p *float64) *float64 {
-	if p == nil {
-		return nil
-	}
-	v := *p
-	if v < -0.2 {
-		v = -0.2
-	}
-	if v > 0.2 {
-		v = 0.2
-	}
-	return &v
-}
-
-type interestArgs struct {
-	Content  string  `json:"content"`
-	Kind     string  `json:"kind"`
-	Strength float64 `json:"strength"`
-	Reason   string  `json:"reason"`
-}
-
-func toolAddInterest(argsJSON string, req IncomingRequest) string {
-	var a interestArgs
-	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
-		return `{"ok":false,"err":"invalid args"}`
-	}
-	if a.Content == "" {
-		return `{"ok":false,"err":"empty content"}`
-	}
-	if a.Kind == "" {
-		a.Kind = "topic"
-	}
-	if a.Strength <= 0 {
-		a.Strength = 0.5
-	}
-	if a.Strength > 1 {
-		a.Strength = 1
-	}
-	now := shared.SystemClock.UnixSec()
-	if err := storage.UpsertInterestSeed(lifeID, a.Content, a.Kind, "reflex", req.From, a.Strength, now); err != nil {
-		return `{"ok":false,"err":"upsert failed"}`
-	}
-	_ = memory.AppendEvent(0, "reflex.interest_added", map[string]any{
-		"content": a.Content,
-		"kind":    a.Kind,
-		"reason":  a.Reason,
-	})
-	return `{"ok":true}`
-}
+// (核心 reflex tool handler 见 tools.go，注册到 tools.LaneReflex 桶)
