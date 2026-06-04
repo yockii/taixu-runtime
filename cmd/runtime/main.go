@@ -106,6 +106,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	mustInit("httpapi", httpapi.Init(lifeID, webStaticFS()))
 	httpAddr := envOr("MINDVERSE_HTTP", ":3000")
 	_ = httpapi.Start(ctx, httpAddr)
 	slog.Info("http listening", "addr", httpAddr)

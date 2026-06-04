@@ -1,4 +1,21 @@
-// Package httpapi 观察 API（Phase 0.2 最小；Phase 0.4 + SvelteKit 扩充）。
+// Package httpapi 观察 API（Phase 0.4 全套）单例。
+//
+// 路由：
+//   GET  /api/state                  实时 LifeState/MentalState
+//   GET  /api/genome                 静态 Genome
+//   GET  /api/values                 价值观权重表
+//   GET  /api/episodes?q=&limit=&offset=
+//   GET  /api/goals?status=&limit=
+//   GET  /api/reflections?limit=
+//   GET  /api/actions?limit=
+//   GET  /api/tools/audit?limit=
+//   GET  /api/ledger?resource=&limit=
+//   GET  /api/config                 LLM/飞书 sanitize
+//   GET  /api/stream                 SSE 实时推送（state/ticks/speech/lifecycle）
+//   POST /api/external-request       手动注入
+//   GET  /healthz
+//
+// 前端 SPA 由 /（embed.FS）服务，由 cmd/runtime 注入 fs.FS。
 package httpapi
 
 import (
@@ -6,54 +23,75 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"mindverse/internal/runtime/perception"
 	"mindverse/internal/runtime/state"
+	"mindverse/internal/storage"
 )
 
-// Start 启动 HTTP 服务（非阻塞 + ctx 取消时 shutdown）。
+var (
+	mu     sync.Mutex
+	lifeID string
+	webFS  fs.FS // SvelteKit build (embed.FS root)
+)
+
+// Init 绑定生命体 ID。可可选传 SPA 静态文件系统。
+func Init(id string, web fs.FS) error {
+	if id == "" {
+		return errors.New("httpapi: empty life id")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	lifeID = id
+	webFS = web
+	return nil
+}
+
+// Start 启动 HTTP 服务。
 func Start(ctx context.Context, addr string) *http.Server {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/api/state", func(w http.ResponseWriter, r *http.Request) {
-		ls, ms := state.Snapshot()
-		writeJSON(w, http.StatusOK, map[string]any{"life": ls, "mental": ms})
-	})
-
-	mux.HandleFunc("/api/external-request", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "POST only", http.StatusMethodNotAllowed)
-			return
-		}
-		var body struct {
-			From    string `json:"from"`
-			Channel string `json:"channel"`
-			Content string `json:"content"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if body.Channel == "" {
-			body.Channel = "cli"
-		}
-		req := perception.ExternalRequest{
-			ID:         fmt.Sprintf("ext-%d", time.Now().UnixNano()),
-			Channel:    body.Channel,
-			From:       body.From,
-			Content:    body.Content,
-			ReceivedAt: time.Now(),
-		}
-		perception.Inject(req)
-		writeJSON(w, http.StatusAccepted, map[string]any{"id": req.ID, "queued_at": req.ReceivedAt})
-	})
+	// SPA / 静态资源
+	mu.Lock()
+	w := webFS
+	mu.Unlock()
+	if w != nil {
+		mux.Handle("/", spaHandler(w))
+	} else {
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/" {
+				http.NotFound(w, r)
+				return
+			}
+			_, _ = w.Write([]byte("Mindverse Runtime (no SPA embedded). Use /api/* endpoints."))
+		})
+	}
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})
+
+	mux.HandleFunc("/api/state", apiState)
+	mux.HandleFunc("/api/lifecycle", apiLifecycle)
+	mux.HandleFunc("/api/genome", apiGenome)
+	mux.HandleFunc("/api/values", apiValues)
+	mux.HandleFunc("/api/episodes", apiEpisodes)
+	mux.HandleFunc("/api/goals", apiGoals)
+	mux.HandleFunc("/api/reflections", apiReflections)
+	mux.HandleFunc("/api/actions", apiActions)
+	mux.HandleFunc("/api/tools/audit", apiToolsAudit)
+	mux.HandleFunc("/api/ledger", apiLedger)
+	mux.HandleFunc("/api/config", apiConfig)
+	mux.HandleFunc("/api/stream", apiStream)
+	mux.HandleFunc("/api/external-request", apiExternalRequest)
 
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
@@ -70,8 +108,196 @@ func Start(ctx context.Context, addr string) *http.Server {
 	return srv
 }
 
+// -------- API handlers --------
+
+func apiState(w http.ResponseWriter, r *http.Request) {
+	ls, ms := state.Snapshot()
+	writeJSON(w, http.StatusOK, map[string]any{"life": ls, "mental": ms})
+}
+
+func apiLifecycle(w http.ResponseWriter, r *http.Request) {
+	cur, _, err := storage.LoadLifecycleState(lifeID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"state": string(cur)})
+}
+
+func apiGenome(w http.ResponseWriter, r *http.Request) {
+	g, err := storage.LoadGenome()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, g)
+}
+
+func apiValues(w http.ResponseWriter, r *http.Request) {
+	v, err := storage.LoadValues(lifeID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+func apiEpisodes(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	limit := intParam(r, "limit", 50, 1, 500)
+	offset := intParam(r, "offset", 0, 0, 100000)
+	eps, err := storage.ListEpisodes(lifeID, q, limit, offset)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, eps)
+}
+
+func apiGoals(w http.ResponseWriter, r *http.Request) {
+	status := r.URL.Query().Get("status")
+	limit := intParam(r, "limit", 50, 1, 500)
+	gs, err := storage.ListGoals(lifeID, status, limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, gs)
+}
+
+func apiReflections(w http.ResponseWriter, r *http.Request) {
+	limit := intParam(r, "limit", 50, 1, 500)
+	rs, err := storage.ListReflections(lifeID, limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, rs)
+}
+
+func apiActions(w http.ResponseWriter, r *http.Request) {
+	limit := intParam(r, "limit", 50, 1, 500)
+	xs, err := storage.ListActionLog(lifeID, limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, xs)
+}
+
+func apiToolsAudit(w http.ResponseWriter, r *http.Request) {
+	limit := intParam(r, "limit", 50, 1, 500)
+	xs, err := storage.ListToolAudit(lifeID, limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, xs)
+}
+
+func apiLedger(w http.ResponseWriter, r *http.Request) {
+	resource := r.URL.Query().Get("resource")
+	limit := intParam(r, "limit", 100, 1, 1000)
+	xs, err := storage.ListLedger(lifeID, resource, limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, xs)
+}
+
+func apiConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"llm": map[string]any{
+			"base_url":    os.Getenv("LLM_BASE_URL"),
+			"model":       os.Getenv("LLM_MODEL"),
+			"temperature": os.Getenv("LLM_TEMPERATURE"),
+			"api_key":     maskSecret(os.Getenv("LLM_API_KEY")),
+		},
+		"feishu": map[string]any{
+			"app_id":     os.Getenv("FEISHU_APP_ID"),
+			"app_secret": maskSecret(os.Getenv("FEISHU_APP_SECRET")),
+		},
+	})
+}
+
+func apiExternalRequest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		From    string `json:"from"`
+		Channel string `json:"channel"`
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if body.Channel == "" {
+		body.Channel = "cli"
+	}
+	req := perception.ExternalRequest{
+		ID:         fmt.Sprintf("ext-%d", time.Now().UnixNano()),
+		Channel:    body.Channel,
+		From:       body.From,
+		Content:    body.Content,
+		ReceivedAt: time.Now(),
+	}
+	perception.Inject(req)
+	writeJSON(w, http.StatusAccepted, map[string]any{"id": req.ID, "queued_at": req.ReceivedAt})
+}
+
+// -------- helpers --------
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func intParam(r *http.Request, key string, def, min, max int) int {
+	s := r.URL.Query().Get(key)
+	if s == "" {
+		return def
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return def
+	}
+	if n < min {
+		return min
+	}
+	if n > max {
+		return max
+	}
+	return n
+}
+
+func maskSecret(s string) string {
+	if len(s) <= 8 {
+		return strings.Repeat("*", len(s))
+	}
+	return s[:4] + strings.Repeat("*", len(s)-8) + s[len(s)-4:]
+}
+
+// spaHandler 把 SvelteKit build 暴露在 /；未命中文件回退 index.html（SPA fallback）。
+func spaHandler(web fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(web))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		if path == "" {
+			path = "index.html"
+		}
+		f, err := web.Open(path)
+		if err != nil {
+			// SPA fallback
+			r.URL.Path = "/"
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+		_ = f.Close()
+		fileServer.ServeHTTP(w, r)
+	})
 }

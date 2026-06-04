@@ -30,13 +30,17 @@ assets/models/
 *.bin
 *.safetensors
 
-# 前端
+# 前端（web/.gitignore 補充）
 web/node_modules/
 web/.svelte-kit/
 web/build/
 web/.env
 web/.vercel/
 web/dist/
+
+# Go embed 構建產物（CI / Docker 構建自動生成）
+cmd/runtime/webbuild/*
+!cmd/runtime/webbuild/.gitkeep
 
 # Node / pnpm
 node_modules/
