@@ -56,6 +56,10 @@ func allTools() []tools.Tool {
 		toolHTTPGet(),
 		toolHTTPPost(),
 		toolTimeNow(),
+		// --- deliberative · 脚本沙箱（容器内白名单包）---
+		// script.shell 故意不暴露（SKILLS-AND-TOOLS §7.1）。
+		toolScriptPython(),
+		toolScriptNode(),
 	}
 }
 
@@ -485,6 +489,66 @@ func toolTimeNow() tools.Tool {
 		Lanes:       []tools.Lane{tools.LaneDeliberative},
 		Handler: func(_ context.Context, tctx tools.Context, _ string) (string, error) {
 			r, err := toolrunner.TimeNow(tctx.CycleID)
+			return wrapRunnerResult(r, err)
+		},
+	}
+}
+
+func toolScriptPython() tools.Tool {
+	return tools.Tool{
+		Name: "script.python",
+		Description: "在 sandbox 内执行 Python3 代码（python3 -c）。" +
+			"可用包：httpx requests beautifulsoup4 lxml trafilatura pyyaml pillow markdown feedparser python-dateutil。" +
+			"超时 60s，工作目录 /sandbox/。禁运行时 pip 装包。",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"code": map[string]any{"type": "string", "description": "Python 源码"},
+			},
+			"required": []string{"code"},
+		},
+		Lanes: []tools.Lane{tools.LaneDeliberative},
+		Handler: func(_ context.Context, tctx tools.Context, argsJSON string) (string, error) {
+			var a struct {
+				Code string `json:"code"`
+			}
+			if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+				return errJSON("invalid args"), err
+			}
+			if a.Code == "" {
+				return errJSON("empty code"), nil
+			}
+			r, err := toolrunner.ScriptPython(tctx.CycleID, a.Code)
+			return wrapRunnerResult(r, err)
+		},
+	}
+}
+
+func toolScriptNode() tools.Tool {
+	return tools.Tool{
+		Name: "script.node",
+		Description: "在 sandbox 内执行 Node.js 代码（node -e）。" +
+			"可用包：axios cheerio dayjs js-yaml marked。" +
+			"超时 60s，工作目录 /sandbox/。禁运行时 npm 装包。",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"code": map[string]any{"type": "string", "description": "JavaScript 源码"},
+			},
+			"required": []string{"code"},
+		},
+		Lanes: []tools.Lane{tools.LaneDeliberative},
+		Handler: func(_ context.Context, tctx tools.Context, argsJSON string) (string, error) {
+			var a struct {
+				Code string `json:"code"`
+			}
+			if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+				return errJSON("invalid args"), err
+			}
+			if a.Code == "" {
+				return errJSON("empty code"), nil
+			}
+			r, err := toolrunner.ScriptNode(tctx.CycleID, a.Code)
 			return wrapRunnerResult(r, err)
 		},
 	}

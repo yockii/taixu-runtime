@@ -43,14 +43,33 @@ RUN go build -ldflags="-s -w" -trimpath -o /out/mindverse-setup  ./cmd/setup
 # ---------- 阶段 3：运行 ----------
 FROM docker.m.daocloud.io/library/alpine:3.20
 
-RUN apk add --no-cache ca-certificates tzdata sqlite
+# 系统层：sqlite + Python3 + Node20 + 编译头（lxml/Pillow 装 wheel 时备用）
+RUN apk add --no-cache \
+    ca-certificates tzdata sqlite \
+    python3 py3-pip \
+    nodejs npm
+
+# L0 Python baseline 白名单（docs/SKILLS-AND-TOOLS §5.2）
+# --break-system-packages：alpine 3.20 / PEP 668。镜像构建期一次性装，
+# Phase 0 可接受全局 site-packages（私有目录隔离留给 D.2 skill loader）。
+RUN pip3 install --break-system-packages --no-cache-dir \
+    httpx requests \
+    beautifulsoup4 lxml \
+    trafilatura \
+    pyyaml pillow markdown feedparser \
+    python-dateutil
+
+# L0 Node baseline 白名单（global，挂 /usr/lib/node_modules）
+RUN npm install -g --registry=https://registry.npmmirror.com \
+    axios cheerio dayjs js-yaml marked
 
 WORKDIR /app
 
 COPY --from=builder /out/mindverse        /usr/local/bin/mindverse
 COPY --from=builder /out/mindverse-setup  /usr/local/bin/mindverse-setup
 
-ENV MINDVERSE_DATA=/app/data
+ENV MINDVERSE_DATA=/app/data \
+    NODE_PATH=/usr/local/lib/node_modules
 VOLUME ["/app/data", "/sandbox"]
 
 EXPOSE 3000
