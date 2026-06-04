@@ -38,6 +38,9 @@
 | 9 | `09-roadmap-six-phases.md` | 六阶段演进蓝图，横切回链 02-08，每阶段必须落地清单 |
 | 10 | `10-risks-and-open-questions.md` | 风险登记、未决议题、演进留白、反模式清单 |
 | — | `COMMERCIAL.md` | V0.2.1 商业模型基线（非宪法，可独立迭代）|
+| — | `TECH-STACK.md` | Phase 0 工程技术栈（Go / SQLite / SvelteKit / Docker；非宪法）|
+| — | `PHASE-0-PRD.md` | Phase 0 五子阶段 PRD（非宪法）|
+| — | `SKILLS-AND-TOOLS.md` | Skill 两层模型 + tool registry + 依赖管理（V0.2.2 新增，非宪法）|
 
 ---
 
