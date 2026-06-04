@@ -187,6 +187,7 @@ func runScript(cycleID int64, toolName, args string, name string, scriptArgs ...
 		defer cancel()
 		cmd := exec.CommandContext(ctx, name, scriptArgs...)
 		cmd.Dir = sandboxDir
+		cmd.Env = scriptEnv(name) // 注入各 skill 私有依赖目录（R81）
 		out, err := cmd.CombinedOutput()
 		if len(out) > MaxBodyBytes {
 			out = append(out[:MaxBodyBytes], []byte("\n[truncated]")...)
@@ -196,6 +197,61 @@ func runScript(cycleID int64, toolName, args string, name string, scriptArgs ...
 		}
 		return string(out), nil
 	})
+}
+
+// scriptEnv 构造脚本运行环境：在现有 env 基础上，把各 skill 私有依赖目录
+// 加进 PYTHONPATH（python）/ NODE_PATH（node），让 skill 装的依赖可被 import（R81）。
+//
+// skills 根目录取 MINDVERSE_SKILLS（默认 /workspace/skills）；遍历每个 skill 子文件夹的
+// site-packages（py）/ node_modules（node）拼进路径。baseline 包仍走系统全局。
+func scriptEnv(bin string) []string {
+	env := os.Environ()
+	root := os.Getenv("MINDVERSE_SKILLS")
+	if root == "" {
+		root = "/workspace/skills"
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return env
+	}
+	var py, node []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		sp := filepath.Join(root, e.Name(), "site-packages")
+		if st, err := os.Stat(sp); err == nil && st.IsDir() {
+			py = append(py, sp)
+		}
+		nm := filepath.Join(root, e.Name(), "node_modules")
+		if st, err := os.Stat(nm); err == nil && st.IsDir() {
+			node = append(node, nm)
+		}
+	}
+	switch {
+	case strings.Contains(bin, "python") && len(py) > 0:
+		env = appendPath(env, "PYTHONPATH", py)
+	case strings.Contains(bin, "node") && len(node) > 0:
+		env = appendPath(env, "NODE_PATH", node)
+	}
+	return env
+}
+
+// appendPath 把 dirs 追加到 env 中 key 的现值（冒号分隔），保持原值在前。
+func appendPath(env []string, key string, dirs []string) []string {
+	add := strings.Join(dirs, ":")
+	for i, kv := range env {
+		if strings.HasPrefix(kv, key+"=") {
+			cur := kv[len(key)+1:]
+			if cur != "" {
+				env[i] = key + "=" + cur + ":" + add
+			} else {
+				env[i] = key + "=" + add
+			}
+			return env
+		}
+	}
+	return append(env, key+"="+add)
 }
 
 func checkSandbox(relPath string) (string, error) {

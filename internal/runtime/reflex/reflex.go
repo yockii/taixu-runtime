@@ -20,6 +20,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	mrand "math/rand/v2"
 	"sync"
 	"time"
@@ -76,10 +77,16 @@ type IncomingRequest struct {
 	Content string
 }
 
+// MaxConcurrentHandlers 同时在飞的反射处理数上限（R78）。
+// 阻塞式信号量：满了则调用方（IM/HTTP handler goroutine）短暂背压，
+// 防高并发下 goroutine 无界增长。单用户 dogfooding 几乎不触发。
+const MaxConcurrentHandlers = 4
+
 var (
 	mu     sync.Mutex
 	lifeID string
 	rng    *mrand.Rand
+	sem    = make(chan struct{}, MaxConcurrentHandlers)
 )
 
 // Init 绑定生命体 ID 并注册反射通道核心 tool。
@@ -97,10 +104,14 @@ func Init(id string) error {
 	return nil
 }
 
-// Handle 处理一条入站请求。建议由调用方在 goroutine 中执行（IM/HTTP 异步）。
+// Handle 处理一条入站请求（异步）。并发受 MaxConcurrentHandlers 限（R78）。
 // 不会 panic；内部错误以 slog.Warn 记录。
 func Handle(req IncomingRequest) {
-	go handle(req)
+	sem <- struct{}{} // 背压：满则阻塞调用方直到有空位
+	go func() {
+		defer func() { <-sem }()
+		handle(req)
+	}()
 }
 
 func handle(req IncomingRequest) {
@@ -207,7 +218,9 @@ func runAgent(req IncomingRequest, mode Mode) {
 
 	// 末了：扣 energy（合计 tokens）+ 触发 finished 事件
 	cost := llm.TokensToEnergy(totalUsage)
-	_ = ledger.Spend(ledger.Energy, cost, "llm.tokens.reflex", "reflex", req.From)
+	if err := ledger.Spend(ledger.Energy, cost, "llm.tokens.reflex", "reflex", req.From); err != nil {
+		slog.Warn("reflex ledger spend", "err", err)
+	}
 
 	bus.Publish(FinishedEvent{
 		LifeID:    lifeID,

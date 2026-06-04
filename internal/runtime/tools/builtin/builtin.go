@@ -50,6 +50,7 @@ func allTools() []tools.Tool {
 		toolSealEpisode(),
 		toolRecordLearning(),
 		toolUseSkill(),
+		toolCrystallizeSkill(),
 		// --- deliberative · 目标管理 ---
 		toolEnqueueSubgoal(),
 		toolCompleteGoal(),
@@ -315,6 +316,47 @@ func toolUseSkill() tools.Tool {
 				return errJSON(err.Error()), err
 			}
 			return mustJSON(map[string]any{"ok": true, "name": a.Name, "instructions": body}), nil
+		},
+	}
+}
+
+func toolCrystallizeSkill() tools.Tool {
+	return tools.Tool{
+		Name: "crystallize_skill",
+		Description: "把你已学透的某个兴趣（掌握度≥0.8）结晶成一个可复用技能（SKILL.md）。" +
+			"用你自己的话写清这个技能怎么用、步骤是什么。结晶后你自己以后能用 use_skill 调用，" +
+			"将来也能在社群里传授给别的生命体。只在你真正掌握、且觉得值得固化时才调。",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"seed_id":       map[string]any{"type": "integer", "description": "来源兴趣 id（interest_seed#N 的 N）"},
+				"name":          map[string]any{"type": "string", "description": "技能名（简短，英文/拼音 kebab-case 更佳）"},
+				"description":   map[string]any{"type": "string", "description": "一句话：这技能干什么、何时用"},
+				"instructions":  map[string]any{"type": "string", "description": "技能正文：用自己的话写清步骤 / 要点 / 注意事项"},
+				"allowed_tools": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "这技能会用到的工具名（如 web.fetch / script.python）"},
+			},
+			"required": []string{"seed_id", "name", "instructions"},
+		},
+		Lanes: []tools.Lane{tools.LaneDeliberative},
+		Handler: func(_ context.Context, _ tools.Context, argsJSON string) (string, error) {
+			var a struct {
+				SeedID       int64    `json:"seed_id"`
+				Name         string   `json:"name"`
+				Description  string   `json:"description"`
+				Instructions string   `json:"instructions"`
+				AllowedTools []string `json:"allowed_tools"`
+			}
+			if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+				return errJSON("invalid args"), err
+			}
+			if a.SeedID <= 0 || a.Instructions == "" {
+				return errJSON("need seed_id + instructions"), nil
+			}
+			inst, err := skill.AuthorFromKnowledge(a.SeedID, a.Name, a.Description, a.Instructions, a.AllowedTools)
+			if err != nil {
+				return errJSON(err.Error()), err
+			}
+			return mustJSON(map[string]any{"ok": true, "skill": inst.Name, "status": inst.Status, "id": inst.ID}), nil
 		},
 	}
 }

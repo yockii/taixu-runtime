@@ -175,7 +175,9 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 	// 累计 LLM 消耗 → energy
 	if totalUsage.TotalTokens > 0 {
 		cost := llm.TokensToEnergy(totalUsage)
-		_ = ledger.Spend(ledger.Energy, cost, "llm.tokens.deliberate", "goal", "")
+		if err := ledger.Spend(ledger.Energy, cost, "llm.tokens.deliberate", "goal", ""); err != nil {
+			slog.Warn("deliberate ledger spend", "err", err, "goal", g.ID)
+		}
 	}
 
 	return finalize(g, cycleID, startedAt, res, completedByLLM)
@@ -252,6 +254,7 @@ func buildDeliberativeSystemPrompt(g *core.Goal) string {
 	sb.WriteString("- recall_recent(limit?, q?)        最近 episode 摘要\n")
 	sb.WriteString("- enqueue_subgoal(intent, payload, priority?)  拆子任务入队\n")
 	sb.WriteString("- record_learning(seed_id, digest, mastery)  学习告段落时回写摘要+掌握度\n")
+	sb.WriteString("- crystallize_skill(seed_id, name, instructions)  掌握度≥0.8 时把知识结晶成可复用技能\n")
 	sb.WriteString("- note_to_self(slot, content)      暂存想法到工作记忆\n")
 	sb.WriteString("- seal_episode()                   主动封段（重要节点）\n")
 	sb.WriteString("- fs.read / fs.write / fs.list / fs.mkdir   sandbox 文件系统\n")
@@ -270,8 +273,22 @@ func buildDeliberativeSystemPrompt(g *core.Goal) string {
 }
 
 func buildUserMessage(g *core.Goal) string {
-	return fmt.Sprintf("【新目标】intent=%s priority=%.2f source=%s\n\n%s",
+	msg := fmt.Sprintf("【新目标】intent=%s priority=%.2f source=%s\n\n%s",
 		g.Intent, g.Priority, g.Source, g.Payload)
+	// 若来自兴趣种子，surface 当前掌握度 + digest，让 LLM 知道学到哪了：
+	// 掌握度高时提示可结晶为 skill（crystallize_skill），低时继续学。
+	if id := parseInterestSeedID(g.Payload); id > 0 {
+		if seed, err := storage.GetInterestSeed(id); err == nil && seed != nil {
+			msg += fmt.Sprintf("\n\n（你对此的掌握度=%.2f）", seed.Mastery)
+			if seed.Digest != "" {
+				msg += "\n（已有理解：" + truncate(seed.Digest, 300) + "）"
+			}
+			if seed.Mastery >= 0.8 {
+				msg += fmt.Sprintf("\n（你已较好掌握——若觉得值得固化为可复用技能，可调 crystallize_skill(%d, ...) 把它写成 SKILL.md）", id)
+			}
+		}
+	}
+	return msg
 }
 
 func truncate(s string, n int) string {

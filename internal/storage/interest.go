@@ -73,6 +73,25 @@ func ListInterestSeeds(lifeID string, minStrength float64, limit int) ([]Interes
 	return out, rows.Err()
 }
 
+// GetInterestSeed 按 id 取单个兴趣种子。未找到返 (nil, nil)。
+func GetInterestSeed(id int64) (*InterestSeed, error) {
+	var s InterestSeed
+	err := db.QueryRow(`
+		SELECT id, content, kind, strength, COALESCE(source_kind,''), COALESCE(source_ref,''),
+		       COALESCE(decayed_at,0), created_at, last_seen_at, explored_count,
+		       COALESCE(digest,''), mastery
+		FROM interest_seed WHERE id = ?`, id).
+		Scan(&s.ID, &s.Content, &s.Kind, &s.Strength, &s.SourceKind, &s.SourceRef,
+			&s.DecayedAt, &s.CreatedAt, &s.LastSeenAt, &s.ExploredCount, &s.Digest, &s.Mastery)
+	if err != nil {
+		if err.Error() == "sql: no rows in result set" {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &s, nil
+}
+
 // RecordLearning 回写一次学习成果（R77）：更新 digest + mastery（取较大 mastery，
 // 学习只增不减掌握度）+ last_seen。由 deliberative record_learning tool 调。
 func RecordLearning(id int64, digest string, mastery float64, ts int64) error {

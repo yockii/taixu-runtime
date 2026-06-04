@@ -70,3 +70,4 @@ __pycache__/
 
 # Docker
 .docker-cache/
+workspace/skills/python-decorators/

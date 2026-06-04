@@ -2,7 +2,7 @@
 
 > 本文档定位：已识别风险登记、跨文档冲突待决议题、V0.1 → V0.2 演进留白、反模式清单。**所有盲点在此集中，不分散在各文档**。
 >
-> **状态**：V0.2.2 草稿。共登记 ~79 项风险（R01–R79）。注：R62/R63 编号预留。最新批 R69–R79 来自 Phase 0.4+ reflex / skill / tool / 抓取 / 上下文 / 知识感知决策 / 代码审计阶段。
+> **状态**：V0.2.2 草稿。共登记 ~81 项风险（R01–R81）。注：R62/R63 编号预留。最新批 R69–R81 来自 Phase 0.4+ reflex / skill / tool / 抓取 / 上下文 / 知识感知决策 / 发呆 / 社交 / 知识结晶阶段。
 
 ---
 
@@ -449,12 +449,38 @@
 > - 其他通用驱动（creativity / social / stability / achievement）同样无主题，是否同等处理
 > **影响**：`03 §2.5 §2.6`、`internal/runtime/drives`、`internal/runtime/goal`、`internal/runtime/action`、`R75`、`09`（Phase 3）。
 
-### R78 · Phase 0.5 代码审计遗留（单用户暂不阻塞）
-> cavecrew-reviewer 审计 Phase 0.5 核心代码的遗留项（已修真 bug：webfetch rod page 泄漏、interest decay 错误吞掉、rows.Err 未检、tool dispatch 错误未记）。以下为单用户 dogfooding 暂不阻塞、但多用户/长跑前需处理：
-> - **reflex.Handle 每请求 `go handle(req)` 无上限**：高并发下 goroutine 无界增长。Phase 0 单用户流量极低不触发；多用户前加 semaphore / worker pool 限流。
-> - **webfetch.renderHTML 每次调用新起 chromium 进程**（launcher.Launch + browser.Connect + MustClose）：Tier3 抓取频繁时进程频繁 spawn/kill 开销大。可池化一个常驻 headless 实例复用。
-> - **ledger.Spend 错误被 `_ =` 吞**（action.go / reflex.go）：energy 扣减失败静默；Phase 0 ledger 稳定暂不阻塞，长跑审计前应记日志。
-> **影响**：`internal/runtime/reflex`、`internal/skill/toolrunner/webfetch.go`、`internal/runtime/ledger`。
+### R80 · 知识结晶为 skill + 社群传授（创作半 Phase 0.5 / 传授半 Phase 4）
+> 设想（用户）：生命体把学透的知识转化为对应 skill，将来在社群中传授更容易（技能授予）。闭合"学→沉淀→结晶→传授"环。
+>
+> **创作半（Phase 0.5 已实装）**：
+> - deliberative tool `crystallize_skill(seed_id, name, instructions, ...)`，门控 mastery ≥ 0.8（`skill.MasteryToCrystallize`）
+> - `skill.AuthorFromKnowledge`：生命体用自己的话写 SKILL.md（frontmatter + body），写入 `/workspace/skills/<name>/`，血缘 `authored_from="interest_seed#N"`（migration 006 加列）
+> - 结晶后自用（use_skill）；UI 面板标"自创"徽章
+> - 两级递进：`record_learning`（记学了啥，轻）→ `crystallize_skill`（固化为可复用能力，重）
+>
+> **传授半（Phase 4）**：
+> - Life Network 中把自创 skill 传给别的生命体（Replica / Teach，`07 §4.2 §5`）
+> - 传前需质量 / 安全审（R18 恶意 / 低质 skill 过滤）；自创 skill 尤其需审（可能糙 / 误导）
+> - reputation 联动：高质量 skill 作者获 reputation
+>
+> **仍待**：
+> - 自创 skill 质量评估（自评 mastery 不等于教学质量）
+> - 结晶时自动把学习笔记（sandbox）拷为 skill refs/（当前仅 LLM 写的 body）
+> - 同一知识被多次结晶 / 迭代更新 skill 版本
+> **影响**：`02 §7 Skill`、`SKILLS-AND-TOOLS`、`internal/runtime/skill`、`R18`、`R31`、`R77`、`09`（Phase 4）。
+
+### R81 · Skill 自定义依赖的运行时可达性（已修 Phase 0.5）
+> skill 装的私有依赖（`/workspace/skills/<id>/site-packages` 等）默认不在 script.python/node 的 import 路径上，导致带非 baseline 依赖的 skill 装了也用不了。
+> **V0.2.2 修复**：`toolrunner.scriptEnv` 在脚本执行时把各 skill 私有依赖目录拼进 `PYTHONPATH`（python）/ `NODE_PATH`（node）。baseline 包仍走系统全局。
+> **仍待**：依赖冲突（两 skill 装不同版本同包）；按 skill 隔离运行（当前 union 所有 skill 依赖，可能串味）。
+> **影响**：`internal/skill/toolrunner`、`SKILLS-AND-TOOLS §5`、`R72`。
+
+### R78 · Phase 0.5 代码审计遗留（部分已修）
+> cavecrew-reviewer 审计 Phase 0.5 核心代码的遗留项。
+> **已修**（V0.2.2）：webfetch rod page 泄漏（defer Close）、interest decay 错误吞 + rows.Err 未检、tool dispatch 错误未记、**reflex.Handle goroutine 限流**（`MaxConcurrentHandlers=4` 阻塞信号量背压）、**ledger.Spend 错误日志**（action.go / reflex.go）。
+> **仍待**（单用户暂不阻塞）：
+> - **webfetch.renderHTML 每次调用新起 chromium 进程**：Tier3 抓取频繁时 spawn/kill 开销大。可池化一个常驻 headless 实例复用。
+> **影响**：`internal/runtime/reflex`、`internal/skill/toolrunner/webfetch.go`。
 
 ### R77 · 知识感知的 Values 仲裁（地基 Phase 0.5 / 完整 Phase 2）
 > 现状：`goal.Arbitrate` 机械打分（base + value 权重 + source 权重），**不知道生命体已学过什么、掌握到什么程度**。只能靠 interest_seed strength 盲衰减阻止重复学习，无法做"我已精通 X，边际收益低，转去做别的"这类知识感知决策。

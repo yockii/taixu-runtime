@@ -161,6 +161,70 @@ func ScanDir() (int, error) {
 	return n, nil
 }
 
+// MasteryToCrystallize 知识结晶为 skill 的最低掌握度门槛（学透才结晶，免误人）。
+const MasteryToCrystallize = 0.8
+
+// AuthorFromKnowledge 把生命体学透的知识结晶成一个自创 skill（知识→skill，R80 创作半）。
+//
+// 生命体（deliberative LLM）提供 name / description / instructions（用自己的话写的指引）
+// + 它学习时用过的 allowedTools。本函数组装 SKILL.md 文件夹（含血缘 frontmatter）并装载。
+//
+// 前瞻（Phase 4）：自创 skill 可在社群传授（Replica/Teach）。传前需审（R18）。
+func AuthorFromKnowledge(seedID int64, name, description, instructions string, allowedTools []string) (*storage.SkillInstance, error) {
+	seed, err := storage.GetInterestSeed(seedID)
+	if err != nil || seed == nil {
+		return nil, fmt.Errorf("skill: interest_seed#%d not found", seedID)
+	}
+	if seed.Mastery < MasteryToCrystallize {
+		return nil, fmt.Errorf("skill: mastery %.2f < %.2f, not mastered enough to crystallize", seed.Mastery, MasteryToCrystallize)
+	}
+	if name == "" {
+		name = seed.Content
+	}
+	if len(allowedTools) == 0 {
+		allowedTools = []string{"web.fetch", "script.python"}
+	}
+
+	atJSON, _ := json.Marshal(allowedTools)
+	var atYaml string
+	{
+		var tmp []string
+		_ = json.Unmarshal(atJSON, &tmp)
+		for _, t := range tmp {
+			atYaml += "\n  - " + t
+		}
+	}
+	authoredFrom := fmt.Sprintf("interest_seed#%d", seedID)
+	content := fmt.Sprintf(`---
+name: %s
+description: |
+  %s
+allowed-tools:%s
+lanes:
+  - deliberative
+seed_version: "0.1.0-self"
+authored_from: "%s"
+---
+
+%s
+`, sanitizeName(name), oneLine(description), atYaml, authoredFrom, instructions)
+
+	inst, err := Load(content)
+	if err != nil {
+		return nil, err
+	}
+	// 标记血缘（Load 走通用路径不知道是自创）
+	if err := storage.SetSkillAuthoredFrom(inst.ID, authoredFrom); err != nil {
+		slog.Warn("skill set authored_from", "err", err, "id", inst.ID)
+	}
+	return storage.GetSkillInstance(inst.ID)
+}
+
+func oneLine(s string) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	return strings.TrimSpace(s)
+}
+
 // Load 装载一份 SKILL.md 文本（ad-hoc，如面板粘贴）。
 // 写到 <skillsRoot>/<name>/SKILL.md 后按文件夹模型装载，使其与扫描装载一致、宿主可见。
 func Load(content string) (*storage.SkillInstance, error) {

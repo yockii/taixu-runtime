@@ -18,6 +18,7 @@ type SkillInstance struct {
 	UsedCount    int64   `json:"used_count"`
 	LastUsedAt   int64   `json:"last_used_at,omitempty"`
 	InstallPath  string  `json:"install_path,omitempty"`
+	AuthoredFrom string  `json:"authored_from,omitempty"` // "" 外部投放 / "interest_seed#N" 自创
 	CreatedAt    int64   `json:"created_at"`
 }
 
@@ -38,15 +39,16 @@ func UpsertSkillInstance(s *SkillInstance) error {
 	_, err := db.Exec(`
 		INSERT INTO skill_instance
 			(id, life_id, name, seed_ref, seed_version, description, lanes, allowed_tools,
-			 status, pending_deps, mastery, used_count, last_used_at, install_path, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			 status, pending_deps, mastery, used_count, last_used_at, install_path, authored_from, created_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id) DO UPDATE SET
 			name=excluded.name, seed_ref=excluded.seed_ref, seed_version=excluded.seed_version,
 			description=excluded.description, lanes=excluded.lanes, allowed_tools=excluded.allowed_tools,
-			status=excluded.status, pending_deps=excluded.pending_deps, install_path=excluded.install_path`,
+			status=excluded.status, pending_deps=excluded.pending_deps, install_path=excluded.install_path,
+			authored_from=COALESCE(NULLIF(excluded.authored_from,''), skill_instance.authored_from)`,
 		s.ID, s.LifeID, s.Name, s.SeedRef, nullStr(s.SeedVersion), nullStr(s.Description),
 		nullStr(s.Lanes), nullStr(s.AllowedTools), s.Status, nullStr(s.PendingDeps),
-		s.Mastery, s.UsedCount, nullInt(s.LastUsedAt), nullStr(s.InstallPath), s.CreatedAt)
+		s.Mastery, s.UsedCount, nullInt(s.LastUsedAt), nullStr(s.InstallPath), nullStr(s.AuthoredFrom), s.CreatedAt)
 	return err
 }
 
@@ -55,7 +57,8 @@ func GetSkillInstance(id string) (*SkillInstance, error) {
 	return scanSkill(db.QueryRow(`
 		SELECT id, life_id, name, seed_ref, COALESCE(seed_version,''), COALESCE(description,''),
 		       COALESCE(lanes,''), COALESCE(allowed_tools,''), status, COALESCE(pending_deps,''),
-		       mastery, used_count, COALESCE(last_used_at,0), COALESCE(install_path,''), created_at
+		       mastery, used_count, COALESCE(last_used_at,0), COALESCE(install_path,''),
+		       COALESCE(authored_from,''), created_at
 		FROM skill_instance WHERE id = ?`, id))
 }
 
@@ -64,7 +67,8 @@ func ListSkillInstances(lifeID string, limit int) ([]SkillInstance, error) {
 	rows, err := db.Query(`
 		SELECT id, life_id, name, seed_ref, COALESCE(seed_version,''), COALESCE(description,''),
 		       COALESCE(lanes,''), COALESCE(allowed_tools,''), status, COALESCE(pending_deps,''),
-		       mastery, used_count, COALESCE(last_used_at,0), COALESCE(install_path,''), created_at
+		       mastery, used_count, COALESCE(last_used_at,0), COALESCE(install_path,''),
+		       COALESCE(authored_from,''), created_at
 		FROM skill_instance WHERE life_id = ?
 		ORDER BY created_at DESC LIMIT ?`, lifeID, limit)
 	if err != nil {
@@ -96,6 +100,12 @@ func UpdateSkillStatus(id, status string, clearPending bool) error {
 func SetSkillReady(id, installPath string) error {
 	_, err := db.Exec(`UPDATE skill_instance SET status='ready', install_path=?, pending_deps=NULL WHERE id=?`,
 		installPath, id)
+	return err
+}
+
+// SetSkillAuthoredFrom 标记 skill 血缘（自创来源）。
+func SetSkillAuthoredFrom(id, authoredFrom string) error {
+	_, err := db.Exec(`UPDATE skill_instance SET authored_from = ? WHERE id = ?`, authoredFrom, id)
 	return err
 }
 
@@ -142,7 +152,7 @@ func scanSkill(row *sql.Row) (*SkillInstance, error) {
 	var s SkillInstance
 	err := row.Scan(&s.ID, &s.LifeID, &s.Name, &s.SeedRef, &s.SeedVersion, &s.Description,
 		&s.Lanes, &s.AllowedTools, &s.Status, &s.PendingDeps,
-		&s.Mastery, &s.UsedCount, &s.LastUsedAt, &s.InstallPath, &s.CreatedAt)
+		&s.Mastery, &s.UsedCount, &s.LastUsedAt, &s.InstallPath, &s.AuthoredFrom, &s.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -156,7 +166,7 @@ func scanSkillRows(rows *sql.Rows) (*SkillInstance, error) {
 	var s SkillInstance
 	err := rows.Scan(&s.ID, &s.LifeID, &s.Name, &s.SeedRef, &s.SeedVersion, &s.Description,
 		&s.Lanes, &s.AllowedTools, &s.Status, &s.PendingDeps,
-		&s.Mastery, &s.UsedCount, &s.LastUsedAt, &s.InstallPath, &s.CreatedAt)
+		&s.Mastery, &s.UsedCount, &s.LastUsedAt, &s.InstallPath, &s.AuthoredFrom, &s.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
