@@ -37,6 +37,7 @@ import (
 	"mindverse/internal/runtime/scheduler"
 	"mindverse/internal/runtime/state"
 	"mindverse/internal/runtime/tools"
+	"mindverse/internal/runtime/tools/builtin"
 	"mindverse/internal/shared"
 	"mindverse/internal/skill/toolrunner"
 	"mindverse/internal/storage"
@@ -85,6 +86,7 @@ func main() {
 	mustInit("reflex", reflex.Init(lifeID))
 
 	mustInit("toolrunner", toolrunner.Init(lifeID, envOr("MINDVERSE_SANDBOX", "/sandbox")))
+	mustInit("tools.builtin", builtin.Register())
 
 	cur, err := lifecycle.Current()
 	if err != nil {

@@ -121,6 +121,34 @@ func ListCandidatesAboveConfidence(lifeID string, threshold float64, limit int) 
 	return out, rows.Err()
 }
 
+// ListSemanticConfirmed 查询已固化语义记忆；q 非空时模糊匹配 content。
+func ListSemanticConfirmed(lifeID, q string, limit int) ([]core.SemanticConfirmed, error) {
+	args := []any{lifeID}
+	where := "life_id = ?"
+	if q != "" {
+		where += " AND content LIKE ?"
+		args = append(args, "%"+q+"%")
+	}
+	args = append(args, limit)
+	rows, err := db.Query(`
+		SELECT id, content, confidence, COALESCE(promoted_from,0), confirmed_at
+		FROM semantic_confirmed WHERE `+where+`
+		ORDER BY confirmed_at DESC LIMIT ?`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []core.SemanticConfirmed
+	for rows.Next() {
+		var c core.SemanticConfirmed
+		if err := rows.Scan(&c.ID, &c.Content, &c.Confidence, &c.PromotedFrom, &c.ConfirmedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 func PromoteToConfirmed(lifeID string, candidateID int64, content string, confidence float64, ts int64) error {
 	tx, err := db.Begin()
 	if err != nil {
