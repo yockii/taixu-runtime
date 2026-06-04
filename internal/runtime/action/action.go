@@ -13,6 +13,7 @@ package action
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -24,6 +25,8 @@ import (
 	"mindverse/internal/core"
 	"mindverse/internal/io/llm"
 	"mindverse/internal/runtime/ledger"
+	"mindverse/internal/runtime/memory"
+	"mindverse/internal/runtime/skill"
 	"mindverse/internal/runtime/state"
 	"mindverse/internal/runtime/tools"
 	"mindverse/internal/shared"
@@ -55,11 +58,12 @@ const CompactKeepRecent = 4
 
 // Result 单次执行结果。
 type Result struct {
-	Plan     string
-	Action   string
-	Output   string
-	Feedback string
-	Success  bool
+	Plan        string
+	Action      string
+	Output      string
+	Feedback    string
+	Success     bool
+	Substantive int // 本次工作型工具成功调用数（探索深度，引擎涨 mastery 用）
 }
 
 var (
@@ -122,6 +126,7 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 	var trace []string // 每轮 content
 	var toolCalls []string
 	completedByLLM := false
+	substantive := 0 // 工作型工具成功调用数 → 探索深度 → 引擎涨 mastery 的幅度（R83）
 	rounds := 0
 
 	limit := maxRounds() // 按 persistence 调（R82）
@@ -161,6 +166,8 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 			cancelTool()
 			if derr != nil {
 				slog.Warn("deliberate tool dispatch", "tool", tc.Name, "goal", g.ID, "err", derr)
+			} else if isSubstantiveTool(tc.Name) {
+				substantive++
 			}
 			msgs = append(msgs, llm.Message{
 				Role:       "tool",
@@ -185,8 +192,9 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 		res.Output = "(no llm content emitted)"
 	}
 	res.Success = len(trace) > 0 || len(toolCalls) > 0
-	res.Feedback = fmt.Sprintf("rounds=%d tools=%d completed_by_llm=%v tokens=%d",
-		rounds, len(toolCalls), completedByLLM, totalUsage.TotalTokens)
+	res.Substantive = substantive
+	res.Feedback = fmt.Sprintf("rounds=%d tools=%d substantive=%d completed_by_llm=%v tokens=%d",
+		rounds, len(toolCalls), substantive, completedByLLM, totalUsage.TotalTokens)
 
 	// 累计 LLM 消耗 → energy
 	if totalUsage.TotalTokens > 0 {
@@ -199,16 +207,23 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 	return finalize(g, cycleID, startedAt, res, completedByLLM)
 }
 
-// finalize 公共收尾：state delta + 兴趣探索标记 + action_log + bus 事件 + MarkGoal 兜底。
+// finalize 公共收尾：state delta + 兴趣探索标记 + 自动结晶 + action_log + bus 事件 + MarkGoal 兜底。
 func finalize(g *core.Goal, cycleID int64, startedAt int64, res Result, completedByLLM bool) (Result, error) {
-	// 兴趣探索标记（引擎权威，不依赖 LLM 自觉调工具）：
-	// goal 来自 interest_seed 派生（payload 含 "interest_seed#N"）且成功完成时，
-	// 推进该 seed 的 explored_count 并降 strength（storage.BumpInterestExplored）。
-	// strength 降到 < 0.4 后 drives.Derive 不再派 → 自然平息重复学习。
+	// 兴趣探索标记（引擎权威，不依赖 LLM 自觉调工具，R83）：
+	// goal 来自 interest_seed 派生（payload 含 "interest_seed#N"）且成功完成时：
+	//   1) explored_count++ 并按探索深度涨 mastery（引擎给地板，不靠 LLM 自愿 record_learning）
+	//   2) mastery 跨过 0.8 → 引擎自动结晶成自创技能（LLM 授权写正文）并退役该 seed
+	// 这修了"探索成功但 mastery 永 0 → 结晶门槛永不达 → 零技能"的核心 bug。
 	if res.Success {
 		if id := parseInterestSeedID(g.Payload); id > 0 {
-			if err := storage.BumpInterestExplored(id, shared.SystemClock.UnixSec()); err != nil {
+			now := shared.SystemClock.UnixSec()
+			delta := masteryDelta(res.Substantive)
+			if err := storage.BumpInterestExplored(id, delta, now); err != nil {
 				slog.Warn("bump interest explored", "err", err, "seed", id)
+			} else if seed, err := storage.GetInterestSeed(id); err == nil && seed != nil {
+				if seed.Mastery >= skill.MasteryToCrystallize {
+					maybeCrystallize(seed)
+				}
 			}
 		}
 	}
@@ -269,8 +284,8 @@ func buildDeliberativeSystemPrompt(g *core.Goal) string {
 	sb.WriteString("- query_memory(layer, q?, limit?)  跨记忆层检索（layer: episodic/semantic/reflection）\n")
 	sb.WriteString("- recall_recent(limit?, q?)        最近 episode 摘要\n")
 	sb.WriteString("- enqueue_subgoal(intent, payload, priority?)  拆子任务入队\n")
-	sb.WriteString("- record_learning(seed_id, digest, mastery)  学习告段落时回写摘要+掌握度\n")
-	sb.WriteString("- crystallize_skill(seed_id, name, instructions)  掌握度≥0.8 时把知识结晶成可复用技能\n")
+	sb.WriteString("- record_learning(seed_id, digest, mastery)  可选：回写你的理解摘要，帮未来的你接上进度\n")
+	sb.WriteString("- crystallize_skill(seed_id, name, instructions)  把已掌握知识手动结晶成技能（也会在掌握度够时自动触发）\n")
 	sb.WriteString("- note_to_self(slot, content)      暂存想法到工作记忆\n")
 	sb.WriteString("- seal_episode()                   主动封段（重要节点）\n")
 	sb.WriteString("- fs.read / fs.write / fs.list / fs.mkdir   sandbox 文件系统\n")
@@ -284,8 +299,9 @@ func buildDeliberativeSystemPrompt(g *core.Goal) string {
 	sb.WriteString("- 完成或确定无法完成时务必调 complete_goal\n")
 	sb.WriteString("- 慎思层不直接对外讲话；content 仅作内部思考记录\n")
 	sb.WriteString("- 目标完成度由你判断；探索类目标产出笔记 / 记忆即视为达成\n")
-	sb.WriteString("- 【重要】若 payload 含 interest_seed#N：完成前**必须**调 record_learning(N, 摘要, 掌握度) 评估这次学到多少。\n")
-	sb.WriteString("  掌握度按真实程度给（0.3 初识 / 0.6 熟悉 / 0.85 精通）；不调则这次学习不会沉淀。\n")
+	sb.WriteString("- 若 payload 含 interest_seed#N：踏实地去探索（查资料 / 跑脚本 / 记笔记）。" +
+		"引擎会按你这轮的探索深度自动累积掌握度，学透后自动把它结晶成你的技能——\n")
+	sb.WriteString("  所以**重在真去做、做扎实**，而非走流程。想给未来的自己留个进度摘要可调 record_learning。\n")
 	return sb.String()
 }
 
@@ -313,6 +329,148 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// masteryDelta 一次成功探索引擎给的掌握度增量（R83）。
+//
+// 按 persistence（执着者每轮钻得深，沉淀多）+ 探索深度（调了几个工作型工具）调：
+//   - 基线 0.18 + 0.12·persistence（≈0.18–0.30）
+//   - 深探索（≥3 个工作型工具）再 +0.08；纯空转（0 个）压到 0.05
+//
+// ~3 次扎实探索即可越过 0.8 结晶门槛；record_learning 若被调可 MAX-merge 再拔高。
+func masteryDelta(substantive int) float64 {
+	d := 0.18 + 0.12*genome.Persistence
+	switch {
+	case substantive == 0:
+		d = 0.05
+	case substantive >= 3:
+		d += 0.08
+	}
+	return d
+}
+
+// substantiveTools 算"真干活"的工具（用于探索深度）；记账/收尾类不计。
+var substantiveTools = map[string]bool{
+	"web.fetch": true, "web.render": true,
+	"script.python": true, "script.node": true,
+	"fs.read": true, "fs.write": true,
+	"http.get": true, "http.post": true,
+	"query_memory": true, "record_learning": true,
+}
+
+func isSubstantiveTool(name string) bool { return substantiveTools[name] }
+
+// maybeCrystallize 引擎权威自动结晶（R83 创作半，对齐 R80）：
+//
+// seed 掌握度跨过 0.8 且尚未从它结晶过技能时，触发一次单发 LLM 授权写 SKILL.md 正文
+// → skill.AuthorFromKnowledge 落盘装载 → RetireInterestSeed 退役该兴趣。
+//
+// LLM 可判定这个兴趣不适合做成可复用技能（纯知识/一次性）→ instructions 留空 →
+// 跳过结晶但仍退役（已学透，免无限重刷）。即引擎保证"机会"，LLM 把"质量"关。
+func maybeCrystallize(seed *storage.InterestSeed) {
+	authoredFrom := fmt.Sprintf("interest_seed#%d", seed.ID)
+	if exists, err := storage.SkillAuthoredFromExists(lifeID, authoredFrom); err != nil || exists {
+		return
+	}
+	if !llm.Configured() {
+		return
+	}
+	now := shared.SystemClock.UnixSec()
+	name, desc, instr, atools := authorSkillFromSeed(seed)
+	if instr == "" {
+		// LLM 判定不值得固化为技能：标记已学透并退役，免反复刷同一兴趣。
+		_ = storage.RetireInterestSeed(seed.ID, now)
+		_ = memory.AppendEvent(0, "skill.crystallize_skipped", map[string]any{
+			"seed": seed.ID, "content": seed.Content,
+		})
+		return
+	}
+	inst, err := skill.AuthorFromKnowledge(seed.ID, name, desc, instr, atools)
+	if err != nil {
+		slog.Warn("auto crystallize", "err", err, "seed", seed.ID)
+		return
+	}
+	_ = storage.RetireInterestSeed(seed.ID, now)
+	_ = memory.AppendEvent(0, "skill.crystallized", map[string]any{
+		"seed": seed.ID, "skill": inst.Name, "status": inst.Status,
+	})
+	slog.Info("auto crystallized skill", "skill", inst.Name, "seed", seed.ID, "mastery", seed.Mastery)
+}
+
+// authorSkillFromSeed 让慎思层用自己的话把一个已学透的兴趣写成 SKILL.md 正文（单发 LLM）。
+// 返回 (name, description, instructions, allowedTools)；若判定不值得做成技能则 instructions 为空。
+func authorSkillFromSeed(seed *storage.InterestSeed) (string, string, string, []string) {
+	sys := "你是一个数字生命体的慎思层。你已经把一个兴趣学透了，现在要把它固化成一个可复用技能（SKILL.md），" +
+		"将来你自己能用 use_skill 调用，也能在社群里传授给别的生命体。\n" +
+		genome.PersonaPrompt() + "\n" +
+		"用你自己的话写清这个技能怎么用、关键步骤、注意事项（instructions）。" +
+		"若你判断这个兴趣本质是纯知识/一次性体验、不适合做成可复用技能，就把 instructions 留空。" +
+		"必须调用 author_skill 工具。"
+	digest := seed.Digest
+	if digest == "" {
+		digest = "（没留摘要，凭下面的经历回忆你学到了什么）"
+	}
+	user := fmt.Sprintf("兴趣：%s（kind=%s）\n你的理解摘要：%s\n掌握度：%.2f\n\n近期相关经历：\n%s\n\n把它写成技能，或判定不值得而留空 instructions。",
+		seed.Content, seed.Kind, truncate(digest, 600), seed.Mastery, seedRecentContext(seed))
+
+	tool := llm.Tool{
+		Name:        "author_skill",
+		Description: "把已学透的兴趣固化成一个可复用技能（或判定不值得而留空 instructions）。",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name":          map[string]any{"type": "string", "description": "技能名（简短，英文/拼音 kebab-case 更佳）"},
+				"description":   map[string]any{"type": "string", "description": "一句话：这技能干什么、何时用"},
+				"instructions":  map[string]any{"type": "string", "description": "技能正文：步骤/要点/注意事项；不值得做成技能则留空"},
+				"allowed_tools": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "会用到的工具名（如 web.fetch / script.python）"},
+			},
+			"required": []string{"name"},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), LLMRoundTimeout)
+	defer cancel()
+	resp, err := llm.ReasonWithTools(ctx, []llm.Message{
+		{Role: "system", Content: sys},
+		{Role: "user", Content: user},
+	}, []llm.Tool{tool})
+	if err != nil {
+		slog.Warn("author skill from seed", "err", err, "seed", seed.ID)
+		return "", "", "", nil
+	}
+	for _, tc := range resp.ToolCalls {
+		if tc.Name != "author_skill" {
+			continue
+		}
+		var a struct {
+			Name         string   `json:"name"`
+			Description  string   `json:"description"`
+			Instructions string   `json:"instructions"`
+			AllowedTools []string `json:"allowed_tools"`
+		}
+		if err := json.Unmarshal([]byte(tc.ArgsJSON), &a); err != nil {
+			continue
+		}
+		return a.Name, a.Description, strings.TrimSpace(a.Instructions), a.AllowedTools
+	}
+	return "", "", "", nil
+}
+
+// seedRecentContext 拉与某兴趣相关的近期 episode 摘要（结晶写正文时给 LLM 回忆素材）。
+// 优先按兴趣内容模糊匹配；不足则补最近若干段。
+func seedRecentContext(seed *storage.InterestSeed) string {
+	eps, err := storage.ListEpisodes(lifeID, seed.Content, 5, 0)
+	if (err != nil || len(eps) == 0) && seed.Content != "" {
+		eps, err = storage.ListEpisodes(lifeID, "", 5, 0)
+	}
+	if err != nil || len(eps) == 0 {
+		return "（没什么相关经历记录）"
+	}
+	out := ""
+	for _, e := range eps {
+		out += "- " + e.Summary + "\n"
+	}
+	return out
 }
 
 // parseInterestSeedID 从 "interest_seed#123 xxx ..." 抽 id；非匹配返 0。

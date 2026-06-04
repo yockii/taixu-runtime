@@ -107,6 +107,19 @@ func SetSkillReady(id, installPath string) error {
 	return err
 }
 
+// SkillAuthoredFromExists 是否已有从某来源（"interest_seed#N"）结晶出的技能。
+// 引擎自动结晶前查，防同一 seed 反复结晶。
+func SkillAuthoredFromExists(lifeID, authoredFrom string) (bool, error) {
+	var n int
+	err := db.QueryRow(`
+		SELECT COUNT(*) FROM skill_instance
+		WHERE life_id = ? AND authored_from = ?`, lifeID, authoredFrom).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // SetSkillAuthoredFrom 标记 skill 血缘（自创来源）。
 func SetSkillAuthoredFrom(id, authoredFrom string) error {
 	_, err := db.Exec(`UPDATE skill_instance SET authored_from = ? WHERE id = ?`, authoredFrom, id)

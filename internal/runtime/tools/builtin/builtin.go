@@ -43,9 +43,9 @@ func allTools() []tools.Tool {
 		toolRecallRecent(),
 		toolNoteToSelf(),
 		// --- deliberative · 记忆 / 反思 / 学习 ---
-		// 注：兴趣探索标记（explored_count + strength 衰减）由引擎权威处理
-		// （action.finalize），不暴露为 LLM tool，避免双重计数。
-		// record_learning 不同：它回写"我学到了什么 + 掌握度"，是 LLM 主观判断，必须由 LLM 调。
+		// 注：兴趣探索标记（explored_count + 按深度涨 mastery + 越 0.8 自动结晶）由引擎
+		// 权威处理（action.finalize, R83），不暴露为 LLM tool，避免双重计数。
+		// record_learning 仍保留：LLM 可回写理解摘要 + 校准掌握度（MAX-merge），是可选增强。
 		toolQueryMemory(),
 		toolSealEpisode(),
 		toolRecordLearning(),

@@ -115,20 +115,38 @@ func ListAllInterestSeeds(lifeID string, limit int) ([]InterestSeed, error) {
 	return ListInterestSeeds(lifeID, 0.0, limit)
 }
 
-// BumpInterestExplored 慎思层探索一次后调。
+// BumpInterestExplored 慎思层成功探索一次后调（引擎权威，不依赖 LLM 自觉调 record_learning）。
 //
-// 副作用（R74 实施）：
+// 副作用（R83 修复"学不会→零技能"）：
 //   - explored_count++
-//   - strength = MAX(0, strength - 0.15)  探索消耗兴趣，与 UpsertInterestSeed 的
-//     "新事件提到同 seed 时 +0.15" 对称；strength 降到 < 0.4 后 drives 不再派
+//   - mastery = MIN(0.9, mastery + masteryDelta)  引擎给掌握度地板：每次真探索都沉淀一点，
+//     不再靠 LLM 自愿调 record_learning（实测 39 次工具调用里它一次没调，mastery 永 0）。
+//     record_learning 仍可 MAX-merge 拔高到更准的值；引擎管下限，LLM 校上限。
 //   - last_seen_at = ts
 //
-// 行为：兴趣会随探索逐渐满足；新对话中再次涉及可让 strength 重燃。
-func BumpInterestExplored(id int64, ts int64) error {
+// 注意：**不再衰减 strength**。原 -0.15/次让 strength 两轮就跌破 0.4 门槛，
+// 兴趣"没学会就先腻了"死掉，mastery 永远到不了 0.8 结晶门槛 → 零技能。
+// 反重复改由 drives.Derive 的 exploreFactor(1/(1+0.3·count)) + masteryFactor(1-mastery)
+// 节流优先级；学透后由 RetireInterestSeed 显式退役。
+func BumpInterestExplored(id int64, masteryDelta float64, ts int64) error {
+	if masteryDelta < 0 {
+		masteryDelta = 0
+	}
 	_, err := db.Exec(`
 		UPDATE interest_seed
 		SET explored_count = explored_count + 1,
-		    strength = MAX(0, strength - 0.15),
+		    mastery = MIN(0.9, mastery + ?),
+		    last_seen_at = ?
+		WHERE id = ?`, masteryDelta, ts, id)
+	return err
+}
+
+// RetireInterestSeed 学透并结晶后退役一个兴趣种子：strength 砍到 0.1（< drives 的 0.4 门槛），
+// 使其退出慎思派生，不再反复刷同一已掌握的兴趣。保留行（digest/mastery 仍可查/可被对话重燃）。
+func RetireInterestSeed(id int64, ts int64) error {
+	_, err := db.Exec(`
+		UPDATE interest_seed
+		SET strength = MIN(strength, 0.1),
 		    last_seen_at = ?
 		WHERE id = ?`, ts, id)
 	return err

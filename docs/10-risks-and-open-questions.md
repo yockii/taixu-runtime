@@ -491,6 +491,18 @@
 > **仍待**：点 1 整体；技能依赖冲突（R81）；遗忘的技能是否可被"复习"重新激活（disabled→ready）。
 > **影响**：`02 §7 Skill 生命周期`、`03 §2.6`、`internal/runtime/skill`、`internal/storage`、`R74`、`R80`、`09`（Phase 3）。
 
+### R83 · 知识结晶为零：mastery 永 0 → 结晶门槛永不达（已修 Phase 0.5）
+> **现象**：长跑实测某生命体 interest_seed explored_count=2 但 mastery=0.0，`tool_audit_log` 39 次调用里 `record_learning` / `crystallize_skill` **各 0 次** → 永不结晶，零自创技能。
+> **根因（双衰减不匹配）**：
+> - `BumpInterestExplored` 每次探索 `strength -= 0.15`（从 0.55 起，两轮即跌破 `drives` 的 0.4 派生门槛 → 兴趣"没学会就先腻了"死掉）。
+> - mastery 完全依赖 LLM **自愿**调 `record_learning`，实测模型几乎从不调（即便 prompt 写"必须"）→ mastery 恒 0 → 0.8 结晶门槛永不可达。
+> **V0.2.2 修复（引擎权威收敛环，对齐 R79「不依赖 LLM 自觉」）**：
+> - `BumpInterestExplored(id, masteryDelta, ts)`：成功探索引擎按**探索深度**（工作型工具成功调用数）+ persistence 给 mastery 地板（`masteryDelta`≈0.18–0.38/次，~3 轮越 0.8）；**移除 strength 衰减**——反重复改由 `drives.Derive` 既有 `exploreFactor·masteryFactor` 节流优先级。`record_learning` 仍可 MAX-merge 拔高（引擎管下限，LLM 校上限）。
+> - mastery 跨 0.8 → `action.maybeCrystallize` 引擎**自动结晶**：单发 LLM `author_skill` 写 SKILL.md 正文（喂近期相关 episode 当回忆素材，即便没 digest 也能重建）→ `skill.AuthorFromKnowledge` 落盘 → `RetireInterestSeed`（strength→0.1）退出派生。LLM 可判定不值得（instructions 留空）→ 跳过结晶但仍退役。引擎保证「机会」，LLM 把「质量」关。
+> - `SkillAuthoredFromExists(life, "interest_seed#N")` 防同一 seed 反复结晶。
+> **仍待**：自动结晶在 finalize 内同步跑一次 LLM（最长 120s），多用户时应移异步；纯知识类是否一律尝试结晶可再调（当前交 LLM 判）。
+> **影响**：`internal/runtime/action/action.go`、`internal/storage/interest.go`、`internal/storage/skill.go`、`R77`、`R79`、`R80`。
+
 ### R81 · Skill 自定义依赖的运行时可达性（已修 Phase 0.5）
 > skill 装的私有依赖（`/workspace/skills/<id>/site-packages` 等）默认不在 script.python/node 的 import 路径上，导致带非 baseline 依赖的 skill 装了也用不了。
 > **V0.2.2 修复**：`toolrunner.scriptEnv` 在脚本执行时把各 skill 私有依赖目录拼进 `PYTHONPATH`（python）/ `NODE_PATH`（node）。baseline 包仍走系统全局。
