@@ -2,7 +2,7 @@
 
 > 本文档定位：已识别风险登记、跨文档冲突待决议题、V0.1 → V0.2 演进留白、反模式清单。**所有盲点在此集中，不分散在各文档**。
 >
-> **状态**：V0.2.2 草稿。共登记 ~81 项风险（R01–R81）。注：R62/R63 编号预留。最新批 R69–R81 来自 Phase 0.4+ reflex / skill / tool / 抓取 / 上下文 / 知识感知决策 / 发呆 / 社交 / 知识结晶阶段。
+> **状态**：V0.2.2 草稿。共登记 ~82 项风险（R01–R82）。注：R62/R63 编号预留。最新批 R69–R82 来自 Phase 0.4+ reflex / skill / tool / 抓取 / 上下文 / 知识感知 / 发呆 / 社交 / 知识结晶 / 技能生命周期阶段。
 
 ---
 
@@ -468,6 +468,28 @@
 > - 结晶时自动把学习笔记（sandbox）拷为 skill refs/（当前仅 LLM 写的 body）
 > - 同一知识被多次结晶 / 迭代更新 skill 版本
 > **影响**：`02 §7 Skill`、`SKILLS-AND-TOOLS`、`internal/runtime/skill`、`R18`、`R31`、`R77`、`09`（Phase 4）。
+
+### R82 · 层级/可恢复目标（设计，Phase 3）+ 技能生命周期（已实装 Phase 0.5）
+> 用户两点设想。
+>
+> **点 1 · 大目标分解 + 可中断/恢复（设计留 Phase 3 自主规划）**：
+> 大目标 → 分解小目标依次完成；可做一半休息 / 被打断 / 空闲再续，最终达成大目标。
+> 现状：`enqueue_subgoal` tool 能拆子目标入队，`arbitration_note` 记 `subgoal_of=N` 字符串，但：
+> - 父子仅字符串、未结构化；无"大目标等子目标全完成才算完成"
+> - 一个 goal 在单次 agent loop（≤6 轮）内必须 complete/failed，**无跨 cycle 暂停/恢复**
+> 设计方向（Phase 3）：
+> - goal 加结构化 `parent_id` + `paused/in_progress` 态 + 进度笔记（loop 没做完则存进度不强制完成）
+> - 空闲时 resume 未完成 goal；父目标在子目标全 done 时 complete
+> - 与 idle 协同：被打断 → 进度落盘 → 空闲 cycle 续做
+> 属 Phase 3 自主规划，工程量中偏大，留专门实施。
+>
+> **点 2 · 技能更新 + 遗忘（已实装 Phase 0.5）**：
+> - **更新**：skill id 改为按 `(life_id, name)` 稳定（原为内容 hash）→ 重新 crystallize / 重扫同名技能**原地覆盖**，不再产生孤儿行；`seed_ref`=内容 hash 仍记版本。
+> - **遗忘（用进废退）**：`BumpSkillUsed` 每次用 mastery +0.05（用进）；`DecaySkills` 按距上次使用时间指数衰减 ready 技能 mastery（30 天半衰期），跌破 0.05 → `disabled`（遗忘，保留文件夹/血缘可重拾，不硬删）。从未练习（mastery=0）的外部参考技能不衰减（"备而未用"非"学了又忘"）。
+> - 结晶技能初始 mastery = 来源兴趣 mastery（学透才结晶，从此起算衰减）。
+> - 顺带接线 `DecayInterests`（7 天半衰期）—— 此前从未被调用（兴趣只在探索时降，不随时间淡）。
+> **仍待**：点 1 整体；技能依赖冲突（R81）；遗忘的技能是否可被"复习"重新激活（disabled→ready）。
+> **影响**：`02 §7 Skill 生命周期`、`03 §2.6`、`internal/runtime/skill`、`internal/storage`、`R74`、`R80`、`09`（Phase 3）。
 
 ### R81 · Skill 自定义依赖的运行时可达性（已修 Phase 0.5）
 > skill 装的私有依赖（`/workspace/skills/<id>/site-packages` 等）默认不在 script.python/node 的 import 路径上，导致带非 baseline 依赖的 skill 装了也用不了。

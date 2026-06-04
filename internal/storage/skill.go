@@ -1,6 +1,10 @@
 package storage
 
-import "database/sql"
+import (
+	"database/sql"
+	"fmt"
+	"math"
+)
 
 // SkillInstance SKILL.md 种子在本生命体内的有状态实例（docs/SKILLS-AND-TOOLS §2）。
 type SkillInstance struct {
@@ -109,10 +113,83 @@ func SetSkillAuthoredFrom(id, authoredFrom string) error {
 	return err
 }
 
-// BumpSkillUsed used_count++ + last_used_at。
-func BumpSkillUsed(id string, ts int64) error {
-	_, err := db.Exec(`UPDATE skill_instance SET used_count=used_count+1, last_used_at=? WHERE id=?`, ts, id)
+// SetSkillMastery 直接设置 skill 掌握度（结晶时以来源兴趣的 mastery 初始化）。
+func SetSkillMastery(id string, mastery float64) error {
+	if mastery < 0 {
+		mastery = 0
+	}
+	if mastery > 1 {
+		mastery = 1
+	}
+	_, err := db.Exec(`UPDATE skill_instance SET mastery=? WHERE id=?`, mastery, id)
 	return err
+}
+
+// BumpSkillUsed used_count++ + last_used_at + 练习提升 mastery（用进废退的"用进"，R82）。
+func BumpSkillUsed(id string, ts int64) error {
+	_, err := db.Exec(`
+		UPDATE skill_instance
+		SET used_count = used_count + 1,
+		    last_used_at = ?,
+		    mastery = MIN(1.0, mastery + 0.05)
+		WHERE id = ?`, ts, id)
+	return err
+}
+
+// DecaySkills 技能遗忘（用进废退的"废退"，R82）：
+//
+// 对 ready 且已习得（mastery>0）的技能，按距上次使用（无则距创建）的时间指数衰减 mastery；
+// 掌握度跌破 forgetThreshold 即 disable（遗忘——保留文件夹/血缘，可重新拾起，不硬删）。
+// 从未练习（mastery==0，如外部投放的参考技能）不衰减、不遗忘——是"备而未用"非"学了又忘"。
+func DecaySkills(lifeID string, now int64, halfLifeDays float64) error {
+	const forgetThreshold = 0.05
+	dailyFactor := math.Exp(-math.Ln2 / halfLifeDays)
+
+	rows, err := db.Query(`
+		SELECT id, mastery, COALESCE(last_used_at, created_at)
+		FROM skill_instance
+		WHERE life_id = ? AND status = 'ready' AND mastery > 0`, lifeID)
+	if err != nil {
+		return err
+	}
+	type item struct {
+		id      string
+		mastery float64
+		ref     int64
+	}
+	var items []item
+	for rows.Next() {
+		var it item
+		if err := rows.Scan(&it.id, &it.mastery, &it.ref); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		items = append(items, it)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	_ = rows.Close()
+
+	const day = float64(24 * 3600)
+	for _, it := range items {
+		elapsedDays := float64(now-it.ref) / day
+		if elapsedDays < 1.0 {
+			continue
+		}
+		nm := it.mastery * math.Pow(dailyFactor, elapsedDays)
+		if nm < forgetThreshold {
+			if _, err := db.Exec(`UPDATE skill_instance SET mastery=0, status='disabled' WHERE id=?`, it.id); err != nil {
+				return fmt.Errorf("forget skill %s: %w", it.id, err)
+			}
+			continue
+		}
+		if _, err := db.Exec(`UPDATE skill_instance SET mastery=? WHERE id=?`, nm, it.id); err != nil {
+			return fmt.Errorf("decay skill %s: %w", it.id, err)
+		}
+	}
+	return nil
 }
 
 // InsertSkillDependency 记一条依赖装载审计。

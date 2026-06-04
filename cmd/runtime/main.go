@@ -237,6 +237,14 @@ func runCycle(cycleID int64, lifeID string, genome core.Genome) {
 		slog.Info("energy daily cap reset")
 		_ = memory.AppendEvent(cycleID, "energy.cap_reset", nil)
 	}
+	// 遗忘衰减（R74 兴趣 / R82 技能）：长期不触及的兴趣 / 不用的技能逐渐淡去。
+	now2 := shared.SystemClock.UnixSec()
+	if err := storage.DecayInterests(lifeID, now2, 7.0); err != nil {
+		slog.Warn("decay interests", "err", err)
+	}
+	if err := storage.DecaySkills(lifeID, now2, 30.0); err != nil {
+		slog.Warn("decay skills", "err", err)
+	}
 
 	memory.ResetWorking()
 }

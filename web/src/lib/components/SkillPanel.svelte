@@ -14,6 +14,7 @@
 		last_used_at?: number;
 		created_at: number;
 		lanes?: string;
+		authored_from?: string;
 	};
 
 	let items = $state<Skill[]>([]);
@@ -218,9 +219,12 @@
 				<div class="border-b border-zinc-800 py-1">
 					<div class="flex items-baseline gap-2">
 						<span class="font-medium text-zinc-200">{s.name}</span>
+						{#if s.authored_from}
+							<span class="shrink-0 rounded bg-violet-900/50 px-1 text-violet-300" title={s.authored_from}>{$t('skill_self')}</span>
+						{/if}
 						<span class="{statusColor(s.status)} shrink-0">{$t('skill_status_' + s.status)}</span>
 						<span class="flex-1"></span>
-						<span class="text-zinc-500">{$t('skill_used')} {s.used_count}</span>
+						<span class="text-zinc-500">m{s.mastery?.toFixed?.(2) ?? '0.00'} · {$t('skill_used')} {s.used_count}</span>
 					</div>
 					{#if s.description}
 						<div class="mt-0.5 truncate text-zinc-400">{s.description}</div>

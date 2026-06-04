@@ -213,9 +213,12 @@ authored_from: "%s"
 	if err != nil {
 		return nil, err
 	}
-	// 标记血缘（Load 走通用路径不知道是自创）
+	// 标记血缘 + 以来源兴趣的掌握度初始化技能 mastery（结晶时已学透，R82 遗忘衰减从此起算）。
 	if err := storage.SetSkillAuthoredFrom(inst.ID, authoredFrom); err != nil {
 		slog.Warn("skill set authored_from", "err", err, "id", inst.ID)
+	}
+	if err := storage.SetSkillMastery(inst.ID, seed.Mastery); err != nil {
+		slog.Warn("skill set mastery", "err", err, "id", inst.ID)
 	}
 	return storage.GetSkillInstance(inst.ID)
 }
@@ -249,9 +252,13 @@ func loadFolder(folder, content string) (*storage.SkillInstance, error) {
 	if err != nil {
 		return nil, err
 	}
-	sum := sha256.Sum256([]byte(content))
-	seedHash := fmt.Sprintf("%x", sum)
-	id := seedHash[:16]
+	// 内容 hash 作 seed_ref（版本指纹）；id 按 (life, name) 稳定 → 同名重装/更新原地覆盖，
+	// 不产生孤儿行（R82 skill 更新）。
+	seedHash := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
+	mu.Lock()
+	lidForID := lifeID
+	mu.Unlock()
+	id := fmt.Sprintf("%x", sha256.Sum256([]byte(lidForID+":"+fm.Name)))[:16]
 
 	lanesJSON, _ := json.Marshal(fm.Lanes)
 	toolsJSON, _ := json.Marshal(fm.AllowedTools)
