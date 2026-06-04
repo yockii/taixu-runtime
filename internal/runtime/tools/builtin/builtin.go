@@ -20,6 +20,7 @@ import (
 
 	"mindverse/internal/core"
 	"mindverse/internal/runtime/memory"
+	"mindverse/internal/runtime/skill"
 	"mindverse/internal/runtime/tools"
 	"mindverse/internal/shared"
 	"mindverse/internal/skill/toolrunner"
@@ -41,11 +42,14 @@ func allTools() []tools.Tool {
 		// --- reflex lane ---
 		toolRecallRecent(),
 		toolNoteToSelf(),
-		// --- deliberative · 记忆 / 反思 ---
-		// 注：兴趣探索标记由引擎权威处理（action.finalize），不暴露为 LLM tool，
-		// 避免引擎 + LLM 双重 BumpInterestExplored 重复计数。
+		// --- deliberative · 记忆 / 反思 / 学习 ---
+		// 注：兴趣探索标记（explored_count + strength 衰减）由引擎权威处理
+		// （action.finalize），不暴露为 LLM tool，避免双重计数。
+		// record_learning 不同：它回写"我学到了什么 + 掌握度"，是 LLM 主观判断，必须由 LLM 调。
 		toolQueryMemory(),
 		toolSealEpisode(),
+		toolRecordLearning(),
+		toolUseSkill(),
 		// --- deliberative · 目标管理 ---
 		toolEnqueueSubgoal(),
 		toolCompleteGoal(),
@@ -237,6 +241,73 @@ func handleSealEpisode(_ context.Context, _ tools.Context, _ string) (string, er
 		return `{"ok":true,"episode_id":null}`, nil
 	}
 	return mustJSON(map[string]any{"ok": true, "episode_id": ep.ID, "events": ep.RawEndID - ep.RawStartID + 1}), nil
+}
+
+func toolRecordLearning() tools.Tool {
+	return tools.Tool{
+		Name: "record_learning",
+		Description: "记录对某兴趣种子的学习成果。探索告一段落时调用：写下你已了解的要点摘要" +
+			"和自评掌握度。掌握度越高，未来对该兴趣的内驱越弱（学够了自然转向别的）。" +
+			"seed_id 取自目标 payload 中的 interest_seed#N。",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"seed_id": map[string]any{"type": "integer", "description": "兴趣种子 id（payload 中 interest_seed#N 的 N）"},
+				"digest":  map[string]any{"type": "string", "description": "一段话摘要：我已了解什么"},
+				"mastery": map[string]any{"type": "number", "description": "自评掌握度 0-1（0.3 入门 / 0.6 熟悉 / 0.9 精通）"},
+			},
+			"required": []string{"seed_id", "digest", "mastery"},
+		},
+		Lanes:   []tools.Lane{tools.LaneDeliberative},
+		Handler: handleRecordLearning,
+	}
+}
+
+func handleRecordLearning(_ context.Context, _ tools.Context, argsJSON string) (string, error) {
+	var a struct {
+		SeedID  int64   `json:"seed_id"`
+		Digest  string  `json:"digest"`
+		Mastery float64 `json:"mastery"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return errJSON("invalid args"), err
+	}
+	if a.SeedID <= 0 {
+		return errJSON("invalid seed_id"), nil
+	}
+	if err := storage.RecordLearning(a.SeedID, a.Digest, a.Mastery, shared.SystemClock.UnixSec()); err != nil {
+		return errJSON("record failed"), err
+	}
+	return mustJSON(map[string]any{"ok": true, "seed_id": a.SeedID, "mastery": a.Mastery}), nil
+}
+
+func toolUseSkill() tools.Tool {
+	return tools.Tool{
+		Name: "use_skill",
+		Description: "调用一个已装载的技能（SKILL.md）。返回该技能的完整指引正文，" +
+			"你应遵循其中的步骤完成任务。仅 ready 状态的技能可用。",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name": map[string]any{"type": "string", "description": "技能名（SKILL.md 的 name）"},
+			},
+			"required": []string{"name"},
+		},
+		Lanes: []tools.Lane{tools.LaneDeliberative},
+		Handler: func(_ context.Context, _ tools.Context, argsJSON string) (string, error) {
+			var a struct {
+				Name string `json:"name"`
+			}
+			if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+				return errJSON("invalid args"), err
+			}
+			body, err := skill.UseByName(a.Name)
+			if err != nil {
+				return errJSON(err.Error()), err
+			}
+			return mustJSON(map[string]any{"ok": true, "name": a.Name, "instructions": body}), nil
+		},
+	}
 }
 
 // -----------------------------------------------------------------------------

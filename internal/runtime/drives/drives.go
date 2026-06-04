@@ -22,12 +22,14 @@ func Derive(g core.Genome, ls core.LifeState, ms core.MentalState, lifeID string
 	// 兴趣种子派生 DriveCuriosity（最强 3 条；strength≥0.4）
 	seeds, _ := storage.ListInterestSeeds(lifeID, 0.4, 3)
 	for _, s := range seeds {
-		// 探索次数衰减优先级（防止单一兴趣被反复消费）
+		// 掌握度衰减（R77）：掌握越深，再探索的内驱越弱（知识感知，非盲衰减）。
+		masteryFactor := 1.0 - s.Mastery
+		// 探索次数衰减优先级（防止单一兴趣短时间被反复消费）
 		exploreFactor := 1.0
 		if s.ExploredCount > 0 {
 			exploreFactor = 1.0 / (1.0 + 0.3*float64(s.ExploredCount))
 		}
-		strength := (s.Strength*0.7 + 0.3*g.Curiosity) * exploreFactor
+		strength := (s.Strength*0.7 + 0.3*g.Curiosity) * exploreFactor * masteryFactor
 		ds = append(ds, core.Drive{
 			Kind:     core.DriveKnowledge,
 			Strength: clamp01(strength),

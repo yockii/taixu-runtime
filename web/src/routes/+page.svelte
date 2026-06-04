@@ -24,6 +24,7 @@
 	import ToolAuditPanel from '$lib/components/ToolAudit.svelte';
 	import ConfigPanel from '$lib/components/ConfigPanel.svelte';
 	import InterestPanel from '$lib/components/InterestPanel.svelte';
+	import SkillPanel from '$lib/components/SkillPanel.svelte';
 	import LangToggle from '$lib/components/LangToggle.svelte';
 
 	let life = $state<LifeState | null>(null);
@@ -110,6 +111,7 @@
 	<div class="order-1 space-y-4 lg:order-2">
 		<InjectForm />
 		<InterestPanel />
+		<SkillPanel />
 		<GenomePanel {genome} />
 		<ValuesPanel {values} />
 		<ConfigPanel />

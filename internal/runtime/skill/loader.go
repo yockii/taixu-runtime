@@ -1,0 +1,362 @@
+// Package skill SKILL.md 装载器（docs/SKILLS-AND-TOOLS §3 §4 §5）单例。
+//
+// 两层模型：SKILL.md 种子（Anthropic 标准 + Mindverse 扩展字段）→ skill_instance（有状态）。
+//
+// 装载流程：
+//   解析 frontmatter → 算 seed_hash → 比对 L0 baseline 白名单
+//   全在 baseline / 无 deps → status=ready
+//   有缺包 → status=pending_approval + pending_deps（L3 用户授权，dangerous-skip 可自动批）
+//
+// 依赖安装（L3）：pip/node 装到 skill 私有目录 /skills/<id>/，命令用 exec slice 防注入（H09）。
+package skill
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+
+	"mindverse/internal/shared"
+	"mindverse/internal/storage"
+
+	"gopkg.in/yaml.v3"
+)
+
+const (
+	// SkillsRoot skill 私有安装根目录（容器内）。
+	SkillsRoot = "/skills"
+	// DepInstallTimeout 单次依赖安装超时。
+	DepInstallTimeout = 300 * time.Second
+)
+
+// pkgNameRe 校验包名 + 版本约束，防 shell 注入（H09）。
+var pkgNameRe = regexp.MustCompile(`^[a-zA-Z0-9_.-]+(\[[a-zA-Z0-9_,-]+\])?((==|>=|<=|~=|<|>)[0-9a-zA-Z.+-]+)?$`)
+
+// baselinePython L0 Python 白名单（与 Dockerfile 同步，docs/SKILLS-AND-TOOLS §5.2）。
+var baselinePython = set("httpx", "requests", "beautifulsoup4", "bs4", "lxml", "trafilatura",
+	"pyyaml", "yaml", "pillow", "pil", "markdown", "feedparser", "python-dateutil", "dateutil")
+
+// baselineNode L0 Node 白名单。
+var baselineNode = set("axios", "cheerio", "dayjs", "js-yaml", "marked")
+
+var (
+	mu               sync.Mutex
+	lifeID           string
+	autoApproveDeps  bool // dangerous-skip-permissions（R73）
+)
+
+// Init 绑定生命体 ID。autoApprove 来自 config（dangerous-skip）。
+func Init(id string, autoApprove bool) error {
+	if id == "" {
+		return errors.New("skill: empty life id")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	lifeID = id
+	autoApproveDeps = autoApprove
+	return nil
+}
+
+// SetAutoApprove 运行时切换 dangerous-skip（config 改动时调）。
+func SetAutoApprove(v bool) {
+	mu.Lock()
+	autoApproveDeps = v
+	mu.Unlock()
+}
+
+// Frontmatter SKILL.md YAML 头（Anthropic 字段 + Mindverse 扩展）。
+type Frontmatter struct {
+	Name         string   `yaml:"name"`
+	Description  string   `yaml:"description"`
+	AllowedTools []string `yaml:"allowed-tools"`
+	Runtime      struct {
+		Python string `yaml:"python"`
+		Node   string `yaml:"node"`
+		Deps   struct {
+			Python []string `yaml:"python"`
+			Node   []string `yaml:"node"`
+		} `yaml:"deps"`
+	} `yaml:"runtime"`
+	Lanes       []string `yaml:"lanes"`
+	SeedVersion string   `yaml:"seed_version"`
+}
+
+// Dep 一条待装依赖。
+type Dep struct {
+	Runtime string `json:"runtime"` // python / node
+	Package string `json:"package"` // 含版本约束的原始串
+	Base    string `json:"-"`       // 不含约束的纯包名（白名单比对用）
+}
+
+// ParseSkillMd 拆 frontmatter + body。frontmatter 用 --- 包裹。
+func ParseSkillMd(content string) (Frontmatter, string, error) {
+	var fm Frontmatter
+	s := strings.TrimLeft(content, " \t\r\n")
+	if !strings.HasPrefix(s, "---") {
+		return fm, "", errors.New("skill: missing frontmatter (--- block)")
+	}
+	rest := s[3:]
+	end := strings.Index(rest, "\n---")
+	if end < 0 {
+		return fm, "", errors.New("skill: unterminated frontmatter")
+	}
+	head := rest[:end]
+	body := rest[end+4:]
+	if err := yaml.Unmarshal([]byte(head), &fm); err != nil {
+		return fm, "", fmt.Errorf("skill: parse frontmatter: %w", err)
+	}
+	if fm.Name == "" {
+		return fm, "", errors.New("skill: frontmatter missing name")
+	}
+	return fm, strings.TrimLeft(body, "\r\n"), nil
+}
+
+// Load 装载一份 SKILL.md 文本到当前生命体。
+//
+// 返回 skill 实例（含 status）。缺包时 status=pending_approval（除非 autoApprove → 直接装）。
+func Load(content string) (*storage.SkillInstance, error) {
+	fm, _, err := ParseSkillMd(content)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256([]byte(content))
+	seedHash := fmt.Sprintf("%x", sum)
+	id := seedHash[:16]
+
+	lanesJSON, _ := json.Marshal(fm.Lanes)
+	toolsJSON, _ := json.Marshal(fm.AllowedTools)
+
+	missing := missingDeps(fm)
+	now := shared.SystemClock.UnixSec()
+
+	mu.Lock()
+	lid := lifeID
+	auto := autoApproveDeps
+	mu.Unlock()
+
+	inst := &storage.SkillInstance{
+		ID:           id,
+		LifeID:       lid,
+		Name:         fm.Name,
+		SeedRef:      seedHash,
+		SeedVersion:  fm.SeedVersion,
+		Description:  fm.Description,
+		Lanes:        string(lanesJSON),
+		AllowedTools: string(toolsJSON),
+		Status:       "ready",
+		Mastery:      0,
+		UsedCount:    0,
+		InstallPath:  filepath.Join(SkillsRoot, id),
+		CreatedAt:    now,
+	}
+
+	if len(missing) > 0 {
+		depsJSON, _ := json.Marshal(missing)
+		inst.PendingDeps = string(depsJSON)
+		inst.Status = "pending_approval"
+	}
+
+	// 保存 SKILL.md body 到私有目录（use_skill 时读）。
+	if err := persistBody(inst.InstallPath, content); err != nil {
+		slog.Warn("skill persist body", "err", err, "id", id)
+	}
+
+	if err := storage.UpsertSkillInstance(inst); err != nil {
+		return nil, fmt.Errorf("skill: upsert: %w", err)
+	}
+
+	// dangerous-skip：自动批准并安装。
+	if inst.Status == "pending_approval" && auto {
+		if err := ApproveDeps(id, "auto_approve"); err != nil {
+			slog.Warn("skill auto-approve install failed", "err", err, "id", id)
+			return storage.GetSkillInstance(id)
+		}
+	}
+	return storage.GetSkillInstance(id)
+}
+
+// ApproveDeps 批准并安装 skill 的待装依赖到私有目录。installedBy: user_approve / auto_approve。
+func ApproveDeps(skillID, installedBy string) error {
+	inst, err := storage.GetSkillInstance(skillID)
+	if err != nil || inst == nil {
+		return fmt.Errorf("skill: not found %q", skillID)
+	}
+	if inst.PendingDeps == "" {
+		return storage.SetSkillReady(skillID, inst.InstallPath)
+	}
+	var deps []Dep
+	if err := json.Unmarshal([]byte(inst.PendingDeps), &deps); err != nil {
+		return fmt.Errorf("skill: bad pending_deps: %w", err)
+	}
+
+	_ = storage.UpdateSkillStatus(skillID, "installing", false)
+	now := shared.SystemClock.UnixSec()
+	for _, d := range deps {
+		if !pkgNameRe.MatchString(d.Package) {
+			_ = storage.UpdateSkillStatus(skillID, "failed", false)
+			return fmt.Errorf("skill: invalid package name %q", d.Package)
+		}
+		if err := installDep(inst.InstallPath, d); err != nil {
+			_ = storage.UpdateSkillStatus(skillID, "failed", false)
+			return fmt.Errorf("skill: install %s: %w", d.Package, err)
+		}
+		pkg, ver := splitPkgVer(d.Package)
+		_ = storage.InsertSkillDependency(&storage.SkillDependency{
+			SkillID:     skillID,
+			Runtime:     d.Runtime,
+			Package:     pkg,
+			Version:     ver,
+			InstalledBy: installedBy,
+			InstalledAt: now,
+		})
+	}
+	return storage.SetSkillReady(skillID, inst.InstallPath)
+}
+
+// RejectDeps 拒绝并禁用 skill。
+func RejectDeps(skillID string) error {
+	return storage.UpdateSkillStatus(skillID, "disabled", true)
+}
+
+// ListReady 返回当前生命体 ready 的 skill（供 deliberative prompt 列出）。
+func ListReady() ([]storage.SkillInstance, error) {
+	mu.Lock()
+	lid := lifeID
+	mu.Unlock()
+	all, err := storage.ListSkillInstances(lid, 100)
+	if err != nil {
+		return nil, err
+	}
+	out := all[:0]
+	for _, s := range all {
+		if s.Status == "ready" {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+// UseByName 按名取一个 ready skill 的 SKILL.md 全文（供 LLM 遵循），并 bump 使用计数。
+// 未找到 / 未 ready 返 ("", error)。
+func UseByName(name string) (string, error) {
+	mu.Lock()
+	lid := lifeID
+	mu.Unlock()
+	all, err := storage.ListSkillInstances(lid, 100)
+	if err != nil {
+		return "", err
+	}
+	for _, s := range all {
+		if s.Name != name {
+			continue
+		}
+		if s.Status != "ready" {
+			return "", fmt.Errorf("skill %q not ready (status=%s)", name, s.Status)
+		}
+		body, err := os.ReadFile(filepath.Join(s.InstallPath, "SKILL.md"))
+		if err != nil {
+			return "", fmt.Errorf("read skill body: %w", err)
+		}
+		_ = storage.BumpSkillUsed(s.ID, shared.SystemClock.UnixSec())
+		return string(body), nil
+	}
+	return "", fmt.Errorf("skill %q not found", name)
+}
+
+// missingDeps 返回不在 baseline 白名单的依赖。
+func missingDeps(fm Frontmatter) []Dep {
+	var out []Dep
+	for _, p := range fm.Runtime.Deps.Python {
+		base := strings.ToLower(splitBase(p))
+		if !baselinePython[base] {
+			out = append(out, Dep{Runtime: "python", Package: p, Base: base})
+		}
+	}
+	for _, p := range fm.Runtime.Deps.Node {
+		base := strings.ToLower(splitBase(p))
+		if !baselineNode[base] {
+			out = append(out, Dep{Runtime: "node", Package: p, Base: base})
+		}
+	}
+	return out
+}
+
+// installDep 装一个依赖到 skill 私有目录（命令用 exec slice，不拼 shell — H09）。
+func installDep(installPath string, d Dep) error {
+	ctx, cancel := context.WithTimeout(context.Background(), DepInstallTimeout)
+	defer cancel()
+	var cmd *exec.Cmd
+	switch d.Runtime {
+	case "python":
+		target := filepath.Join(installPath, "site-packages")
+		_ = os.MkdirAll(target, 0o755)
+		cmd = exec.CommandContext(ctx, "pip3", "install",
+			"--break-system-packages", "--no-cache-dir",
+			"--target", target, d.Package)
+	case "node":
+		_ = os.MkdirAll(installPath, 0o755)
+		cmd = exec.CommandContext(ctx, "npm", "install",
+			"--prefix", installPath, "--no-save",
+			"--registry=https://registry.npmmirror.com", d.Package)
+	default:
+		return fmt.Errorf("unknown runtime %q", d.Runtime)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%v: %s", err, truncate(string(out), 300))
+	}
+	return nil
+}
+
+func persistBody(installPath, content string) error {
+	if err := os.MkdirAll(installPath, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(installPath, "SKILL.md"), []byte(content), 0o644)
+}
+
+// --- small helpers ---
+
+func set(xs ...string) map[string]bool {
+	m := make(map[string]bool, len(xs))
+	for _, x := range xs {
+		m[x] = true
+	}
+	return m
+}
+
+// splitBase 去掉版本约束与 extras，取纯包名。
+func splitBase(p string) string {
+	p = strings.TrimSpace(p)
+	for _, sep := range []string{"==", ">=", "<=", "~=", ">", "<", "["} {
+		if i := strings.Index(p, sep); i >= 0 {
+			p = p[:i]
+		}
+	}
+	return strings.TrimSpace(p)
+}
+
+func splitPkgVer(p string) (string, string) {
+	for _, sep := range []string{"==", ">=", "<=", "~=", ">", "<"} {
+		if i := strings.Index(p, sep); i >= 0 {
+			return strings.TrimSpace(p[:i]), strings.TrimSpace(p[i:])
+		}
+	}
+	return strings.TrimSpace(p), "*"
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}

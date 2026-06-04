@@ -242,6 +242,7 @@ func buildDeliberativeSystemPrompt(g *core.Goal) string {
 	sb.WriteString("- query_memory(layer, q?, limit?)  跨记忆层检索（layer: episodic/semantic/reflection）\n")
 	sb.WriteString("- recall_recent(limit?, q?)        最近 episode 摘要\n")
 	sb.WriteString("- enqueue_subgoal(intent, payload, priority?)  拆子任务入队\n")
+	sb.WriteString("- record_learning(seed_id, digest, mastery)  学习告段落时回写摘要+掌握度\n")
 	sb.WriteString("- note_to_self(slot, content)      暂存想法到工作记忆\n")
 	sb.WriteString("- seal_episode()                   主动封段（重要节点）\n")
 	sb.WriteString("- fs.read / fs.write / fs.list / fs.mkdir   sandbox 文件系统\n")
@@ -255,6 +256,7 @@ func buildDeliberativeSystemPrompt(g *core.Goal) string {
 	sb.WriteString("- 完成或确定无法完成时务必调 complete_goal\n")
 	sb.WriteString("- 慎思层不直接对外讲话；content 仅作内部思考记录\n")
 	sb.WriteString("- 目标完成度由你判断；探索类目标产出笔记 / 记忆即视为达成\n")
+	sb.WriteString("- 若 payload 含 interest_seed#N：探索结束前调 record_learning(N, 摘要, 掌握度) 沉淀成果\n")
 	return sb.String()
 }
 

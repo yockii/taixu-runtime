@@ -35,6 +35,7 @@ import (
 	"mindverse/internal/runtime/perception"
 	"mindverse/internal/runtime/reflect"
 	"mindverse/internal/runtime/scheduler"
+	"mindverse/internal/runtime/skill"
 	"mindverse/internal/runtime/state"
 	"mindverse/internal/runtime/tools"
 	"mindverse/internal/runtime/tools/builtin"
@@ -86,6 +87,7 @@ func main() {
 	mustInit("reflex", reflex.Init(lifeID))
 
 	mustInit("toolrunner", toolrunner.Init(lifeID, envOr("MINDVERSE_SANDBOX", "/sandbox")))
+	mustInit("skill", skill.Init(lifeID, storage.GetConfigBool("skill_auto_approve_deps", false)))
 	mustInit("tools.builtin", builtin.Register())
 
 	cur, err := lifecycle.Current()

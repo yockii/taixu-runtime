@@ -8,6 +8,7 @@ export const reflectionVer = writable(0);
 export const episodeVer = writable(0);
 export const toolVer = writable(0);
 export const interestVer = writable(0);
+export const skillVer = writable(0);
 
 export type ReflexReply = {
 	id: number;

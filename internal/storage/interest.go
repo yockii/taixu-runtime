@@ -14,6 +14,8 @@ type InterestSeed struct {
 	CreatedAt     int64   `json:"created_at"`
 	LastSeenAt    int64   `json:"last_seen_at"`
 	ExploredCount int64   `json:"explored_count"`
+	Digest        string  `json:"digest,omitempty"`  // 学习摘要（R77）
+	Mastery       float64 `json:"mastery"`           // 自评掌握度 0-1（R77）
 }
 
 // UpsertInterestSeed 加入或加权一个兴趣种子。
@@ -45,7 +47,8 @@ func UpsertInterestSeed(lifeID, content, kind, sourceKind, sourceRef string, add
 func ListInterestSeeds(lifeID string, minStrength float64, limit int) ([]InterestSeed, error) {
 	rows, err := db.Query(`
 		SELECT id, content, kind, strength, COALESCE(source_kind,''), COALESCE(source_ref,''),
-		       COALESCE(decayed_at,0), created_at, last_seen_at, explored_count
+		       COALESCE(decayed_at,0), created_at, last_seen_at, explored_count,
+		       COALESCE(digest,''), mastery
 		FROM interest_seed
 		WHERE life_id = ? AND strength >= ?
 		ORDER BY strength DESC, last_seen_at DESC LIMIT ?`, lifeID, minStrength, limit)
@@ -58,12 +61,31 @@ func ListInterestSeeds(lifeID string, minStrength float64, limit int) ([]Interes
 		var s InterestSeed
 		if err := rows.Scan(&s.ID, &s.Content, &s.Kind, &s.Strength,
 			&s.SourceKind, &s.SourceRef, &s.DecayedAt,
-			&s.CreatedAt, &s.LastSeenAt, &s.ExploredCount); err != nil {
+			&s.CreatedAt, &s.LastSeenAt, &s.ExploredCount,
+			&s.Digest, &s.Mastery); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
 	}
 	return out, rows.Err()
+}
+
+// RecordLearning 回写一次学习成果（R77）：更新 digest + mastery（取较大 mastery，
+// 学习只增不减掌握度）+ last_seen。由 deliberative record_learning tool 调。
+func RecordLearning(id int64, digest string, mastery float64, ts int64) error {
+	if mastery < 0 {
+		mastery = 0
+	}
+	if mastery > 1 {
+		mastery = 1
+	}
+	_, err := db.Exec(`
+		UPDATE interest_seed
+		SET digest = ?,
+		    mastery = MAX(mastery, ?),
+		    last_seen_at = ?
+		WHERE id = ?`, digest, mastery, ts, id)
+	return err
 }
 
 // ListAllInterestSeeds 全表（观察面板用）。

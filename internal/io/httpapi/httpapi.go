@@ -34,6 +34,7 @@ import (
 
 	"mindverse/internal/runtime/perception"
 	"mindverse/internal/runtime/reflex"
+	"mindverse/internal/runtime/skill"
 	"mindverse/internal/runtime/state"
 	"mindverse/internal/storage"
 )
@@ -92,6 +93,11 @@ func Start(ctx context.Context, addr string) *http.Server {
 	mux.HandleFunc("/api/ledger", apiLedger)
 	mux.HandleFunc("/api/interests", apiInterests)
 	mux.HandleFunc("/api/config", apiConfig)
+	mux.HandleFunc("/api/skills", apiSkills)
+	mux.HandleFunc("/api/skills/load", apiSkillLoad)
+	mux.HandleFunc("/api/skills/approve", apiSkillApprove)
+	mux.HandleFunc("/api/skills/reject", apiSkillReject)
+	mux.HandleFunc("/api/config/auto-approve-deps", apiAutoApproveDeps)
 	mux.HandleFunc("/api/stream", apiStream)
 	mux.HandleFunc("/api/external-request", apiExternalRequest)
 
@@ -230,7 +236,107 @@ func apiConfig(w http.ResponseWriter, r *http.Request) {
 			"app_id":     os.Getenv("FEISHU_APP_ID"),
 			"app_secret": maskSecret(os.Getenv("FEISHU_APP_SECRET")),
 		},
+		"skill_auto_approve_deps": storage.GetConfigBool("skill_auto_approve_deps", false),
 	})
+}
+
+// -------- skill handlers (D.2 / D.3) --------
+
+func apiSkills(w http.ResponseWriter, r *http.Request) {
+	limit := intParam(r, "limit", 50, 1, 200)
+	xs, err := storage.ListSkillInstances(lifeID, limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, xs)
+}
+
+func apiSkillLoad(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	inst, err := skill.Load(body.Content)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, inst)
+}
+
+func apiSkillApprove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	id := skillIDParam(r)
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+	if err := skill.ApproveDeps(id, "user_approve"); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	inst, _ := storage.GetSkillInstance(id)
+	writeJSON(w, http.StatusOK, inst)
+}
+
+func apiSkillReject(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	id := skillIDParam(r)
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+	if err := skill.RejectDeps(id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func apiAutoApproveDeps(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var body struct {
+			Value bool `json:"value"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := storage.SetConfigBool("skill_auto_approve_deps", body.Value); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		skill.SetAutoApprove(body.Value)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"skill_auto_approve_deps": storage.GetConfigBool("skill_auto_approve_deps", false),
+	})
+}
+
+// skillIDParam 从 query ?id= 或 JSON body {id} 取 skill id。
+func skillIDParam(r *http.Request) string {
+	if id := r.URL.Query().Get("id"); id != "" {
+		return id
+	}
+	var body struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	return body.ID
 }
 
 func apiExternalRequest(w http.ResponseWriter, r *http.Request) {

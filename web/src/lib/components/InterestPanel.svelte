@@ -13,6 +13,8 @@
 		created_at: number;
 		last_seen_at: number;
 		explored_count: number;
+		digest?: string;
+		mastery: number;
 	};
 
 	let items = $state<Interest[]>([]);
@@ -55,15 +57,34 @@
 	{#if items.length === 0}
 		<div class="text-sm text-zinc-500">{$t('empty_interest')}</div>
 	{:else}
-		<div class="max-h-72 space-y-1 overflow-y-auto text-xs">
+		<div class="max-h-96 space-y-2 overflow-y-auto text-xs">
 			{#each items as i (i.id)}
-				<div class="flex items-baseline gap-2 border-b border-zinc-800 py-1">
-					<span class="font-mono text-zinc-500">#{i.id}</span>
-					<span class="{kindColor(i.kind)} w-16 shrink-0">{$t('ikind_' + i.kind)}</span>
-					<span class="w-12 shrink-0 text-right tabular-nums text-zinc-300">{i.strength.toFixed(2)}</span>
-					<span class="flex-1 truncate text-zinc-200">{i.content}</span>
-					<span class="shrink-0 text-zinc-500">{$t('explored_n')} {i.explored_count}</span>
-					<span class="shrink-0 text-zinc-500">{unixToDate(i.last_seen_at, locale)}</span>
+				<div class="border-b border-zinc-800 py-1">
+					<div class="flex items-baseline gap-2">
+						<span class="font-mono text-zinc-500">#{i.id}</span>
+						<span class="{kindColor(i.kind)} w-16 shrink-0">{$t('ikind_' + i.kind)}</span>
+						<span class="flex-1 truncate text-zinc-200">{i.content}</span>
+						<span class="shrink-0 text-zinc-500">{$t('explored_n')} {i.explored_count}</span>
+					</div>
+					<div class="mt-1 flex items-center gap-2">
+						<!-- strength 条（绿）-->
+						<span class="w-12 shrink-0 text-zinc-500">{$t('strength_label')}</span>
+						<div class="h-1.5 flex-1 rounded bg-zinc-800">
+							<div class="h-full rounded bg-emerald-600" style="width:{Math.round(i.strength * 100)}%"></div>
+						</div>
+						<span class="w-9 shrink-0 text-right tabular-nums text-zinc-400">{i.strength.toFixed(2)}</span>
+					</div>
+					<div class="mt-0.5 flex items-center gap-2">
+						<!-- mastery 条（琥珀）-->
+						<span class="w-12 shrink-0 text-zinc-500">{$t('mastery_label')}</span>
+						<div class="h-1.5 flex-1 rounded bg-zinc-800">
+							<div class="h-full rounded bg-amber-500" style="width:{Math.round(i.mastery * 100)}%"></div>
+						</div>
+						<span class="w-9 shrink-0 text-right tabular-nums text-zinc-400">{i.mastery.toFixed(2)}</span>
+					</div>
+					{#if i.digest}
+						<div class="mt-1 rounded bg-zinc-900/60 p-1.5 text-zinc-400">{i.digest}</div>
+					{/if}
 				</div>
 			{/each}
 		</div>
