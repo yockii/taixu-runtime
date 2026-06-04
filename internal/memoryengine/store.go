@@ -57,10 +57,16 @@ func (s *Store) Close() error {
 // DB 暴露原始 *sql.DB（包内其他文件用）。其他模块通过类型方法访问。
 func (s *Store) DB() *sql.DB { return s.db }
 
-// migrate 顺序应用 migrations/*.sql。
-// Phase 0.1 极简：按文件名排序、整脚本执行。
-// Phase 0.2+ 引入 schema_meta.version 比对、可重入。
+// migrate 顺序应用 migrations/*.sql。冪等：用 schema_migrations 表跟踪。
 func (s *Store) migrate() error {
+	if _, err := s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			filename TEXT PRIMARY KEY,
+			applied_at INTEGER NOT NULL
+		)`); err != nil {
+		return fmt.Errorf("create schema_migrations: %w", err)
+	}
+
 	entries, err := fs.ReadDir(migrations, "migrations")
 	if err != nil {
 		return err
@@ -74,12 +80,22 @@ func (s *Store) migrate() error {
 	sort.Strings(files)
 
 	for _, f := range files {
+		var applied int
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE filename = ?`, f).Scan(&applied); err != nil {
+			return fmt.Errorf("check applied %s: %w", f, err)
+		}
+		if applied > 0 {
+			continue
+		}
 		content, err := fs.ReadFile(migrations, filepath.ToSlash("migrations/"+f))
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", f, err)
 		}
 		if _, err := s.db.Exec(string(content)); err != nil {
 			return fmt.Errorf("apply migration %s: %w", f, err)
+		}
+		if _, err := s.db.Exec(`INSERT INTO schema_migrations (filename, applied_at) VALUES (?, strftime('%s','now'))`, f); err != nil {
+			return fmt.Errorf("mark applied %s: %w", f, err)
 		}
 	}
 	return nil

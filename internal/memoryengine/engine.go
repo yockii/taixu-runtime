@@ -24,6 +24,8 @@ type Engine struct {
 	working map[string]string
 	// 待封段游标：raw_trail.id 大于此值的尚未封入 Episode
 	pendingFromID int64
+	// 语义抽取滑动窗口（跨 cycle 累积）
+	semWindow []core.RawTrailEntry
 }
 
 // NewEngine 构造。从最近一条 Episode 的 raw_end_id 续接游标。
@@ -117,27 +119,62 @@ func (e *Engine) ConsiderSealEpisode() (*core.Episode, error) {
 	return ep, nil
 }
 
-// ExtractSemantic 简易 v1 抽取：从 trail 找重复 event_type=tool.success 的内容作为候选。
-// Phase 0.3 LLM 接通后改为 Summarize 模型抽取。
+// ExtractSemantic 抽取 v2：从上次游标后的新 raw_trail 找 tool.success 重复内容。
+//
+// 游标 last_semantic_extract_raw_id 持久化于 schema_meta，避免 v1 重复扫窗口导致
+// support_count 虚高（R66）。
+//
+// 策略：
+//   - 仅扫 raw_trail.id > cursor 的新事件
+//   - 进程内累积窗口（最多 200 条）以处理跨 cycle 的稀疏重复
+//   - 出现 ≥2 次的 payload Upsert 一次
+//   - 推进游标至本次最大 id
 func (e *Engine) ExtractSemantic() (int, error) {
-	trail, err := e.store.ListRecentRawTrail(e.lifeID, 50)
+	cursorKey := "last_semantic_extract_raw_id:" + e.lifeID
+	cursorStr, _, err := e.store.GetMeta(cursorKey)
 	if err != nil {
 		return 0, err
 	}
+	var cursor int64
+	if cursorStr != "" {
+		_, _ = fmt.Sscan(cursorStr, &cursor)
+	}
+
+	newEvents, err := e.store.RawTrailSinceID(e.lifeID, cursor)
+	if err != nil {
+		return 0, err
+	}
+	if len(newEvents) == 0 {
+		return 0, nil
+	}
+
+	e.mu.Lock()
+	e.semWindow = append(e.semWindow, newEvents...)
+	const windowMax = 200
+	if len(e.semWindow) > windowMax {
+		e.semWindow = e.semWindow[len(e.semWindow)-windowMax:]
+	}
 	freq := map[string]int{}
-	for _, t := range trail {
+	for _, t := range e.semWindow {
 		if t.EventType == "tool.success" {
 			freq[t.Payload]++
 		}
 	}
+	e.mu.Unlock()
+
 	now := shared.SystemClock.UnixSec()
 	added := 0
 	for content, n := range freq {
 		if n >= 2 {
-			if err := e.store.UpsertSemanticCandidate(e.lifeID, content, "extractor:v1", now); err == nil {
+			if err := e.store.UpsertSemanticCandidate(e.lifeID, content, "extractor:v2", now); err == nil {
 				added++
 			}
 		}
+	}
+
+	maxID := newEvents[len(newEvents)-1].ID
+	if err := e.store.SetMeta(cursorKey, fmt.Sprintf("%d", maxID)); err != nil {
+		return added, err
 	}
 	return added, nil
 }

@@ -17,6 +17,7 @@ import (
 	crand "crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"log/slog"
 	mrand "math/rand/v2"
 
 	"mindverse/internal/core"
@@ -61,7 +62,9 @@ func (e *Engine) Reflect(triggeredBy string) (promoted int, reflectionID int64, 
 	}
 	now := shared.SystemClock.UnixSec()
 	for _, c := range candidates {
-		if perr := e.store.PromoteToConfirmed(e.lifeID, c.ID, c.Content, c.Confidence, now); perr == nil {
+		if perr := e.store.PromoteToConfirmed(e.lifeID, c.ID, c.Content, c.Confidence, now); perr != nil {
+			slog.Warn("reflect: promote failed", "candidate_id", c.ID, "err", perr)
+		} else {
 			promoted++
 		}
 	}
