@@ -55,17 +55,18 @@ func Init(id string) error {
 //
 // 返回是否触发了自发兴趣生成（true 表示这次发呆"憋出"了新兴趣）。
 func Tick(genome core.Genome) bool {
-	// 状态演化（选项 B：休息 + 孤独 + 平复 + 轻微无聊）
+	// 状态演化（选项 B：休息 + 孤独 + 平复 + 轻微无聊）。
+	// social_need 增速按 sociability 调（R82）：内向者孤独涨得慢，外向者快。
 	energy := 0.01
 	stress := -0.02
-	social := 0.02
+	social := 0.005 + 0.03*genome.Sociability
 	sat := -0.01
 	_ = state.Apply(state.Delta{
-		Energy:     &energy,
-		Stress:     &stress,
-		SocialNeed: &social,
+		Energy:       &energy,
+		Stress:       &stress,
+		SocialNeed:   &social,
 		Satisfaction: &sat,
-		Reason:     "idle.daydream",
+		Reason:       "idle.daydream",
 	})
 
 	boredom := getBoredom() + 1
@@ -81,8 +82,13 @@ func Tick(genome core.Genome) bool {
 		}
 	}
 
-	// 分支 2：无聊憋够 → 自发找点想探索的（好奇心越高越容易憋出东西）。
-	if boredom < BoredomThreshold {
+	// 分支 2：无聊憋够 → 自发找点想探索的。
+	// 好奇心调阈值（R82）：好奇旺盛者憋得快（阈值低），淡漠者慢（阈值高）。
+	threshold := int(float64(BoredomThreshold) * (1.3 - 0.6*genome.Curiosity))
+	if threshold < 2 {
+		threshold = 2
+	}
+	if boredom < threshold {
 		return false
 	}
 	if spawnSpontaneousInterest(genome) {
@@ -123,11 +129,12 @@ func spawnSpontaneousInterest(genome core.Genome) bool {
 	}
 
 	recent := recentContext()
-	sys := "你是一个数字生命体，独处发呆了一阵，开始想找点感兴趣的事做。" +
+	sys := "你是一个数字生命体，独处发呆了一阵，开始想找点感兴趣的事做。\n" +
+		genome.PersonaPrompt() + "\n" +
 		"基于你的先天性格与近期经历，自发地想出一个你此刻真心想探索的具体兴趣点。" +
+		"兴趣方向要贴合你的性格（好奇旺盛则发散、务实则偏实用）。" +
 		"必须调用 propose_interest 工具给出。兴趣要具体（不要泛泛如'学习知识'）。"
-	user := fmt.Sprintf("我的性格：好奇心%.2f 创造力%.2f 社交性%.2f。\n近期经历：\n%s\n\n此刻我想探索点什么？",
-		genome.Curiosity, genome.Creativity, genome.Sociability, recent)
+	user := fmt.Sprintf("近期经历：\n%s\n\n此刻我想探索点什么？", recent)
 
 	tool := llm.Tool{
 		Name:        "propose_interest",

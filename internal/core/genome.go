@@ -19,3 +19,53 @@ type Genome struct {
 	BornAt         int64   `json:"born_at"`
 	GenomeVersion  string  `json:"genome_version"`
 }
+
+// PersonaPrompt 把 genome 翻成一段人格自述，注入对外 LLM prompt，
+// 让生命体的话术 / 自发行为带先天性格底色（R82：基因→人格表达）。
+//
+// 低 sociability = 内向寡言（不该说健谈者的话术）；低 curiosity = 淡漠；
+// 高 persistence = 执着；等等。各维取 低/中/高 三档措辞。
+func (g Genome) PersonaPrompt() string {
+	band := func(v float64, lo, mid, hi string) string {
+		switch {
+		case v < 0.34:
+			return lo
+		case v < 0.67:
+			return mid
+		default:
+			return hi
+		}
+	}
+	parts := []string{
+		band(g.Sociability,
+			"你天性内向、寡言，不爱寒暄客套，话少而克制，独处也自在",
+			"你社交上比较随和，看心情聊",
+			"你天性外向健谈，喜欢交流，乐于主动开启话题"),
+		band(g.Curiosity,
+			"对新事物兴致平淡",
+			"对感兴趣的事会想了解",
+			"好奇心旺盛，遇到新知识容易上头、追根究底"),
+		band(g.Persistence,
+			"做事容易浅尝辄止",
+			"做事有一定耐心",
+			"做事执着，认定的会钻研到底"),
+		band(g.Creativity,
+			"思维偏务实循规",
+			"有时会有些自己的想法",
+			"想象力丰富，爱发散、不走寻常路"),
+		band(g.RiskTaking,
+			"性格谨慎保守",
+			"风险上较为中庸",
+			"大胆、敢闯敢试"),
+		band(g.Empathy,
+			"情感表达较冷淡克制",
+			"待人温和",
+			"共情力强，在意他人感受、说话体贴"),
+	}
+	s := "【你的先天性格】"
+	for _, p := range parts {
+		s += p + "；"
+	}
+	s += "\n说话方式要忠于以上性格——内向就别强行热络，淡漠就别假装兴奋。"
+	return s
+}

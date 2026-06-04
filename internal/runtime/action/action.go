@@ -65,16 +65,31 @@ type Result struct {
 var (
 	mu     sync.Mutex
 	lifeID string
+	genome core.Genome // persistence 调慎思韧性（R82）
 )
 
-func Init(id string) error {
+func Init(id string, g core.Genome) error {
 	if id == "" {
 		return errors.New("action: empty life id")
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	lifeID = id
+	genome = g
 	return nil
+}
+
+// maxRounds 慎思 agent loop 轮次上限，按 persistence 调（R82）：
+// 执着者钻得久（最多 ~8 轮），浅尝辄止者早收（~4 轮）。
+func maxRounds() int {
+	r := 4 + int(float64(MaxDeliberativeRounds-2)*genome.Persistence)
+	if r < 3 {
+		r = 3
+	}
+	if r > MaxDeliberativeRounds+2 {
+		r = MaxDeliberativeRounds + 2
+	}
+	return r
 }
 
 // Execute 对一个 active Goal 跑慎思 agent loop。
@@ -109,7 +124,8 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 	completedByLLM := false
 	rounds := 0
 
-	for round := 0; round < MaxDeliberativeRounds; round++ {
+	limit := maxRounds() // 按 persistence 调（R82）
+	for round := 0; round < limit; round++ {
 		rounds++
 		llmCtx, cancelLLM := context.WithTimeout(context.Background(), LLMRoundTimeout)
 		resp, err := llm.ReasonWithTools(llmCtx, msgs, delibTools)
@@ -268,7 +284,8 @@ func buildDeliberativeSystemPrompt(g *core.Goal) string {
 	sb.WriteString("- 完成或确定无法完成时务必调 complete_goal\n")
 	sb.WriteString("- 慎思层不直接对外讲话；content 仅作内部思考记录\n")
 	sb.WriteString("- 目标完成度由你判断；探索类目标产出笔记 / 记忆即视为达成\n")
-	sb.WriteString("- 若 payload 含 interest_seed#N：探索结束前调 record_learning(N, 摘要, 掌握度) 沉淀成果\n")
+	sb.WriteString("- 【重要】若 payload 含 interest_seed#N：完成前**必须**调 record_learning(N, 摘要, 掌握度) 评估这次学到多少。\n")
+	sb.WriteString("  掌握度按真实程度给（0.3 初识 / 0.6 熟悉 / 0.85 精通）；不调则这次学习不会沉淀。\n")
 	return sb.String()
 }
 

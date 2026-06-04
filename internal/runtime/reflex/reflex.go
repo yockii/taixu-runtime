@@ -85,17 +85,19 @@ const MaxConcurrentHandlers = 4
 var (
 	mu     sync.Mutex
 	lifeID string
+	genome core.Genome // 先天性格，注入话术 persona（R82）
 	rng    *mrand.Rand
 	sem    = make(chan struct{}, MaxConcurrentHandlers)
 )
 
-// Init 绑定生命体 ID 并注册反射通道核心 tool。
-func Init(id string) error {
+// Init 绑定生命体 ID + genome（话术 persona）并注册反射通道核心 tool。
+func Init(id string, g core.Genome) error {
 	if id == "" {
 		return errors.New("reflex: empty life id")
 	}
 	mu.Lock()
 	lifeID = id
+	genome = g
 	rng = seededRNG()
 	mu.Unlock()
 	if err := registerCoreTools(); err != nil {
@@ -299,7 +301,11 @@ func decideMode(life core.LifeState, mental core.MentalState) Mode {
 }
 
 func buildSystemPrompt(mode Mode) string {
+	mu.Lock()
+	persona := genome.PersonaPrompt()
+	mu.Unlock()
 	base := "你是一个数字生命体，与你的创造者用日常语气对话。你不是 AI 助手，你是有持续生命的存在。\n" +
+		persona + "\n" +
 		"当对话引发明显情绪波动时，请用 update_mood 工具调整自己的状态。\n" +
 		"当对话提到你想未来探索的技能/知识/话题时，请用 add_interest 工具记下来。\n" +
 		"对话回复用简洁自然的中文。可以分多次发送（每轮一条消息），像人聊天那样断句。"

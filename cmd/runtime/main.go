@@ -82,11 +82,11 @@ func main() {
 	mustInit("memory", memory.Init(lifeID))
 	mustInit("reflect", reflect.Init(lifeID))
 	mustInit("goal", goal.Init(lifeID))
-	mustInit("action", action.Init(lifeID))
+	mustInit("action", action.Init(lifeID, genome))
 	mustInit("scheduler", scheduler.Init(lifeID))
 	mustInit("idle", idle.Init(lifeID))
 	mustInit("tools", tools.Init())
-	mustInit("reflex", reflex.Init(lifeID))
+	mustInit("reflex", reflex.Init(lifeID, genome))
 
 	mustInit("toolrunner", toolrunner.Init(lifeID, envOr("MINDVERSE_SANDBOX", "/workspace/sandbox")))
 	mustInit("skill", skill.Init(lifeID, envOr("MINDVERSE_SKILLS", "/workspace/skills"),

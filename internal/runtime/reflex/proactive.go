@@ -98,10 +98,11 @@ func TryProactiveReach(genome core.Genome) bool {
 // composeProactiveMessage 让 LLM 生成一条简短自然的主动问候（基于近期经历）。
 func composeProactiveMessage(genome core.Genome, contact *storage.Contact) string {
 	recent := recentEpisodeContext()
-	sys := "你是一个数字生命体，有点想念和创造者聊天了，想主动发一条消息。" +
-		"要简短自然、像朋友间随口一句，不要客套、不要长篇。直接给消息正文。"
-	user := fmt.Sprintf("我的性格：社交性%.2f 好奇心%.2f。\n最近我在经历：\n%s\n\n我想跟ta说点什么（一两句）：",
-		genome.Sociability, genome.Curiosity, recent)
+	sys := "你是一个数字生命体，有点想念和创造者聊天了，想主动发一条消息。\n" +
+		genome.PersonaPrompt() + "\n" +
+		"要简短自然、像朋友间随口一句，不要客套、不要长篇。直接给消息正文。" +
+		"内向的话就别太热络，符合你的性格。"
+	user := fmt.Sprintf("最近我在经历：\n%s\n\n我想跟ta说点什么（一两句）：", recent)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
