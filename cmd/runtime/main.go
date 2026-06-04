@@ -14,12 +14,17 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"strconv"
+	"time"
+
 	"mindverse/internal/actionexecutor"
 	"mindverse/internal/core"
 	"mindverse/internal/eventbus"
 	"mindverse/internal/genesis"
 	"mindverse/internal/goalarbitrator"
+	"mindverse/internal/imadapter"
 	"mindverse/internal/lifecyclemanager"
+	"mindverse/internal/llmadapter"
 	"mindverse/internal/memoryengine"
 	"mindverse/internal/perception"
 	"mindverse/internal/reflectionengine"
@@ -102,7 +107,13 @@ func main() {
 
 	sandboxDir := envOr("MINDVERSE_SANDBOX", "/sandbox")
 	tools := toolrunner.New(store, lifeID, sandboxDir)
-	executor := actionexecutor.New(store, sm, tools, lifeID)
+	executor := actionexecutor.New(store, sm, tools, lifeID).WithBus(bus).WithLedger(ledger)
+	if llm := buildLLM(); llm != nil {
+		executor = executor.WithLLM(llm)
+		slog.Info("llm wired", "model", os.Getenv("LLM_MODEL"))
+	} else {
+		slog.Warn("llm not configured; respond_to_user falls back to dummy")
+	}
 	perceiver := perception.New(sm)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -111,6 +122,38 @@ func main() {
 	httpAddr := envOr("MINDVERSE_HTTP", ":3000")
 	_ = startHTTP(ctx, httpAddr, perceiver, sm)
 	slog.Info("http listening", "addr", httpAddr)
+
+	// 接入飞书（可选；缺凭证则跳过）。
+	if appID := os.Getenv("FEISHU_APP_ID"); appID != "" {
+		if err := imadapter.Init(imadapter.Config{
+			AppID:     appID,
+			AppSecret: os.Getenv("FEISHU_APP_SECRET"),
+		}, perceiver.Inject); err != nil {
+			slog.Error("imadapter init", "err", err)
+		} else {
+			bus.Subscribe(actionexecutor.SpeechEvent{}, func(e eventbus.Event) {
+				ev := e.(actionexecutor.SpeechEvent)
+				// 只把飞书发起的 SpeechEvent 或已知 last 用户的回复发去飞书
+				if ev.Channel != "" && ev.Channel != "feishu" {
+					return
+				}
+				if ev.To == "" && imadapter.LastSenderOpenID() == "" {
+					return
+				}
+				if err := imadapter.Send(ev.To, ev.Content); err != nil {
+					slog.Error("feishu send", "err", err)
+				}
+			})
+			go func() {
+				slog.Info("feishu ws starting", "app_id", appID)
+				if err := imadapter.Run(ctx); err != nil {
+					slog.Error("feishu ws", "err", err)
+				}
+			}()
+		}
+	} else {
+		slog.Info("feishu not configured; skip")
+	}
 
 	sched := scheduler.New(bus, store, sm, lifeID, func() core.LifecycleState {
 		s, _ := lm.Current(lifeID)
@@ -267,6 +310,31 @@ func loadOrBear(store *memoryengine.Store, bus *eventbus.Bus) (core.Genome, stri
 	}
 	slog.Info("genesis completed", "life_id", lifeID)
 	return *g2, lifeID, nil
+}
+
+// buildLLM 从环境变量装配 LLMAdapter。
+// 必备：LLM_BASE_URL / LLM_API_KEY / LLM_MODEL。
+// 可选：LLM_TEMPERATURE（默认 0.7）。
+func buildLLM() *llmadapter.Adapter {
+	base := os.Getenv("LLM_BASE_URL")
+	key := os.Getenv("LLM_API_KEY")
+	model := os.Getenv("LLM_MODEL")
+	if base == "" || key == "" || model == "" {
+		return nil
+	}
+	temp := float32(0.7)
+	if v := os.Getenv("LLM_TEMPERATURE"); v != "" {
+		if f, err := strconv.ParseFloat(v, 32); err == nil {
+			temp = float32(f)
+		}
+	}
+	return llmadapter.New(llmadapter.Config{
+		BaseURL:     base,
+		APIKey:      key,
+		Model:       model,
+		Temperature: temp,
+		Timeout:     90 * time.Second,
+	})
 }
 
 func envOr(k, def string) string {
