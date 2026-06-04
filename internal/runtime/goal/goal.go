@@ -20,8 +20,14 @@ import (
 )
 
 // MaxOpenGoals 队列内可同时存在的 active+pending 总数上限。
-// 类比人类一次心里挂的事数；多了也只是 backlog，不如先做完再想。
-const MaxOpenGoals = 2
+// Phase 0.5 设为 1：生命体一次只专注一件具体的事，做完再产生下一个
+// （配合 R79：只有 interest_seed 具体目标入队，不再有通用空目标堆叠）。
+const MaxOpenGoals = 1
+
+// GenericGoalCooldownSec 通用（非兴趣种子）目标完成后的再生冷却（R79）。
+// 同一空泛 payload（如 "curiosity=.. competence_gap=.."）在此窗口内完成过则不重派，
+// 避免 competence 尚未补足时每 cycle 反复生成同一无主题目标刷屏队列。
+const GenericGoalCooldownSec = 3600
 
 // interestSeedRe 用于从 payload 抽 "interest_seed#N" 前缀作 dedup key。
 var interestSeedRe = regexp.MustCompile(`interest_seed#\d+`)
@@ -159,7 +165,10 @@ func Arbitrate(cands []Candidate, values *core.Values, maxEnqueue int) ([]int64,
 
 // shouldSkipDup 判断该候选是否应因去重跳过。
 //
-// 优先级：interest_seed#N 精确匹配 > 整 payload 子串匹配。
+//   - interest_seed#N（具体目标）：仅查 open。再探索由 strength/mastery 衰减门控，
+//     不加完成冷却（学完想重温是合理的，且 R77 已自然平息）。
+//   - 通用目标（competence_gap 等无主题）：查 open + 完成冷却（R79），
+//     防 competence 补足前同一空泛目标每 cycle 重生刷屏。
 func shouldSkipDup(c Candidate) (bool, error) {
 	if seedKey := interestSeedRe.FindString(c.Payload); seedKey != "" {
 		dup, err := storage.HasOpenGoalWithPayloadSubstring(lifeID, seedKey)
@@ -168,7 +177,8 @@ func shouldSkipDup(c Candidate) (bool, error) {
 		}
 		return dup, nil
 	}
-	dup, err := storage.HasOpenGoalWithPayloadSubstring(lifeID, c.Payload)
+	since := shared.SystemClock.UnixSec() - GenericGoalCooldownSec
+	dup, err := storage.HasRecentGoalWithPayloadSubstring(lifeID, c.Payload, since)
 	if err != nil {
 		return false, fmt.Errorf("dedup payload: %w", err)
 	}

@@ -2,7 +2,7 @@
 
 > 本文档定位：已识别风险登记、跨文档冲突待决议题、V0.1 → V0.2 演进留白、反模式清单。**所有盲点在此集中，不分散在各文档**。
 >
-> **状态**：V0.2.2 草稿。共登记 ~77 项风险（R01–R77）。注：R62/R63 编号预留。最新批 R69–R77 来自 Phase 0.4+ reflex / skill / tool / 抓取 / 上下文 / 知识感知决策阶段。
+> **状态**：V0.2.2 草稿。共登记 ~79 项风险（R01–R79）。注：R62/R63 编号预留。最新批 R69–R79 来自 Phase 0.4+ reflex / skill / tool / 抓取 / 上下文 / 知识感知决策 / 代码审计阶段。
 
 ---
 
@@ -428,6 +428,33 @@
 > **UI**：ConfigPanel 加 toggle + 红字警告"等同 LLM 任意 pip install"。
 > **仍待**：Phase 1+ 多用户阶段 toggle 是否仅自托管模式可开启；toggle 状态变更是否触发 reflex 通知（避免静默改）。
 > **影响**：`SKILLS-AND-TOOLS §5.4`、`R72`、反模式 H11。
+
+### R79 · 通用驱动产生无主题"假目标"刷屏（已部分修复 Phase 0.5）
+> 实测发现：goal_queue 被 `payload="curiosity=0.98 competence_gap=0.90"` 这类目标占满——这是 `drives.Derive` 通用 DriveKnowledge 分支的 Reason 字符串，**不是真目标**（无具体主题）。只有 interest_seed 派生的目标（如 "interest_seed#1 Rust 所有权"）才有具体内容。
+>
+> 双重根因：
+> 1. **competence 卡 0.1 永不上升** → `competence_gap=0.9` 恒成立 → 高强度通用知识驱动每 cycle 必派
+> 2. **dedup 只防 open 堆积不防再生**（R75 的 cap 只压并存）→ 目标完成后不再 open，下 cycle 同 payload 又入队 → 同一空目标无限再生
+>
+> **V0.2.2 修复（迭代两轮）**：
+> - 第一轮：`action.finalize` knowledge 成功 → competence +0.03；`HasRecentGoalWithPayloadSubstring` + `GenericGoalCooldownSec=3600` 完成冷却。
+> - 第二轮（实测仍见 social+creativity 两个空目标同时蹦出）：**彻底移除所有通用驱动→目标的派生**。`drives.Derive` 现在只从 interest_seed 派生具体 DriveKnowledge；social / creativity / stability / achievement / competence_gap 全部不再产生慎思目标。
+>   - 这些 genome/state 压力改由其它通道体现：社交压力→idle 主动社交；好奇/无聊→idle 自发兴趣；其余→影响 state/mood。
+>   - `MaxOpenGoals` 2→1：一次只专注一件具体事，做完再产生下一个。
+>   - 原则：**自主行动只来自"具体的想做的事"（interest_seed），不来自空泛情绪标签**。
+>
+> **仍待（Phase 3 主动行为本色）**：
+> - 通用好奇心无具体主题时，理想行为是**自主生成 / 发现一个具体兴趣**（而非派空泛"学点东西"目标）→ 属 Phase 3 自主目标生成
+> - competence 增长曲线标定（+0.03 是否合理 / 是否该随 mastery 加权）
+> - 其他通用驱动（creativity / social / stability / achievement）同样无主题，是否同等处理
+> **影响**：`03 §2.5 §2.6`、`internal/runtime/drives`、`internal/runtime/goal`、`internal/runtime/action`、`R75`、`09`（Phase 3）。
+
+### R78 · Phase 0.5 代码审计遗留（单用户暂不阻塞）
+> cavecrew-reviewer 审计 Phase 0.5 核心代码的遗留项（已修真 bug：webfetch rod page 泄漏、interest decay 错误吞掉、rows.Err 未检、tool dispatch 错误未记）。以下为单用户 dogfooding 暂不阻塞、但多用户/长跑前需处理：
+> - **reflex.Handle 每请求 `go handle(req)` 无上限**：高并发下 goroutine 无界增长。Phase 0 单用户流量极低不触发；多用户前加 semaphore / worker pool 限流。
+> - **webfetch.renderHTML 每次调用新起 chromium 进程**（launcher.Launch + browser.Connect + MustClose）：Tier3 抓取频繁时进程频繁 spawn/kill 开销大。可池化一个常驻 headless 实例复用。
+> - **ledger.Spend 错误被 `_ =` 吞**（action.go / reflex.go）：energy 扣减失败静默；Phase 0 ledger 稳定暂不阻塞，长跑审计前应记日志。
+> **影响**：`internal/runtime/reflex`、`internal/skill/toolrunner/webfetch.go`、`internal/runtime/ledger`。
 
 ### R77 · 知识感知的 Values 仲裁（地基 Phase 0.5 / 完整 Phase 2）
 > 现状：`goal.Arbitrate` 机械打分（base + value 权重 + source 权重），**不知道生命体已学过什么、掌握到什么程度**。只能靠 interest_seed strength 盲衰减阻止重复学习，无法做"我已精通 X，边际收益低，转去做别的"这类知识感知决策。

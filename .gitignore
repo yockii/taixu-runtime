@@ -6,9 +6,13 @@
 *.pem
 *-secrets.yaml
 
-# 本地数据（生命体加密包 / SQLite / 沙箱）
+# 本地数据（生命体加密包 / SQLite / 沙箱 / 工作目录运行产物）
 data/
 sandbox/
+workspace/sandbox/
+# skill 装的依赖（运行时生成，不入库）；保留 skill 文件夹本身 + SKILL.md + 脚本
+workspace/skills/*/site-packages/
+workspace/skills/*/node_modules/
 *.db
 *.db-journal
 *.db-wal

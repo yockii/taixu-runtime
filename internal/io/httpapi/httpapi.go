@@ -95,9 +95,12 @@ func Start(ctx context.Context, addr string) *http.Server {
 	mux.HandleFunc("/api/config", apiConfig)
 	mux.HandleFunc("/api/skills", apiSkills)
 	mux.HandleFunc("/api/skills/load", apiSkillLoad)
+	mux.HandleFunc("/api/skills/rescan", apiSkillRescan)
 	mux.HandleFunc("/api/skills/approve", apiSkillApprove)
 	mux.HandleFunc("/api/skills/reject", apiSkillReject)
+	mux.HandleFunc("/api/contacts", apiContacts)
 	mux.HandleFunc("/api/config/auto-approve-deps", apiAutoApproveDeps)
+	mux.HandleFunc("/api/config/proactive-im", apiProactiveIM)
 	mux.HandleFunc("/api/stream", apiStream)
 	mux.HandleFunc("/api/external-request", apiExternalRequest)
 
@@ -237,6 +240,7 @@ func apiConfig(w http.ResponseWriter, r *http.Request) {
 			"app_secret": maskSecret(os.Getenv("FEISHU_APP_SECRET")),
 		},
 		"skill_auto_approve_deps": storage.GetConfigBool("skill_auto_approve_deps", false),
+		"proactive_im":            storage.GetConfigBool("proactive_im", false),
 	})
 }
 
@@ -270,6 +274,29 @@ func apiSkillLoad(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, inst)
+}
+
+func apiSkillRescan(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	n, err := skill.ScanDir()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"loaded": n})
+}
+
+func apiContacts(w http.ResponseWriter, r *http.Request) {
+	limit := intParam(r, "limit", 50, 1, 200)
+	xs, err := storage.ListContacts(lifeID, limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, xs)
 }
 
 func apiSkillApprove(w http.ResponseWriter, r *http.Request) {
@@ -324,6 +351,25 @@ func apiAutoApproveDeps(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"skill_auto_approve_deps": storage.GetConfigBool("skill_auto_approve_deps", false),
+	})
+}
+
+func apiProactiveIM(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var body struct {
+			Value bool `json:"value"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := storage.SetConfigBool("proactive_im", body.Value); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"proactive_im": storage.GetConfigBool("proactive_im", false),
 	})
 }
 

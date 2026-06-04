@@ -2,7 +2,11 @@
 #
 # data 用 named volume：Windows bind-mount 对 SQLite 文件锁支持极差（IO err 4618 / 持久 Windows
 # 文件锁），data 库驻 WSL2 VM 内即可消除。
-# sandbox 仍 bind-mount 到宿主 ./sandbox/，便于作者直观看生命体写出的文件。
+#
+# workspace 是生命体的"工作目录"，bind-mount 到宿主 ./workspace/，作者可直观查看 / 投放：
+#   ./workspace/sandbox/   生命体 fs.* 写出的文件（笔记 / 草稿等）
+#   ./workspace/skills/    每个子文件夹 = 一个 skill（Anthropic 规范：SKILL.md + 脚本 / ref）
+#                          作者把 skill 文件夹丢进来，boot 扫描或 rescan 即装载。
 
 services:
   runtime:
@@ -15,9 +19,11 @@ services:
     env_file: .env
     environment:
       MINDVERSE_DATA: /app/data
+      MINDVERSE_SANDBOX: /workspace/sandbox
+      MINDVERSE_SKILLS: /workspace/skills
     volumes:
       - mindverse-data:/app/data
-      - ./sandbox:/sandbox
+      - ./workspace:/workspace
     ports:
       - "3000:3000"
     mem_limit: 6g

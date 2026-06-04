@@ -11,20 +11,31 @@ import (
 	"mindverse/internal/storage"
 )
 
-// Derive 派生本轮内驱力（v1 公式，待 0.5 标定）。
+// Derive 派生本轮内驱力。
 //
-// 兴趣种子（reflex 通道写入）独立通道派生 DriveCuriosity：即便 Genome.Curiosity 低
-// 也能因具体兴趣触发，体现"对话引出新主动行为"闭环。
+// Phase 0.5 关键设计（R79）：**只有具体兴趣（interest_seed）派生慎思目标**。
+//
+// 原通用驱动（competence_gap 知识 / social / creativity / stability / achievement）
+// 全部移除——它们的 payload 只是 "social_need=.. sociability=.." 之类的 Reason 字符串，
+// 无具体主题，到了 deliberative agent loop LLM 无从下手，且每 cycle 重生刷屏队列。
+//
+// 这些 genome/state 压力改由其它通道体现，不烧 LLM 跑空目标：
+//   - 社交压力（social_need 高）→ idle 主动社交（reflex.TryProactiveReach）
+//   - 好奇/无聊（boredom）→ idle 自发生成具体兴趣 → 下轮成具体目标
+//   - 压力/创造/成就 → 影响 state / mood（Phase 2 反思、Phase 3 自主项目再细化）
+//
+// 即：自主行动只来自"具体的想做的事"，不来自空泛的情绪标签。
 func Derive(g core.Genome, ls core.LifeState, ms core.MentalState, lifeID string) []core.Drive {
 	now := shared.SystemClock.UnixSec()
 	var ds []core.Drive
 
-	// 兴趣种子派生 DriveCuriosity（最强 3 条；strength≥0.4）
+	// 兴趣种子派生 DriveKnowledge（最强 3 条；strength≥0.4）。
+	// 来源：对话识别（reflex add_interest）/ idle 自发 / 未来反思。
 	seeds, _ := storage.ListInterestSeeds(lifeID, 0.4, 3)
 	for _, s := range seeds {
 		// 掌握度衰减（R77）：掌握越深，再探索的内驱越弱（知识感知，非盲衰减）。
 		masteryFactor := 1.0 - s.Mastery
-		// 探索次数衰减优先级（防止单一兴趣短时间被反复消费）
+		// 探索次数衰减（防止单一兴趣短时间被反复消费）。
 		exploreFactor := 1.0
 		if s.ExploredCount > 0 {
 			exploreFactor = 1.0 / (1.0 + 0.3*float64(s.ExploredCount))
@@ -38,51 +49,8 @@ func Derive(g core.Genome, ls core.LifeState, ms core.MentalState, lifeID string
 		})
 	}
 
-	if ls.SocialNeed > 0.5 || g.Sociability > 0.7 {
-		strength := 0.3 + 0.4*ls.SocialNeed + 0.3*g.Sociability
-		ds = append(ds, core.Drive{
-			Kind:     core.DriveSocial,
-			Strength: clamp01(strength),
-			Reason:   fmt.Sprintf("social_need=%.2f sociability=%.2f", ls.SocialNeed, g.Sociability),
-			BornAt:   now,
-		})
-	}
-	if g.Curiosity > 0.5 && ls.Competence < 0.6 {
-		strength := 0.3 + 0.5*g.Curiosity + 0.2*(1-ls.Competence)
-		ds = append(ds, core.Drive{
-			Kind:     core.DriveKnowledge,
-			Strength: clamp01(strength),
-			Reason:   fmt.Sprintf("curiosity=%.2f competence_gap=%.2f", g.Curiosity, 1-ls.Competence),
-			BornAt:   now,
-		})
-	}
-	if g.Creativity > 0.6 && ms.Satisfaction < 0.7 {
-		strength := 0.3 + 0.5*g.Creativity + 0.2*(1-ms.Satisfaction)
-		ds = append(ds, core.Drive{
-			Kind:     core.DriveCreativity,
-			Strength: clamp01(strength),
-			Reason:   fmt.Sprintf("creativity=%.2f satisfaction_gap=%.2f", g.Creativity, 1-ms.Satisfaction),
-			BornAt:   now,
-		})
-	}
-	if ls.Stress > 0.5 {
-		strength := 0.3 + 0.6*ls.Stress
-		ds = append(ds, core.Drive{
-			Kind:     core.DriveStability,
-			Strength: clamp01(strength),
-			Reason:   fmt.Sprintf("stress=%.2f", ls.Stress),
-			BornAt:   now,
-		})
-	}
-	if g.Persistence > 0.6 && ls.Confidence < 0.4 {
-		strength := 0.3 + 0.4*g.Persistence + 0.3*(1-ls.Confidence)
-		ds = append(ds, core.Drive{
-			Kind:     core.DriveAchievement,
-			Strength: clamp01(strength),
-			Reason:   fmt.Sprintf("persistence=%.2f low_confidence=%.2f", g.Persistence, ls.Confidence),
-			BornAt:   now,
-		})
-	}
+	_ = ls // 通用 state/genome 压力现经 idle 通道体现，不在此派生空泛目标
+	_ = ms
 	return ds
 }
 

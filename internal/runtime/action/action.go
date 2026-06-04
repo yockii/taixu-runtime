@@ -141,8 +141,11 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 				completedByLLM = true
 			}
 			toolCtx, cancelTool := context.WithTimeout(context.Background(), ToolDispatchTimeout)
-			result, _ := tools.Dispatch(toolCtx, tools.LaneDeliberative, tctx, tc.Name, tc.ArgsJSON)
+			result, derr := tools.Dispatch(toolCtx, tools.LaneDeliberative, tctx, tc.Name, tc.ArgsJSON)
 			cancelTool()
+			if derr != nil {
+				slog.Warn("deliberate tool dispatch", "tool", tc.Name, "goal", g.ID, "err", derr)
+			}
 			msgs = append(msgs, llm.Message{
 				Role:       "tool",
 				ToolCallID: tc.ID,
@@ -199,6 +202,12 @@ func finalize(g *core.Goal, cycleID int64, startedAt int64, res Result, complete
 		conf := 0.01
 		d.Satisfaction = &sat
 		d.Confidence = &conf
+		// 学习/行动成功提升能力（R79）：competence 上升 → competence_gap 收缩，
+		// 通用 "好奇且无能" 知识驱动随之减弱，避免空目标无限再生。
+		if g.Intent == string(core.DriveKnowledge) {
+			comp := 0.03
+			d.Competence = &comp
+		}
 	} else {
 		anx := 0.04
 		d.Anxiety = &anx

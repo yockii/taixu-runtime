@@ -142,6 +142,7 @@ func renderHTML(url string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("open page: %w", err)
 	}
+	defer func() { _ = page.Close() }() // 防 page 句柄泄漏（browser.Close 前显式关）
 	// 等待页面稳定（DOM + 网络空闲），带超时。
 	page = page.Timeout(renderTimeout)
 	if err := page.WaitStable(800 * time.Millisecond); err != nil {

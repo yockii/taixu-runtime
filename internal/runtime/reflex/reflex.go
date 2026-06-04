@@ -104,9 +104,12 @@ func Handle(req IncomingRequest) {
 }
 
 func handle(req IncomingRequest) {
+	// 记录联系人（A 社交联动 / B 主动发消息前提）。被动 / 敷衍都算一次交互。
+	_ = storage.UpsertContact(lifeID, req.Channel, req.From, "", shared.SystemClock.UnixSec())
+
 	if !llm.Configured() {
-		// LLM 未配置：直接 canned 回应（兜底）
 		emitCanned(req, "（生命体当前未配置语言能力）")
+		applySocialFulfillment(false)
 		return
 	}
 
@@ -116,6 +119,7 @@ func handle(req IncomingRequest) {
 	// 敷衍擋位：跳过 LLM
 	if mode == ModeCanned {
 		emitCanned(req, pickCanned())
+		applySocialFulfillment(false) // 敷衍也算回应，但社交满足很弱
 		return
 	}
 
@@ -128,6 +132,25 @@ func handle(req IncomingRequest) {
 
 	// 走 agent loop
 	runAgent(req, mode)
+
+	// 对话满足社交需求（A）：真实交流降 social_need、提 satisfaction。
+	applySocialFulfillment(true)
+}
+
+// applySocialFulfillment 对话后的社交联动（A）：降 social_need + 提 satisfaction。
+//
+// real=true 真实对话（满足强）；false 敷衍/兜底（满足弱）。
+// 前瞻（Phase 3）：将接入 social 资源 earn（06 五资源），Phase 0 仅动 state。
+func applySocialFulfillment(real bool) {
+	sn, sat, mot := -0.03, 0.01, 0.0
+	if real {
+		sn, sat, mot = -0.12, 0.04, 0.02
+	}
+	d := state.Delta{SocialNeed: &sn, Satisfaction: &sat, Reason: "reflex.social_fulfillment"}
+	if mot != 0 {
+		d.Motivation = &mot
+	}
+	_ = state.Apply(d)
 }
 
 func runAgent(req IncomingRequest, mode Mode) {

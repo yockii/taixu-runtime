@@ -263,7 +263,7 @@ func toolRecordLearning() tools.Tool {
 	}
 }
 
-func handleRecordLearning(_ context.Context, _ tools.Context, argsJSON string) (string, error) {
+func handleRecordLearning(_ context.Context, tctx tools.Context, argsJSON string) (string, error) {
 	var a struct {
 		SeedID  int64   `json:"seed_id"`
 		Digest  string  `json:"digest"`
@@ -275,10 +275,19 @@ func handleRecordLearning(_ context.Context, _ tools.Context, argsJSON string) (
 	if a.SeedID <= 0 {
 		return errJSON("invalid seed_id"), nil
 	}
-	if err := storage.RecordLearning(a.SeedID, a.Digest, a.Mastery, shared.SystemClock.UnixSec()); err != nil {
+	now := shared.SystemClock.UnixSec()
+	if err := storage.RecordLearning(a.SeedID, a.Digest, a.Mastery, now); err != nil {
 		return errJSON("record failed"), err
 	}
-	return mustJSON(map[string]any{"ok": true, "seed_id": a.SeedID, "mastery": a.Mastery}), nil
+	// R74 闭环：学习摘要进 semantic memory 候选，后续被 ShallowReflect 固化为知识。
+	// 探索不再只是落 sandbox 文件 / 兴趣衰减，而是真正沉淀进生命体的语义记忆。
+	if a.Digest != "" && tctx.LifeID != "" {
+		if err := storage.UpsertSemanticCandidate(tctx.LifeID, a.Digest, "skill:record_learning", now); err != nil {
+			// 非致命：记录失败不影响 mastery 回写
+			return mustJSON(map[string]any{"ok": true, "seed_id": a.SeedID, "mastery": a.Mastery, "semantic": "skip"}), nil
+		}
+	}
+	return mustJSON(map[string]any{"ok": true, "seed_id": a.SeedID, "mastery": a.Mastery, "semantic": "candidate"}), nil
 }
 
 func toolUseSkill() tools.Tool {

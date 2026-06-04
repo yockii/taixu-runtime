@@ -1,6 +1,9 @@
 package storage
 
-import "math"
+import (
+	"fmt"
+	"math"
+)
 
 // InterestSeed 兴趣种子（reflex 对话识别到的待探索目标）。
 type InterestSeed struct {
@@ -138,6 +141,10 @@ func DecayInterests(lifeID string, now int64, halfLifeDays float64) error {
 		}
 		items = append(items, it)
 	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
 	_ = rows.Close()
 
 	const day = float64(24 * 3600)
@@ -148,11 +155,15 @@ func DecayInterests(lifeID string, now int64, halfLifeDays float64) error {
 		}
 		newStrength := it.strength * math.Pow(dailyFactor, elapsedDays)
 		if newStrength < 0.01 {
-			_, _ = db.Exec(`DELETE FROM interest_seed WHERE id = ?`, it.id)
+			if _, err := db.Exec(`DELETE FROM interest_seed WHERE id = ?`, it.id); err != nil {
+				return fmt.Errorf("decay delete seed %d: %w", it.id, err)
+			}
 			continue
 		}
-		_, _ = db.Exec(`UPDATE interest_seed SET strength = ?, decayed_at = ? WHERE id = ?`,
-			newStrength, now, it.id)
+		if _, err := db.Exec(`UPDATE interest_seed SET strength = ?, decayed_at = ? WHERE id = ?`,
+			newStrength, now, it.id); err != nil {
+			return fmt.Errorf("decay update seed %d: %w", it.id, err)
+		}
 	}
 	return nil
 }

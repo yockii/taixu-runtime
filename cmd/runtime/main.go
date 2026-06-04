@@ -29,6 +29,7 @@ import (
 	"mindverse/internal/runtime/drives"
 	"mindverse/internal/runtime/genesis"
 	"mindverse/internal/runtime/goal"
+	"mindverse/internal/runtime/idle"
 	"mindverse/internal/runtime/ledger"
 	"mindverse/internal/runtime/lifecycle"
 	"mindverse/internal/runtime/memory"
@@ -83,12 +84,19 @@ func main() {
 	mustInit("goal", goal.Init(lifeID))
 	mustInit("action", action.Init(lifeID))
 	mustInit("scheduler", scheduler.Init(lifeID))
+	mustInit("idle", idle.Init(lifeID))
 	mustInit("tools", tools.Init())
 	mustInit("reflex", reflex.Init(lifeID))
 
-	mustInit("toolrunner", toolrunner.Init(lifeID, envOr("MINDVERSE_SANDBOX", "/sandbox")))
-	mustInit("skill", skill.Init(lifeID, storage.GetConfigBool("skill_auto_approve_deps", false)))
+	mustInit("toolrunner", toolrunner.Init(lifeID, envOr("MINDVERSE_SANDBOX", "/workspace/sandbox")))
+	mustInit("skill", skill.Init(lifeID, envOr("MINDVERSE_SKILLS", "/workspace/skills"),
+		storage.GetConfigBool("skill_auto_approve_deps", false)))
 	mustInit("tools.builtin", builtin.Register())
+	if n, err := skill.ScanDir(); err != nil {
+		slog.Warn("skill scan dir", "err", err)
+	} else if n > 0 {
+		slog.Info("skills loaded from dir", "count", n)
+	}
 
 	cur, err := lifecycle.Current()
 	if err != nil {
@@ -209,6 +217,12 @@ func runCycle(cycleID int64, lifeID string, genome core.Genome) {
 			_ = ledger.Earn(ledger.Knowledge, 0.01, "action.success", "goal", "")
 		}
 		_ = ledger.Spend(ledger.Energy, 0.02, "action.cost", "goal", "")
+		idle.Reset() // 真的在做事 → 清零无聊
+	} else {
+		// 无具体目标 → 发呆（state 演化 + boredom 累积 + 阈值自发兴趣）（R79）
+		if spawned := idle.Tick(genome); spawned {
+			_ = memory.AppendEvent(cycleID, "idle.spontaneous_interest", nil)
+		}
 	}
 
 	// 后台维护

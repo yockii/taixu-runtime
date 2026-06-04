@@ -49,19 +49,27 @@ var baselinePython = set("httpx", "requests", "beautifulsoup4", "bs4", "lxml", "
 var baselineNode = set("axios", "cheerio", "dayjs", "js-yaml", "marked")
 
 var (
-	mu               sync.Mutex
-	lifeID           string
-	autoApproveDeps  bool // dangerous-skip-permissions（R73）
+	mu              sync.Mutex
+	lifeID          string
+	skillsRoot      string // 挂载的 skills 目录（容器内，如 /workspace/skills）
+	autoApproveDeps bool   // dangerous-skip-permissions（R73）
 )
 
-// Init 绑定生命体 ID。autoApprove 来自 config（dangerous-skip）。
-func Init(id string, autoApprove bool) error {
+// Init 绑定生命体 ID + skills 目录。autoApprove 来自 config（dangerous-skip）。
+//
+// skills 目录是宿主 mount 进来的（docker-compose ./workspace/skills:/workspace/skills）。
+// 每个 skill = 一个子文件夹（Anthropic 规范）：SKILL.md + 脚本 / ref / 资源文件。
+func Init(id, root string, autoApprove bool) error {
 	if id == "" {
 		return errors.New("skill: empty life id")
+	}
+	if root == "" {
+		root = "/workspace/skills"
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	lifeID = id
+	skillsRoot = root
 	autoApproveDeps = autoApprove
 	return nil
 }
@@ -120,10 +128,59 @@ func ParseSkillMd(content string) (Frontmatter, string, error) {
 	return fm, strings.TrimLeft(body, "\r\n"), nil
 }
 
-// Load 装载一份 SKILL.md 文本到当前生命体。
-//
-// 返回 skill 实例（含 status）。缺包时 status=pending_approval（除非 autoApprove → 直接装）。
+// ScanDir 扫描 skills 根目录，装载每个含 SKILL.md 的子文件夹（Anthropic 文件夹规范）。
+// boot 时调一次 + rescan API 触发。返回成功装载数。
+func ScanDir() (int, error) {
+	mu.Lock()
+	root := skillsRoot
+	mu.Unlock()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil // 目录还没建，正常
+		}
+		return 0, err
+	}
+	n := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		folder := filepath.Join(root, e.Name())
+		mdPath := filepath.Join(folder, "SKILL.md")
+		content, err := os.ReadFile(mdPath)
+		if err != nil {
+			continue // 没有 SKILL.md 的子目录跳过
+		}
+		if _, err := loadFolder(folder, string(content)); err != nil {
+			slog.Warn("skill scan load", "folder", folder, "err", err)
+			continue
+		}
+		n++
+	}
+	return n, nil
+}
+
+// Load 装载一份 SKILL.md 文本（ad-hoc，如面板粘贴）。
+// 写到 <skillsRoot>/<name>/SKILL.md 后按文件夹模型装载，使其与扫描装载一致、宿主可见。
 func Load(content string) (*storage.SkillInstance, error) {
+	fm, _, err := ParseSkillMd(content)
+	if err != nil {
+		return nil, err
+	}
+	mu.Lock()
+	root := skillsRoot
+	mu.Unlock()
+	folder := filepath.Join(root, sanitizeName(fm.Name))
+	if err := persistBody(folder, content); err != nil {
+		return nil, fmt.Errorf("skill: write folder: %w", err)
+	}
+	return loadFolder(folder, content)
+}
+
+// loadFolder 从一个 skill 文件夹（含 SKILL.md content）解析并 upsert 实例。
+// install_path = 文件夹本身（脚本 / ref / 依赖都在其中）。
+func loadFolder(folder, content string) (*storage.SkillInstance, error) {
 	fm, _, err := ParseSkillMd(content)
 	if err != nil {
 		return nil, err
@@ -134,7 +191,6 @@ func Load(content string) (*storage.SkillInstance, error) {
 
 	lanesJSON, _ := json.Marshal(fm.Lanes)
 	toolsJSON, _ := json.Marshal(fm.AllowedTools)
-
 	missing := missingDeps(fm)
 	now := shared.SystemClock.UnixSec()
 
@@ -143,6 +199,7 @@ func Load(content string) (*storage.SkillInstance, error) {
 	auto := autoApproveDeps
 	mu.Unlock()
 
+	// 若已存在同名 skill（同文件夹重扫），保留其 mastery/used_count（UpsertSkillInstance 按 id 更新元信息，不重置统计）。
 	inst := &storage.SkillInstance{
 		ID:           id,
 		LifeID:       lid,
@@ -153,28 +210,17 @@ func Load(content string) (*storage.SkillInstance, error) {
 		Lanes:        string(lanesJSON),
 		AllowedTools: string(toolsJSON),
 		Status:       "ready",
-		Mastery:      0,
-		UsedCount:    0,
-		InstallPath:  filepath.Join(SkillsRoot, id),
+		InstallPath:  folder,
 		CreatedAt:    now,
 	}
-
 	if len(missing) > 0 {
 		depsJSON, _ := json.Marshal(missing)
 		inst.PendingDeps = string(depsJSON)
 		inst.Status = "pending_approval"
 	}
-
-	// 保存 SKILL.md body 到私有目录（use_skill 时读）。
-	if err := persistBody(inst.InstallPath, content); err != nil {
-		slog.Warn("skill persist body", "err", err, "id", id)
-	}
-
 	if err := storage.UpsertSkillInstance(inst); err != nil {
 		return nil, fmt.Errorf("skill: upsert: %w", err)
 	}
-
-	// dangerous-skip：自动批准并安装。
 	if inst.Status == "pending_approval" && auto {
 		if err := ApproveDeps(id, "auto_approve"); err != nil {
 			slog.Warn("skill auto-approve install failed", "err", err, "id", id)
@@ -182,6 +228,23 @@ func Load(content string) (*storage.SkillInstance, error) {
 		}
 	}
 	return storage.GetSkillInstance(id)
+}
+
+// sanitizeName 把 skill name 规整为安全的文件夹名。
+func sanitizeName(name string) string {
+	out := make([]rune, 0, len(name))
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			out = append(out, r)
+		default:
+			out = append(out, '-')
+		}
+	}
+	if len(out) == 0 {
+		return "skill"
+	}
+	return string(out)
 }
 
 // ApproveDeps 批准并安装 skill 的待装依赖到私有目录。installedBy: user_approve / auto_approve。

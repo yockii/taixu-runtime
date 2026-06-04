@@ -18,6 +18,7 @@
 
 	let items = $state<Skill[]>([]);
 	let autoApprove = $state(false);
+	let proactiveIM = $state(false);
 	let loadText = $state('');
 	let busy = $state(false);
 	let err = $state('');
@@ -30,7 +31,32 @@
 		if (c.ok) {
 			const cfg = await c.json();
 			autoApprove = !!cfg.skill_auto_approve_deps;
+			proactiveIM = !!cfg.proactive_im;
 		}
+	}
+
+	async function rescan() {
+		busy = true;
+		err = '';
+		try {
+			const r = await fetch('/api/skills/rescan', { method: 'POST' });
+			if (!r.ok) throw new Error(await r.text());
+			skillVer.update((n) => n + 1);
+		} catch (e: any) {
+			err = String(e?.message ?? e);
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function toggleProactive() {
+		const next = !proactiveIM;
+		await fetch('/api/config/proactive-im', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ value: next })
+		});
+		proactiveIM = next;
 	}
 
 	$effect(() => {
@@ -145,23 +171,42 @@
 			disabled={busy}
 		></textarea>
 		<div class="flex items-center justify-between">
-			{#if err}<span class="text-xs text-rose-400">{err}</span>{:else}<span></span>{/if}
-			<button
-				type="submit"
-				class="rounded bg-emerald-600 px-3 py-1 text-xs font-medium hover:bg-emerald-500 disabled:opacity-50"
-				disabled={busy || !loadText.trim()}
-			>
-				{$t('skill_load_btn')}
-			</button>
+			{#if err}<span class="text-xs text-rose-400">{err}</span>{:else}<span class="text-xs text-zinc-600">{$t('skill_dir_hint')}</span>{/if}
+			<div class="flex gap-2">
+				<button
+					type="button"
+					class="rounded bg-zinc-700 px-3 py-1 text-xs font-medium hover:bg-zinc-600 disabled:opacity-50"
+					disabled={busy}
+					onclick={rescan}
+				>
+					{$t('skill_rescan_btn')}
+				</button>
+				<button
+					type="submit"
+					class="rounded bg-emerald-600 px-3 py-1 text-xs font-medium hover:bg-emerald-500 disabled:opacity-50"
+					disabled={busy || !loadText.trim()}
+				>
+					{$t('skill_load_btn')}
+				</button>
+			</div>
 		</div>
 	</form>
 
 	<!-- dangerous-skip toggle -->
-	<label class="mb-3 flex items-start gap-2 rounded border border-rose-800/50 bg-rose-950/20 p-2 text-xs">
+	<label class="mb-2 flex items-start gap-2 rounded border border-rose-800/50 bg-rose-950/20 p-2 text-xs">
 		<input type="checkbox" checked={autoApprove} onchange={toggleAuto} class="mt-0.5" />
 		<span>
 			<span class="font-semibold text-rose-300">{$t('skill_auto_approve')}</span>
 			<span class="block text-rose-400/70">{$t('skill_auto_approve_warn')}</span>
+		</span>
+	</label>
+
+	<!-- proactive IM toggle (B) -->
+	<label class="mb-3 flex items-start gap-2 rounded border border-amber-800/50 bg-amber-950/20 p-2 text-xs">
+		<input type="checkbox" checked={proactiveIM} onchange={toggleProactive} class="mt-0.5" />
+		<span>
+			<span class="font-semibold text-amber-300">{$t('proactive_im')}</span>
+			<span class="block text-amber-400/70">{$t('proactive_im_warn')}</span>
 		</span>
 	</label>
 

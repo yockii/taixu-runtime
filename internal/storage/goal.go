@@ -80,3 +80,19 @@ func HasOpenGoalWithPayloadSubstring(lifeID, sub string) (bool, error) {
 		lifeID, "%"+sub+"%").Scan(&n)
 	return n > 0, err
 }
+
+// HasRecentGoalWithPayloadSubstring 判断是否存在 pending/active，或近期（finished_at >= sinceTs）
+// 已完成/失败的、payload 含 sub 的目标。用于完成冷却 dedup（R79）：防同一空泛目标每 cycle 重生。
+func HasRecentGoalWithPayloadSubstring(lifeID, sub string, sinceTs int64) (bool, error) {
+	if sub == "" {
+		return false, nil
+	}
+	var n int
+	err := db.QueryRow(`
+		SELECT COUNT(*) FROM goal_queue
+		WHERE life_id = ? AND payload LIKE ?
+		  AND ( status IN ('pending','active')
+		        OR (status IN ('completed','failed') AND COALESCE(finished_at,0) >= ?) )`,
+		lifeID, "%"+sub+"%", sinceTs).Scan(&n)
+	return n > 0, err
+}
