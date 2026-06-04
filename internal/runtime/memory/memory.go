@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"sync"
 
+	"mindverse/internal/bus"
 	"mindverse/internal/core"
 	"mindverse/internal/shared"
 	"mindverse/internal/storage"
@@ -109,6 +110,14 @@ func ConsiderSealEpisode() (*core.Episode, error) {
 	mu.Lock()
 	pendingFromID = ep.RawEndID
 	mu.Unlock()
+	bus.Publish(bus.EpisodeSealed{
+		LifeID:    lifeID,
+		EpisodeID: id,
+		Summary:   ep.Summary,
+		Events:    ep.RawEndID - ep.RawStartID + 1,
+		StartedAt: ep.StartedAt,
+		EndedAt:   ep.EndedAt,
+	})
 	return ep, nil
 }
 

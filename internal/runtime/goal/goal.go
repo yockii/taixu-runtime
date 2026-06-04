@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sync"
 
+	"mindverse/internal/bus"
 	"mindverse/internal/core"
 	"mindverse/internal/runtime/perception"
 	"mindverse/internal/shared"
@@ -105,6 +106,14 @@ func Arbitrate(cands []Candidate, values *core.Values, maxEnqueue int) ([]int64,
 			return ids, err
 		}
 		ids = append(ids, id)
+		bus.Publish(bus.GoalEnqueued{
+			LifeID:   lifeID,
+			GoalID:   id,
+			Source:   string(g.Source),
+			Intent:   g.Intent,
+			Priority: g.Priority,
+			Payload:  g.Payload,
+		})
 	}
 	return ids, nil
 }

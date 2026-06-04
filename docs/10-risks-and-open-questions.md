@@ -274,6 +274,38 @@
 > 待答：是否需要"模式切换"（用户选择主陪伴渠道）？
 > **影响**：`04 §4.5 §4.6`、`01 §3`。
 
+### R65 · semantic_confirmed.promoted_from FK 自杀（已修 0126c74）
+> Phase 0.2 设计中 `semantic_confirmed.promoted_from` 列声明为 `REFERENCES semantic_candidate(id)`（默认 NO ACTION）。`PromoteToConfirmed` 事务序：
+> ```
+> INSERT semantic_confirmed (promoted_from=candidateID)   -- FK 此时有效
+> DELETE FROM semantic_candidate WHERE id=candidateID     -- 创建 confirmed 中的悬空 FK
+> COMMIT                                                  -- FK 校验失败 → 全部回滚
+> ```
+> 现象：43 次 ShallowReflect 全 promoted=0，候选 confidence=1.0 持久未升 Confirmed。
+> **修**：migration `002_fix_semantic_promotion.sql` 重建 `semantic_confirmed` 去 FK，`promoted_from` 退化为信息列（保留谱系但不强引用）。
+> **教训**：Phase 0.2+ 所有"snapshot 引用"列默认不加 FK；只在生命周期严格父子关系才加。
+> **影响**：`05 §3`、`TECH-STACK §4.2`。
+
+### R66 · ExtractSemantic v1 无位置游标导致 support_count 虚高（已修 0126c74）
+> Phase 0.2 `ExtractSemantic` 每 cycle 末扫描 raw_trail 最近 50 条窗口，发现重复 `tool.success` payload 即 Upsert 候选 + 0.1 confidence。问题：窗口固定 + 无去重游标 → 同一窗口被反复扫描，support_count 单调增长（3 条真实 tool.success → support_count=16）。
+> **修**：引入 `schema_meta` 持久游标 `last_semantic_extract_raw_id:<life_id>`；引擎内滑动窗口（≤200）跨 cycle 累积稀疏重复；游标仅向前推进。
+> **影响**：`05 §6`、`TECH-STACK §4.2`。
+
+### R67 · Phase 0.4 SSE 仅推 state/lifecycle/tick/speech，缺细粒度业务事件
+> Phase 0.4 观察面板 SSE 仅订阅 `bus.LifecycleTransitioned` / `bus.TickStarted` / `state.StateChanged` / `action.SpeechEvent`。导致：
+> - Episode 封段 / 反思固化 / 新 goal 入队 / 工具调用 → 面板靠 5-10s 轮询发现
+> - 用户在 InjectForm 发完话，看不到生命体即时回响（要等 ActionLog 轮询）
+> **待**：
+> - bus 补 `EpisodeSealed` / `ReflectionCompleted` / `GoalEnqueued` / `ActionDone` / `ToolAudited`
+> - 各模块 Publish 之
+> - SSE fanout 接 + 前端 stream.ts 加事件 + 组件接收增量更新（无需轮询）
+> **影响**：`04 §2.1 EventBus`、Phase 0.4 PRD §6.1。
+
+### R68 · 观察面板移动端 InjectForm 位置偏下
+> Phase 0.4 主面板桌面端为 3 列网格：左 2 列为状态/Goal/Action/Episode/Reflection/Tool，右 1 列为 InjectForm + Genome + Values + Config。移动端折叠为单列后 InjectForm 落在所有左列内容之下，需大幅滚动才能找到对话入口 — 与"立刻对生命体说话"高频用例冲突。
+> **待**：移动端用 `order-first` 等 Tailwind 类把 InjectForm 提到首屏；或加浮动入口（FAB）。
+> **影响**：Phase 0.4 PRD §6.1。
+
 ### R64 · Go vs TS 演进期重新评估
 > Phase 0 锁定 Go 1.26+ 作为主 Runtime（核心固化哲学 + 长跑稳定 + 单二进制 + 白皮书一致）。但 2026 LLM 生态仍快速演化：
 > - 若关键 LLM SDK / Agent 框架 / MCP 等新协议先在 TS / Python 落地，Go 适配滞后

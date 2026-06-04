@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api, type ActionLog, unixToDate } from '$lib/api';
 	import { t, lang } from '$lib/i18n';
+	import { actionVer } from '$lib/stores';
 
 	let items = $state<ActionLog[]>([]);
 
@@ -10,8 +11,12 @@
 	}
 
 	$effect(() => {
+		$actionVer;
 		load();
-		const ti = setInterval(load, 5000);
+	});
+
+	$effect(() => {
+		const ti = setInterval(load, 30000);
 		return () => clearInterval(ti);
 	});
 

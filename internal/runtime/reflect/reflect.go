@@ -18,6 +18,7 @@ import (
 	mrand "math/rand/v2"
 	"sync"
 
+	"mindverse/internal/bus"
 	"mindverse/internal/core"
 	"mindverse/internal/shared"
 	"mindverse/internal/storage"
@@ -86,6 +87,13 @@ func Run(triggeredBy string) (promoted int, reflectionID int64, err error) {
 	if err != nil {
 		return promoted, 0, fmt.Errorf("insert reflection: %w", err)
 	}
+	bus.Publish(bus.ReflectionCompleted{
+		LifeID:       lifeID,
+		ReflectionID: id,
+		Kind:         string(core.ReflectShallow),
+		Promoted:     promoted,
+		Summary:      summary,
+	})
 	return promoted, id, nil
 }
 

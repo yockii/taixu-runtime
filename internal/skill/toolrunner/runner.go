@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"mindverse/internal/bus"
 	"mindverse/internal/storage"
 )
 
@@ -225,5 +226,11 @@ func audit(cycleID int64, toolName, argsSummary string, fn func() (string, error
 	}
 	_ = storage.AppendToolAudit(lifeID, cycleID, toolName, argsSummary, resultSummary,
 		duration.Milliseconds(), success, errStr, start.Unix())
+	bus.Publish(bus.ToolAudited{
+		LifeID:     lifeID,
+		ToolName:   toolName,
+		Success:    success,
+		DurationMs: duration.Milliseconds(),
+	})
 	return Result{Output: out, DurationMs: duration.Milliseconds()}, err
 }

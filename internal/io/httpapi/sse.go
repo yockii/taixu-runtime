@@ -43,6 +43,21 @@ func startSSEFanout() {
 			ev := e.(action.SpeechEvent)
 			broadcast("speech", ev)
 		})
+		bus.Subscribe(bus.EpisodeSealed{}, func(e bus.Event) {
+			broadcast("episode_sealed", e)
+		})
+		bus.Subscribe(bus.ReflectionCompleted{}, func(e bus.Event) {
+			broadcast("reflection", e)
+		})
+		bus.Subscribe(bus.GoalEnqueued{}, func(e bus.Event) {
+			broadcast("goal_enqueued", e)
+		})
+		bus.Subscribe(bus.ActionDone{}, func(e bus.Event) {
+			broadcast("action_done", e)
+		})
+		bus.Subscribe(bus.ToolAudited{}, func(e bus.Event) {
+			broadcast("tool_audited", e)
+		})
 	})
 }
 

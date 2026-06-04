@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { api, type Goal, unixToDate } from '$lib/api';
 	import { t, lang } from '$lib/i18n';
+	import { goalVer } from '$lib/stores';
 
 	let goals = $state<Goal[]>([]);
 	let loading = $state(false);
-	let tick = $state(0);
 
 	async function load() {
 		loading = true;
@@ -17,12 +17,13 @@
 	}
 
 	$effect(() => {
-		tick;
+		$goalVer;
 		load();
 	});
 
+	// 兜底定时刷新（防 SSE 断开后停更）
 	$effect(() => {
-		const ti = setInterval(() => (tick += 1), 5000);
+		const ti = setInterval(load, 30000);
 		return () => clearInterval(ti);
 	});
 

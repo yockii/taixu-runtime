@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api, type Reflection, unixToDate } from '$lib/api';
 	import { t, lang } from '$lib/i18n';
+	import { reflectionVer } from '$lib/stores';
 
 	let items = $state<Reflection[]>([]);
 
@@ -10,8 +11,12 @@
 	}
 
 	$effect(() => {
+		$reflectionVer;
 		load();
-		const ti = setInterval(load, 10000);
+	});
+
+	$effect(() => {
+		const ti = setInterval(load, 30000);
 		return () => clearInterval(ti);
 	});
 

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api, type Episode, unixToDate } from '$lib/api';
 	import { t, lang } from '$lib/i18n';
+	import { episodeVer } from '$lib/stores';
 
 	let q = $state('');
 	let episodes = $state<Episode[]>([]);
@@ -18,6 +19,7 @@
 	}
 
 	$effect(() => {
+		$episodeVer;
 		load();
 	});
 

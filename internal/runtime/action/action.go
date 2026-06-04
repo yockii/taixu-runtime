@@ -142,6 +142,14 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 		res.Success, startedAt, finishedAt); err != nil {
 		return res, fmt.Errorf("append action_log: %w", err)
 	}
+	bus.Publish(bus.ActionDone{
+		LifeID:    lifeID,
+		CycleID:   cycleID,
+		GoalID:    g.ID,
+		Action:    res.Action,
+		Success:   res.Success,
+		StartedAt: startedAt,
+	})
 
 	status := core.GoalCompleted
 	if !res.Success {

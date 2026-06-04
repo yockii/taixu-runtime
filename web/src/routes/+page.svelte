@@ -2,6 +2,14 @@
 	import { api } from '$lib/api';
 	import type { Genome, LifeState, MentalState, Values } from '$lib/api';
 	import { openStream } from '$lib/stream';
+	import {
+		goalVer,
+		actionVer,
+		reflectionVer,
+		episodeVer,
+		toolVer,
+		pushSpeech
+	} from '$lib/stores';
 	import { t } from '$lib/i18n';
 	import StatePanel from '$lib/components/StatePanel.svelte';
 	import GenomePanel from '$lib/components/GenomePanel.svelte';
@@ -46,6 +54,23 @@
 					lastTick = ev.cycle_id;
 					break;
 				case 'speech':
+					pushSpeech(ev.content, ev.goal_id);
+					actionVer.update((n) => n + 1);
+					break;
+				case 'goal_enqueued':
+					goalVer.update((n) => n + 1);
+					break;
+				case 'action_done':
+					actionVer.update((n) => n + 1);
+					break;
+				case 'reflection':
+					reflectionVer.update((n) => n + 1);
+					break;
+				case 'episode_sealed':
+					episodeVer.update((n) => n + 1);
+					break;
+				case 'tool_audited':
+					toolVer.update((n) => n + 1);
 					break;
 			}
 		});
@@ -65,7 +90,8 @@
 </header>
 
 <div class="grid grid-cols-1 gap-4 lg:grid-cols-3">
-	<div class="space-y-4 lg:col-span-2">
+	<!-- 移动端 order-1：先出 InjectForm 与状态；桌面端 lg:order-2 回到右栏 -->
+	<div class="order-2 space-y-4 lg:order-1 lg:col-span-2">
 		<StatePanel {life} {mental} />
 		<GoalQueue />
 		<ActionLogPanel />
@@ -73,7 +99,7 @@
 		<ReflectionList />
 		<ToolAuditPanel />
 	</div>
-	<div class="space-y-4">
+	<div class="order-1 space-y-4 lg:order-2">
 		<InjectForm />
 		<GenomePanel {genome} />
 		<ValuesPanel {values} />

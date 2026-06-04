@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api, type ToolAudit, unixToDate } from '$lib/api';
 	import { t, lang } from '$lib/i18n';
+	import { toolVer } from '$lib/stores';
 
 	let items = $state<ToolAudit[]>([]);
 
@@ -10,8 +11,12 @@
 	}
 
 	$effect(() => {
+		$toolVer;
 		load();
-		const ti = setInterval(load, 10000);
+	});
+
+	$effect(() => {
+		const ti = setInterval(load, 60000);
 		return () => clearInterval(ti);
 	});
 
