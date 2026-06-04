@@ -39,16 +39,12 @@ type Candidate struct {
 }
 
 // CollectCandidates 收集本轮所有候选。
+//
+// Phase 0.5：对话已移至 reflex 通道；此处不再为 ExternalRequest 派生 respond_to_user。
+// 慎思层仅响应 IntrinsicDrive（DriveDerive 输出）。Reflection Phase 2+ 加入。
 func CollectCandidates(frame perception.Frame, drives []core.Drive) []Candidate {
 	var out []Candidate
-	for _, r := range frame.Externals {
-		out = append(out, Candidate{
-			Source:        core.GoalExternal,
-			Intent:        "respond_to_user",
-			Payload:       r.Content,
-			MatchedValues: []string{core.ValueFriendship, core.ValueHonesty},
-		})
-	}
+	_ = frame // externals 仅留作未来"用户在场"语义；不入候选池
 	for _, d := range drives {
 		c := Candidate{Source: core.GoalIntrinsic, Intent: string(d.Kind), Payload: d.Reason}
 		switch d.Kind {

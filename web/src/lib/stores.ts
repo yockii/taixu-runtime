@@ -1,5 +1,5 @@
 // 全局响应式信号：SSE 收到事件后增量计数，各面板 $effect 依赖之触发重拉。
-// 也存最近一条 speech 给 InjectForm 即时回响。
+// 反射对话多轮 reply 序列存于 reflexConversation；finished 后清。
 import { writable } from 'svelte/store';
 
 export const goalVer = writable(0);
@@ -7,19 +7,36 @@ export const actionVer = writable(0);
 export const reflectionVer = writable(0);
 export const episodeVer = writable(0);
 export const toolVer = writable(0);
+export const interestVer = writable(0);
 
-export type LatestSpeech = {
+export type ReflexReply = {
 	id: number;
+	round: number;
 	content: string;
-	goalID: number;
-	at: number; // unix sec
+	channel: string;
+	to: string;
+	at: number;
 };
 
-export const latestSpeech = writable<LatestSpeech | null>(null);
+// 当前在进行的反射对话回复序列；reflex_finished 时不立即清，保留显示直到下一次发送
+export const reflexReplies = writable<ReflexReply[]>([]);
+export const reflexInProgress = writable(false);
 
-let speechSeq = 0;
+let replySeq = 0;
 
-export function pushSpeech(content: string, goalID: number) {
-	speechSeq += 1;
-	latestSpeech.set({ id: speechSeq, content, goalID, at: Math.floor(Date.now() / 1000) });
+export function pushReflexReply(round: number, content: string, channel: string, to: string, at: number) {
+	replySeq += 1;
+	reflexReplies.update((arr) => [
+		...arr,
+		{ id: replySeq, round, content, channel, to, at }
+	]);
+}
+
+export function markReflexFinished() {
+	reflexInProgress.set(false);
+}
+
+export function resetReflexConversation() {
+	reflexReplies.set([]);
+	reflexInProgress.set(true);
 }

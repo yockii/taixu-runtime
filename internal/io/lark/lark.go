@@ -1,6 +1,8 @@
 // Package lark 飞书 IM 接入（lark-oapi-sdk-go v3 + WebSocket LongConnection）单例。
 //
-// 入站消息 → perception.Inject（Phase 0 仅 P2 私聊文本）。
+// 入站消息：
+//   - 反射通道：reflex.Handle 立即处理（agent loop + tool calls + 分段回复）
+//   - 慎思感知：perception.Inject 让 scheduler 看到"用户在场"，影响节拍因子
 // 出站 SpeechEvent → Send（默认收件人为最近一位入站发送者）。
 package lark
 
@@ -18,6 +20,7 @@ import (
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 
 	"mindverse/internal/runtime/perception"
+	"mindverse/internal/runtime/reflex"
 )
 
 // Config 飞书配置。
@@ -134,18 +137,26 @@ func handleMessage(ctx context.Context, ev *larkim.P2MessageReceiveV1) error {
 	if msg.MessageId != nil {
 		msgID = *msg.MessageId
 	}
-	req := perception.ExternalRequest{
-		ID:      msgID,
-		Channel: "feishu",
-		From:    openID,
-		Content: text,
-	}
 	mu.Lock()
 	if openID != "" {
 		lastOpenID = openID
 	}
 	mu.Unlock()
-	perception.Inject(req)
+
+	// 慎思层感知用户在场（影响节拍因子）
+	perception.Inject(perception.ExternalRequest{
+		ID:      msgID,
+		Channel: "feishu",
+		From:    openID,
+		Content: text,
+	})
+
+	// 反射层即时处理对话（goroutine）
+	reflex.Handle(reflex.IncomingRequest{
+		Channel: "feishu",
+		From:    openID,
+		Content: text,
+	})
 	return nil
 }
 

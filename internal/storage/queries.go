@@ -171,6 +171,7 @@ type ActionLogEntry struct {
 	ID         int64  `json:"id"`
 	GoalID     int64  `json:"goal_id"`
 	CycleID    int64  `json:"cycle_id"`
+	Kind       string `json:"kind"`
 	Plan       string `json:"plan"`
 	Action     string `json:"action"`
 	Result     string `json:"result"`
@@ -183,7 +184,7 @@ type ActionLogEntry struct {
 // ListActionLog 近 N 条行动。
 func ListActionLog(lifeID string, limit int) ([]ActionLogEntry, error) {
 	rows, err := db.Query(`
-		SELECT id, COALESCE(goal_id,0), cycle_id, COALESCE(plan,''), action,
+		SELECT id, COALESCE(goal_id,0), cycle_id, kind, COALESCE(plan,''), action,
 		       COALESCE(result,''), COALESCE(feedback,''), success,
 		       started_at, COALESCE(finished_at,0)
 		FROM action_log WHERE life_id = ?
@@ -196,7 +197,7 @@ func ListActionLog(lifeID string, limit int) ([]ActionLogEntry, error) {
 	for rows.Next() {
 		var e ActionLogEntry
 		var succ int
-		if err := rows.Scan(&e.ID, &e.GoalID, &e.CycleID, &e.Plan, &e.Action,
+		if err := rows.Scan(&e.ID, &e.GoalID, &e.CycleID, &e.Kind, &e.Plan, &e.Action,
 			&e.Result, &e.Feedback, &succ, &e.StartedAt, &e.FinishedAt); err != nil {
 			return nil, err
 		}

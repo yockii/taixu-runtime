@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"mindverse/internal/runtime/perception"
+	"mindverse/internal/runtime/reflex"
 	"mindverse/internal/runtime/state"
 	"mindverse/internal/storage"
 )
@@ -89,6 +90,7 @@ func Start(ctx context.Context, addr string) *http.Server {
 	mux.HandleFunc("/api/actions", apiActions)
 	mux.HandleFunc("/api/tools/audit", apiToolsAudit)
 	mux.HandleFunc("/api/ledger", apiLedger)
+	mux.HandleFunc("/api/interests", apiInterests)
 	mux.HandleFunc("/api/config", apiConfig)
 	mux.HandleFunc("/api/stream", apiStream)
 	mux.HandleFunc("/api/external-request", apiExternalRequest)
@@ -206,6 +208,16 @@ func apiLedger(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, xs)
 }
 
+func apiInterests(w http.ResponseWriter, r *http.Request) {
+	limit := intParam(r, "limit", 30, 1, 200)
+	xs, err := storage.ListAllInterestSeeds(lifeID, limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, xs)
+}
+
 func apiConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"llm": map[string]any{
@@ -245,7 +257,13 @@ func apiExternalRequest(w http.ResponseWriter, r *http.Request) {
 		Content:    body.Content,
 		ReceivedAt: time.Now(),
 	}
+	// 慎思感知 + 反射即时回应
 	perception.Inject(req)
+	reflex.Handle(reflex.IncomingRequest{
+		Channel: body.Channel,
+		From:    body.From,
+		Content: body.Content,
+	})
 	writeJSON(w, http.StatusAccepted, map[string]any{"id": req.ID, "queued_at": req.ReceivedAt})
 }
 

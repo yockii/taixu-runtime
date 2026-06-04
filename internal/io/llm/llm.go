@@ -25,9 +25,30 @@ type Config struct {
 }
 
 // Message 一轮对话。
+//
+//	Role: "system" / "user" / "assistant" / "tool"
+//	Content: 文本内容（assistant 可同时有 ToolCalls；tool 角色填 tool_call 结果）
+//	ToolCallID: 当 Role=="tool" 时必填，与对应 assistant 之 ToolCall.ID 一致
+//	ToolCalls: 当 Role=="assistant" 且模型返回时，承载工具调用
 type Message struct {
-	Role    string
-	Content string
+	Role       string
+	Content    string
+	ToolCallID string
+	ToolCalls  []ToolCall
+}
+
+// ToolCall LLM 决定调用的一个工具。
+type ToolCall struct {
+	ID       string
+	Name     string
+	ArgsJSON string // raw JSON args (per OpenAI function calling)
+}
+
+// Tool 工具定义（function calling）。
+type Tool struct {
+	Name        string
+	Description string
+	Parameters  any // JSON schema object（用 map[string]any 构造）
 }
 
 // Usage 用量统计；用于翻译为 energy。
@@ -39,8 +60,9 @@ type Usage struct {
 
 // ReasonResult 推理结果。
 type ReasonResult struct {
-	Text  string
-	Usage Usage
+	Text      string
+	ToolCalls []ToolCall
+	Usage     Usage
 }
 
 var (
@@ -75,8 +97,18 @@ func Configured() bool {
 	return ready
 }
 
-// Reason Chat Completions。
+// Reason Chat Completions（无 tool）。
 func Reason(ctx context.Context, msgs []Message) (ReasonResult, error) {
+	return reasonInternal(ctx, msgs, nil)
+}
+
+// ReasonWithTools Chat Completions + function calling。
+// 返回 ReasonResult 含 Text 与 ToolCalls；调用方负责 agent loop 直至 ToolCalls 空。
+func ReasonWithTools(ctx context.Context, msgs []Message, tools []Tool) (ReasonResult, error) {
+	return reasonInternal(ctx, msgs, tools)
+}
+
+func reasonInternal(ctx context.Context, msgs []Message, tools []Tool) (ReasonResult, error) {
 	mu.Lock()
 	cli := client
 	c := cfg
@@ -90,28 +122,70 @@ func Reason(ctx context.Context, msgs []Message) (ReasonResult, error) {
 
 	oaiMsgs := make([]openai.ChatCompletionMessage, 0, len(msgs))
 	for _, m := range msgs {
-		oaiMsgs = append(oaiMsgs, openai.ChatCompletionMessage{Role: m.Role, Content: m.Content})
+		om := openai.ChatCompletionMessage{
+			Role:       m.Role,
+			Content:    m.Content,
+			ToolCallID: m.ToolCallID,
+		}
+		if len(m.ToolCalls) > 0 {
+			om.ToolCalls = make([]openai.ToolCall, 0, len(m.ToolCalls))
+			for _, tc := range m.ToolCalls {
+				om.ToolCalls = append(om.ToolCalls, openai.ToolCall{
+					ID:   tc.ID,
+					Type: openai.ToolTypeFunction,
+					Function: openai.FunctionCall{
+						Name:      tc.Name,
+						Arguments: tc.ArgsJSON,
+					},
+				})
+			}
+		}
+		oaiMsgs = append(oaiMsgs, om)
 	}
 
-	resp, err := cli.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
+	req := openai.ChatCompletionRequest{
 		Model:       c.Model,
 		Messages:    oaiMsgs,
 		Temperature: c.Temperature,
-	})
+	}
+	if len(tools) > 0 {
+		req.Tools = make([]openai.Tool, 0, len(tools))
+		for _, t := range tools {
+			req.Tools = append(req.Tools, openai.Tool{
+				Type: openai.ToolTypeFunction,
+				Function: &openai.FunctionDefinition{
+					Name:        t.Name,
+					Description: t.Description,
+					Parameters:  t.Parameters,
+				},
+			})
+		}
+	}
+
+	resp, err := cli.CreateChatCompletion(ctx, req)
 	if err != nil {
 		return ReasonResult{}, fmt.Errorf("llm chat: %w", err)
 	}
 	if len(resp.Choices) == 0 {
 		return ReasonResult{}, errors.New("llm: empty choices")
 	}
-	return ReasonResult{
-		Text: resp.Choices[0].Message.Content,
+	msg := resp.Choices[0].Message
+	out := ReasonResult{
+		Text: msg.Content,
 		Usage: Usage{
 			PromptTokens:     resp.Usage.PromptTokens,
 			CompletionTokens: resp.Usage.CompletionTokens,
 			TotalTokens:      resp.Usage.TotalTokens,
 		},
-	}, nil
+	}
+	for _, tc := range msg.ToolCalls {
+		out.ToolCalls = append(out.ToolCalls, ToolCall{
+			ID:       tc.ID,
+			Name:     tc.Function.Name,
+			ArgsJSON: tc.Function.Arguments,
+		})
+	}
+	return out, nil
 }
 
 // Summarize 总结。

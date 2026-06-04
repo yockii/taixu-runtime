@@ -1,24 +1,20 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { t } from '$lib/i18n';
-	import { latestSpeech } from '$lib/stores';
+	import { reflexReplies, reflexInProgress, resetReflexConversation } from '$lib/stores';
 
 	let text = $state('');
 	let busy = $state(false);
-	let lastID = $state('');
 	let err = $state('');
-	let waitFromID = $state<number | null>(null);
 
 	async function send() {
 		const tx = text.trim();
 		if (!tx) return;
 		busy = true;
 		err = '';
-		// 记录基线：下次 speech.id > baseline 即为本次回响
-		waitFromID = $latestSpeech?.id ?? 0;
+		resetReflexConversation(); // 清旧序列，进入新对话
 		try {
-			const r = await api.injectExternal(tx);
-			lastID = r.id;
+			await api.injectExternal(tx);
 			text = '';
 		} catch (e: any) {
 			err = String(e?.message ?? e);
@@ -26,10 +22,6 @@
 			busy = false;
 		}
 	}
-
-	const reply = $derived(
-		$latestSpeech && waitFromID !== null && $latestSpeech.id > waitFromID ? $latestSpeech : null
-	);
 </script>
 
 <div class="card">
@@ -49,9 +41,6 @@
 		></textarea>
 		<div class="flex items-center justify-between">
 			<div class="text-xs text-zinc-500">
-				{#if lastID}
-					{$t('inject_last')}: <code class="text-emerald-400">{lastID}</code>
-				{/if}
 				{#if err}
 					<span class="text-rose-400">{err}</span>
 				{/if}
@@ -66,12 +55,18 @@
 		</div>
 	</form>
 
-	{#if reply}
-		<div class="mt-3 rounded border border-emerald-700/40 bg-emerald-900/20 p-3 text-sm">
-			<div class="mb-1 text-xs font-semibold text-emerald-400">▶ {$t('reply_label')}</div>
-			<div class="whitespace-pre-wrap text-zinc-100">{reply.content}</div>
+	{#if $reflexReplies.length > 0 || $reflexInProgress}
+		<div class="mt-3 space-y-2">
+			<div class="text-xs font-semibold text-emerald-400">▶ {$t('reply_label')}</div>
+			{#each $reflexReplies as r (r.id)}
+				<div class="rounded border border-emerald-700/40 bg-emerald-900/20 p-2 text-sm">
+					<span class="mr-2 text-xs text-emerald-500">#{r.round}</span>
+					<span class="whitespace-pre-wrap text-zinc-100">{r.content}</span>
+				</div>
+			{/each}
+			{#if $reflexInProgress}
+				<div class="text-xs italic text-zinc-500">{$t('reply_waiting')}</div>
+			{/if}
 		</div>
-	{:else if waitFromID !== null && !reply}
-		<div class="mt-3 text-xs text-zinc-500 italic">{$t('reply_waiting')}</div>
 	{/if}
 </div>

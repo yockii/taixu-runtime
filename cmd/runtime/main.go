@@ -25,6 +25,7 @@ import (
 	"mindverse/internal/io/lark"
 	"mindverse/internal/io/llm"
 	"mindverse/internal/runtime/action"
+	"mindverse/internal/runtime/reflex"
 	"mindverse/internal/runtime/drives"
 	"mindverse/internal/runtime/genesis"
 	"mindverse/internal/runtime/goal"
@@ -79,6 +80,7 @@ func main() {
 	mustInit("goal", goal.Init(lifeID))
 	mustInit("action", action.Init(lifeID))
 	mustInit("scheduler", scheduler.Init(lifeID))
+	mustInit("reflex", reflex.Init(lifeID))
 
 	mustInit("toolrunner", toolrunner.Init(lifeID, envOr("MINDVERSE_SANDBOX", "/sandbox")))
 
@@ -163,7 +165,7 @@ func runCycle(cycleID int64, lifeID string, genome core.Genome) {
 	}
 
 	// 5. CollectGoals
-	ds := drives.Derive(genome, ls, ms)
+	ds := drives.Derive(genome, ls, ms, lifeID)
 	cands := goal.CollectCandidates(frame, ds)
 
 	// 6. Arbitrate
@@ -285,8 +287,9 @@ func wireLark(ctx context.Context) {
 		slog.Error("lark init", "err", err)
 		return
 	}
-	bus.Subscribe(action.SpeechEvent{}, func(e bus.Event) {
-		ev := e.(action.SpeechEvent)
+	// 反射对话每一轮的 content → 单独发飞书消息（自然分段）
+	bus.Subscribe(reflex.ReplyEvent{}, func(e bus.Event) {
+		ev := e.(reflex.ReplyEvent)
 		if ev.Channel != "" && ev.Channel != "feishu" {
 			return
 		}

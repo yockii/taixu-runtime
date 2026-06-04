@@ -8,7 +8,9 @@
 		reflectionVer,
 		episodeVer,
 		toolVer,
-		pushSpeech
+		interestVer,
+		pushReflexReply,
+		markReflexFinished
 	} from '$lib/stores';
 	import { t } from '$lib/i18n';
 	import StatePanel from '$lib/components/StatePanel.svelte';
@@ -21,6 +23,7 @@
 	import ActionLogPanel from '$lib/components/ActionLog.svelte';
 	import ToolAuditPanel from '$lib/components/ToolAudit.svelte';
 	import ConfigPanel from '$lib/components/ConfigPanel.svelte';
+	import InterestPanel from '$lib/components/InterestPanel.svelte';
 	import LangToggle from '$lib/components/LangToggle.svelte';
 
 	let life = $state<LifeState | null>(null);
@@ -53,8 +56,13 @@
 				case 'tick':
 					lastTick = ev.cycle_id;
 					break;
-				case 'speech':
-					pushSpeech(ev.content, ev.goal_id);
+				case 'reflex_reply':
+					pushReflexReply(ev.round, ev.content, ev.channel, ev.to, ev.created_at);
+					actionVer.update((n) => n + 1);
+					interestVer.update((n) => n + 1);
+					break;
+				case 'reflex_finished':
+					markReflexFinished();
 					actionVer.update((n) => n + 1);
 					break;
 				case 'goal_enqueued':
@@ -101,6 +109,7 @@
 	</div>
 	<div class="order-1 space-y-4 lg:order-2">
 		<InjectForm />
+		<InterestPanel />
 		<GenomePanel {genome} />
 		<ValuesPanel {values} />
 		<ConfigPanel />

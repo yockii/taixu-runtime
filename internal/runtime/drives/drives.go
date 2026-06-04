@@ -8,12 +8,33 @@ import (
 
 	"mindverse/internal/core"
 	"mindverse/internal/shared"
+	"mindverse/internal/storage"
 )
 
 // Derive 派生本轮内驱力（v1 公式，待 0.5 标定）。
-func Derive(g core.Genome, ls core.LifeState, ms core.MentalState) []core.Drive {
+//
+// 兴趣种子（reflex 通道写入）独立通道派生 DriveCuriosity：即便 Genome.Curiosity 低
+// 也能因具体兴趣触发，体现"对话引出新主动行为"闭环。
+func Derive(g core.Genome, ls core.LifeState, ms core.MentalState, lifeID string) []core.Drive {
 	now := shared.SystemClock.UnixSec()
 	var ds []core.Drive
+
+	// 兴趣种子派生 DriveCuriosity（最强 3 条；strength≥0.4）
+	seeds, _ := storage.ListInterestSeeds(lifeID, 0.4, 3)
+	for _, s := range seeds {
+		// 探索次数衰减优先级（防止单一兴趣被反复消费）
+		exploreFactor := 1.0
+		if s.ExploredCount > 0 {
+			exploreFactor = 1.0 / (1.0 + 0.3*float64(s.ExploredCount))
+		}
+		strength := (s.Strength*0.7 + 0.3*g.Curiosity) * exploreFactor
+		ds = append(ds, core.Drive{
+			Kind:     core.DriveKnowledge,
+			Strength: clamp01(strength),
+			Reason:   fmt.Sprintf("interest_seed#%d %s (%s)", s.ID, s.Content, s.Kind),
+			BornAt:   now,
+		})
+	}
 
 	if ls.SocialNeed > 0.5 || g.Sociability > 0.7 {
 		strength := 0.3 + 0.4*ls.SocialNeed + 0.3*g.Sociability

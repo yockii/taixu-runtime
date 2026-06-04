@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"mindverse/internal/bus"
-	"mindverse/internal/runtime/action"
+	"mindverse/internal/runtime/reflex"
 	"mindverse/internal/runtime/state"
 )
 
@@ -39,9 +39,11 @@ func startSSEFanout() {
 			ev := e.(bus.TickStarted)
 			broadcast("tick", ev)
 		})
-		bus.Subscribe(action.SpeechEvent{}, func(e bus.Event) {
-			ev := e.(action.SpeechEvent)
-			broadcast("speech", ev)
+		bus.Subscribe(reflex.ReplyEvent{}, func(e bus.Event) {
+			broadcast("reflex_reply", e)
+		})
+		bus.Subscribe(reflex.FinishedEvent{}, func(e bus.Event) {
+			broadcast("reflex_finished", e)
 		})
 		bus.Subscribe(bus.EpisodeSealed{}, func(e bus.Event) {
 			broadcast("episode_sealed", e)

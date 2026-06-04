@@ -5,7 +5,8 @@ export type StreamEvent =
 	| { type: 'state'; life: LifeState; mental: MentalState; reason: string }
 	| { type: 'lifecycle'; from_state: string; to_state: string; reason: string }
 	| { type: 'tick'; cycle_id: number }
-	| { type: 'speech'; content: string; cycle_id: number; goal_id: number }
+	| { type: 'reflex_reply'; round: number; channel: string; to: string; content: string; created_at: number }
+	| { type: 'reflex_finished'; channel: string; to: string; rounds: number; created_at: number }
 	| { type: 'episode_sealed'; episode_id: number; summary: string; events: number; started_at: number; ended_at: number }
 	| { type: 'reflection'; reflection_id: number; kind: string; promoted: number; summary: string }
 	| { type: 'goal_enqueued'; goal_id: number; source: string; intent: string; priority: number; payload: string }
@@ -16,7 +17,8 @@ const EVENT_TYPES: StreamEvent['type'][] = [
 	'state',
 	'lifecycle',
 	'tick',
-	'speech',
+	'reflex_reply',
+	'reflex_finished',
 	'episode_sealed',
 	'reflection',
 	'goal_enqueued',

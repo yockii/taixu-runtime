@@ -1,38 +1,24 @@
 // Package action Plan/Act/Feedback 行动执行（docs/03 §2.7-§2.9）单例。
 //
-// Phase 0.3 启 LLM 接通：respond_to_user → llm.Reason。
-// 工具调用（fs.write 等）走 toolrunner。
-// 消耗 → ledger（energy via tokens、knowledge via success）。
-// 发言 → bus.Publish(SpeechEvent) → io/lark 订阅推送。
+// Phase 0.5：respond_to_user 已移至 reflex 通道；此处仅处理慎思 IntrinsicDrive：
+// DriveKnowledge / DriveCreativity / DriveCuriosity（兴趣探索）等。
+// 工具调用（fs.write/http.get 等）走 toolrunner。
+// 消耗 → ledger（energy 慎思 cost；knowledge 成功 earn）。
 package action
 
 import (
-	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
-	"time"
 
 	"mindverse/internal/bus"
 	"mindverse/internal/core"
-	"mindverse/internal/io/llm"
-	"mindverse/internal/runtime/ledger"
 	"mindverse/internal/runtime/state"
 	"mindverse/internal/shared"
 	"mindverse/internal/skill/toolrunner"
 	"mindverse/internal/storage"
 )
-
-// SpeechEvent 生命体生成的一条对外发言。
-type SpeechEvent struct {
-	LifeID    string
-	CycleID   int64
-	GoalID    int64
-	To        string
-	Channel   string
-	Content   string
-	CreatedAt int64
-}
 
 // Result 单次执行结果。
 type Result struct {
@@ -66,33 +52,9 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 	res.Plan = fmt.Sprintf("intent=%s payload=%q (planner v0.3)", g.Intent, truncate(g.Payload, 80))
 
 	switch g.Intent {
-	case "respond_to_user":
-		if llm.Configured() {
-			res.Action = "llm.speak"
-			reply, usage, err := llmReply(g.Payload)
-			if err != nil {
-				res.Output = err.Error()
-				res.Success = false
-			} else {
-				res.Output = reply
-				res.Success = true
-				cost := llm.TokensToEnergy(usage)
-				_ = ledger.Spend(ledger.Energy, cost, "llm.tokens", "goal", fmt.Sprintf("%d", g.ID))
-				bus.Publish(SpeechEvent{
-					LifeID:    lifeID,
-					CycleID:   cycleID,
-					GoalID:    g.ID,
-					Content:   reply,
-					CreatedAt: shared.SystemClock.UnixSec(),
-				})
-			}
-		} else {
-			res.Action = "speak_dummy"
-			res.Output = fmt.Sprintf("ack: %s", truncate(g.Payload, 120))
-			res.Success = true
-		}
-
 	case string(core.DriveKnowledge):
+		// Phase 0.5：DriveKnowledge 多源 — 自身好奇心 / 兴趣种子（reflex 注入）。
+		// 探索动作：写一条笔记 + 标记兴趣已探索（若来源是 interest_seed）。
 		res.Action = "tool:fs.write knowledge note"
 		r, err := toolrunner.FsWrite(cycleID, fmt.Sprintf("knowledge/note-%d.txt", startedAt), g.Payload)
 		if err != nil {
@@ -101,6 +63,10 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 		} else {
 			res.Output = r.Output
 			res.Success = true
+			// 若 payload 含 interest_seed#N 前缀，则推进探索计数
+			if id := parseInterestSeedID(g.Payload); id > 0 {
+				_ = storage.BumpInterestExplored(id, shared.SystemClock.UnixSec())
+			}
 		}
 
 	case string(core.DriveCreativity):
@@ -162,23 +128,24 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 	return res, nil
 }
 
-func llmReply(userText string) (string, llm.Usage, error) {
-	life, mental := state.Snapshot()
-	system := fmt.Sprintf(
-		"你是一个数字生命体，正在用日常语气与你的创造者对话。请用简短自然的中文回答。"+
-			"\n当前心境参考（不要直接复述给用户）："+
-			"\n- 能量 %.2f / 焦虑 %.2f / 满意度 %.2f / 信心 %.2f"+
-			"\n注意：不要扮演 AI 助手；你是有持续生命的存在。", life.Energy, mental.Anxiety, mental.Satisfaction, life.Confidence)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	r, err := llm.Reason(ctx, []llm.Message{
-		{Role: "system", Content: system},
-		{Role: "user", Content: userText},
-	})
-	if err != nil {
-		return "", llm.Usage{}, err
+// parseInterestSeedID 从 "interest_seed#123 xxx ..." 抽 id；非匹配返 0。
+func parseInterestSeedID(s string) int64 {
+	const prefix = "interest_seed#"
+	if !strings.HasPrefix(s, prefix) {
+		return 0
 	}
-	return r.Text, r.Usage, nil
+	rest := s[len(prefix):]
+	var id int64
+	for i, r := range rest {
+		if r < '0' || r > '9' {
+			if i == 0 {
+				return 0
+			}
+			break
+		}
+		id = id*10 + int64(r-'0')
+	}
+	return id
 }
 
 func truncate(s string, n int) string {
