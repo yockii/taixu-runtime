@@ -116,12 +116,47 @@ export interface Ledger {
 export interface Config {
 	llm: { base_url: string; model: string; temperature: string; api_key: string };
 	feishu: { app_id: string; app_secret: string };
+	auth_required?: boolean;
 }
 
 async function getJSON<T>(path: string): Promise<T> {
 	const r = await fetch(path);
 	if (!r.ok) throw new Error(`${path} → ${r.status}`);
 	return r.json();
+}
+
+// --- 访问令牌（写/交互操作鉴权）---
+// 服务端设了 MINDVERSE_ACCESS_TOKEN 时，所有写操作要带 X-Mindverse-Token。
+// 令牌存浏览器本地，仅本机；空则不带（本地无鉴权部署照常用）。
+const TOKEN_KEY = 'mv_access_token';
+
+export function getToken(): string {
+	if (typeof localStorage === 'undefined') return '';
+	return localStorage.getItem(TOKEN_KEY) ?? '';
+}
+
+export function setToken(token: string): void {
+	if (typeof localStorage === 'undefined') return;
+	if (token) localStorage.setItem(TOKEN_KEY, token);
+	else localStorage.removeItem(TOKEN_KEY);
+}
+
+/** 写请求 header：带本地保存的访问令牌（没设则空）。 */
+export function authHeaders(): Record<string, string> {
+	const t = getToken();
+	return t ? { 'X-Mindverse-Token': t } : {};
+}
+
+/** 统一的写请求：自动带令牌；401 抛出可读错误。 */
+export async function apiPost<T = unknown>(path: string, body?: unknown): Promise<T> {
+	const r = await fetch(path, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', ...authHeaders() },
+		body: body === undefined ? undefined : JSON.stringify(body)
+	});
+	if (r.status === 401) throw new Error('unauthorized: 访问令牌缺失或错误');
+	if (!r.ok) throw new Error(`${path} → ${r.status}`);
+	return r.json() as Promise<T>;
 }
 
 export const api = {
@@ -140,15 +175,8 @@ export const api = {
 	ledger: (resource = '', limit = 100) =>
 		getJSON<Ledger[]>(`/api/ledger?resource=${resource}&limit=${limit}`),
 	config: () => getJSON<Config>('/api/config'),
-	injectExternal: async (content: string, channel = 'cli', from = 'panel') => {
-		const r = await fetch('/api/external-request', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ content, channel, from })
-		});
-		if (!r.ok) throw new Error(`inject → ${r.status}`);
-		return r.json() as Promise<{ id: string; queued_at: string }>;
-	}
+	injectExternal: (content: string, channel = 'cli', from = 'panel') =>
+		apiPost<{ id: string; queued_at: string }>('/api/external-request', { content, channel, from })
 };
 
 export function unixToDate(unix: number, locale = 'zh-CN'): string {

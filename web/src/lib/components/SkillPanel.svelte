@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { t, lang } from '$lib/i18n';
 	import { skillVer } from '$lib/stores';
-	import { unixToDate } from '$lib/api';
+	import { unixToDate, apiPost } from '$lib/api';
 
 	type Skill = {
 		id: string;
@@ -40,8 +40,7 @@
 		busy = true;
 		err = '';
 		try {
-			const r = await fetch('/api/skills/rescan', { method: 'POST' });
-			if (!r.ok) throw new Error(await r.text());
+			await apiPost('/api/skills/rescan');
 			skillVer.update((n) => n + 1);
 		} catch (e: any) {
 			err = String(e?.message ?? e);
@@ -52,12 +51,13 @@
 
 	async function toggleProactive() {
 		const next = !proactiveIM;
-		await fetch('/api/config/proactive-im', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ value: next })
-		});
-		proactiveIM = next;
+		err = '';
+		try {
+			await apiPost('/api/config/proactive-im', { value: next });
+			proactiveIM = next;
+		} catch (e: any) {
+			err = String(e?.message ?? e);
+		}
 	}
 
 	$effect(() => {
@@ -75,12 +75,7 @@
 		busy = true;
 		err = '';
 		try {
-			const r = await fetch('/api/skills/load', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ content: tx })
-			});
-			if (!r.ok) throw new Error(await r.text());
+			await apiPost('/api/skills/load', { content: tx });
 			loadText = '';
 			skillVer.update((n) => n + 1);
 		} catch (e: any) {
@@ -92,13 +87,11 @@
 
 	async function approve(id: string) {
 		busyIds = { ...busyIds, [id]: $t('skill_status_installing') };
+		err = '';
 		try {
-			const r = await fetch('/api/skills/approve', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ id })
-			});
-			if (!r.ok) err = await r.text();
+			await apiPost('/api/skills/approve', { id });
+		} catch (e: any) {
+			err = String(e?.message ?? e);
 		} finally {
 			const { [id]: _, ...rest } = busyIds;
 			busyIds = rest;
@@ -107,12 +100,11 @@
 	}
 	async function reject(id: string) {
 		busyIds = { ...busyIds, [id]: '...' };
+		err = '';
 		try {
-			await fetch('/api/skills/reject', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ id })
-			});
+			await apiPost('/api/skills/reject', { id });
+		} catch (e: any) {
+			err = String(e?.message ?? e);
 		} finally {
 			const { [id]: _, ...rest } = busyIds;
 			busyIds = rest;
@@ -121,12 +113,13 @@
 	}
 	async function toggleAuto() {
 		const next = !autoApprove;
-		await fetch('/api/config/auto-approve-deps', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ value: next })
-		});
-		autoApprove = next;
+		err = '';
+		try {
+			await apiPost('/api/config/auto-approve-deps', { value: next });
+			autoApprove = next;
+		} catch (e: any) {
+			err = String(e?.message ?? e);
+		}
 	}
 
 	function parseDeps(s?: string): { runtime: string; package: string }[] {

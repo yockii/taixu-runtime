@@ -20,6 +20,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -104,7 +105,12 @@ func Start(ctx context.Context, addr string) *http.Server {
 	mux.HandleFunc("/api/stream", apiStream)
 	mux.HandleFunc("/api/external-request", apiExternalRequest)
 
-	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	accessToken = strings.TrimSpace(os.Getenv("MINDVERSE_ACCESS_TOKEN"))
+	if accessToken != "" {
+		slog.Info("http access token enabled — write/interactive ops require X-Mindverse-Token")
+	}
+
+	srv := &http.Server{Addr: addr, Handler: withAuth(mux), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("http server", "err", err)
@@ -117,6 +123,39 @@ func Start(ctx context.Context, addr string) *http.Server {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 	return srv
+}
+
+// accessToken 来自 MINDVERSE_ACCESS_TOKEN。非空时，所有写/交互操作需带匹配 token。
+// 空（默认）则不鉴权——localhost dogfooding 直接用。
+var accessToken string
+
+// withAuth 是写操作鉴权中间件（用户 2026-06-05 提出：防生命体被暴露到公网后被陌生人交互）。
+//
+// 策略（方法级，面向未来）：token 已设时，/api/ 下的**变更类方法**（POST/PUT/PATCH/DELETE）
+// 必须带匹配的 X-Mindverse-Token。读操作（GET/HEAD，含 SSE /api/stream）与静态资源永远开放——
+// 暴露面板看看无妨，但注入消息 / 改 dangerous-skip / 批准装依赖等必须授权。
+func withAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if accessToken != "" && isMutating(r.Method) && strings.HasPrefix(r.URL.Path, "/api/") {
+			got := r.Header.Get("X-Mindverse-Token")
+			if subtle.ConstantTimeCompare([]byte(got), []byte(accessToken)) != 1 {
+				writeJSON(w, http.StatusUnauthorized, map[string]any{
+					"ok": false, "err": "unauthorized: missing or invalid access token",
+				})
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isMutating(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
 }
 
 // -------- API handlers --------
@@ -250,6 +289,8 @@ func apiConfig(w http.ResponseWriter, r *http.Request) {
 		},
 		"skill_auto_approve_deps": storage.GetConfigBool("skill_auto_approve_deps", false),
 		"proactive_im":            storage.GetConfigBool("proactive_im", false),
+		// 前端据此决定是否需要让用户填访问令牌（写操作才需要）。
+		"auth_required": accessToken != "",
 	})
 }
 

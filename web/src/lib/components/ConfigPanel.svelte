@@ -1,18 +1,47 @@
 <script lang="ts">
-	import { api, type Config } from '$lib/api';
+	import { api, type Config, getToken, setToken } from '$lib/api';
 	import { t } from '$lib/i18n';
 
 	let cfg = $state<Config | null>(null);
+	let token = $state(getToken());
+	let saved = $state(false);
 
 	$effect(() => {
 		api.config().then((c) => (cfg = c));
 	});
+
+	function saveToken() {
+		setToken(token.trim());
+		saved = true;
+		setTimeout(() => (saved = false), 1500);
+	}
 </script>
 
 <div class="card">
 	<h2 class="mb-3 text-sm font-semibold text-zinc-400">{$t('config_title')}</h2>
 	{#if cfg}
 		<div class="space-y-3 text-xs">
+			{#if cfg.auth_required}
+				<div class="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+					<div class="mb-1 flex items-center gap-1.5 font-semibold text-amber-300">
+						🔒 {$t('access_token_title')}
+					</div>
+					<p class="mb-2 text-zinc-400">{$t('access_token_hint')}</p>
+					<div class="flex gap-2">
+						<input
+							type="password"
+							bind:value={token}
+							placeholder={$t('access_token_ph')}
+							class="min-w-0 flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 font-mono text-zinc-200 outline-none focus:border-amber-500"
+						/>
+						<button
+							onclick={saveToken}
+							class="shrink-0 rounded bg-amber-600/80 px-3 py-1 font-medium text-white transition hover:bg-amber-600"
+							>{saved ? $t('saved') : $t('save')}</button
+						>
+					</div>
+				</div>
+			{/if}
 			<div>
 				<div class="font-semibold text-zinc-400">{$t('llm_section')}</div>
 				<div class="mt-1 grid grid-cols-2 gap-1 text-zinc-300">

@@ -87,6 +87,7 @@ docker run -d --name mindverse -p 3000:3000 \
 | `LLM_MODEL` | ✅ | Model name to use |
 | `LLM_TEMPERATURE` | – | Response variability (default `0.7`) |
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | – | Optional chat channel, to converse with the life |
+| `MINDVERSE_ACCESS_TOKEN` | – | **Set this if you expose the panel beyond localhost.** Any custom string. With it set, the observation panel stays readable, but write/interactive actions (injecting messages, toggling switches, approving dependency installs) require entering the same token in the panel. |
 
 | Port / Volume | Purpose |
 |---|---|

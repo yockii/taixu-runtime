@@ -506,6 +506,16 @@
 > **仍待**：自动结晶在 finalize 内同步跑一次 LLM（最长 120s），多用户时应移异步；纯知识类是否一律尝试结晶可再调（当前交 LLM 判）。
 > **影响**：`internal/runtime/action/action.go`、`internal/storage/interest.go`、`internal/storage/skill.go`、`R77`、`R79`、`R80`。
 
+### R87 · 面板写操作鉴权（防公网暴露被陌生人交互，已实装 Phase 0.5）
+> 用户 2026-06-05 提出：用户若不慎把生命体面板暴露到公网，只读内容无妨，但**写/交互**操作（注入对话驱动生命体、改 dangerous-skip-permissions、批准装依赖、装 skill）会被陌生人滥用。
+> **方案（共享令牌，方法级中间件）**：
+> - env `MINDVERSE_ACCESS_TOKEN`：非空时启用；空（默认）不鉴权，适合本机 dogfooding。
+> - `httpapi.withAuth` 中间件：`/api/` 下**变更类方法**（POST/PUT/PATCH/DELETE）需带 `X-Mindverse-Token` 且 `subtle.ConstantTimeCompare` 匹配，否则 401。读（GET/HEAD，含 SSE `/api/stream`）与静态资源永远开放。方法级 → 自动覆盖现有 + 未来所有写端点。
+> - `/api/config` 暴露 `auth_required`，前端据此在 ConfigPanel 显示令牌输入框（存 localStorage，仅本机），写请求经 `apiPost` 统一带 header；401 提示令牌无效。
+> **实测**：GET 读无 token→200；POST 写无/错 token→401；POST 写对 token→202。
+> **仍待**：HTTP 明文传输令牌（建议生产配 HTTPS 反代）；单一共享令牌无多用户/权限分级（Phase 4 社交期再细化）；无频率限制。
+> **影响**：`internal/io/httpapi/httpapi.go`、`web/src/lib/api.ts`、`ConfigPanel.svelte`、`SkillPanel.svelte`、`R55`、`R72`、`R73`。
+
 ### R86 · 能量休息闸 + 知识沉淀不强行建技能（已实装 Phase 0.5）
 > 用户 2026-06-05 观察：能量已低值，仍按原速产目标执行。三个机制问题：
 > **① 能量不门控慎思（核心）**：`runCycle` 第7-9步执行目标前**无能量闸**。能量只调度节拍（`scheduler.nextInterval` 低能量×2/×4 变慢），但有目标就硬磕慎思（烧 LLM=烧 energy），回血只在 idle.Tick(+0.01)，而持续兴趣→持续目标→永不进 idle→能量螺旋下降。
