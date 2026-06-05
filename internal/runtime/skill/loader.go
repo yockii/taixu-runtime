@@ -25,11 +25,22 @@ import (
 	"sync"
 	"time"
 
+	"mindverse/internal/bus"
 	"mindverse/internal/shared"
 	"mindverse/internal/storage"
 
 	"gopkg.in/yaml.v3"
 )
+
+// ApprovalNeededEvent 一个技能进入待审批（缺非白名单依赖且未开 auto-approve）时发布。
+// main 订阅后把审批请求经飞书交互卡片推给用户（按钮即点即批，回调走长连接）。
+// 注：boot 期 ScanDir 也可能发布，但那时 main 尚未订阅 → 自然丢弃（boot 待批技能走面板审批）。
+type ApprovalNeededEvent struct {
+	LifeID    string
+	SkillID   string
+	SkillName string
+	Deps      string // 人类可读的待装依赖摘要
+}
 
 const (
 	// SkillsRoot skill 私有安装根目录（容器内）。
@@ -319,13 +330,35 @@ func loadFolder(folder, content string) (*storage.SkillInstance, error) {
 	if err := storage.UpsertSkillInstance(inst); err != nil {
 		return nil, fmt.Errorf("skill: upsert: %w", err)
 	}
-	if inst.Status == "pending_approval" && auto {
-		if err := ApproveDeps(id, "auto_approve"); err != nil {
-			slog.Warn("skill auto-approve install failed", "err", err, "id", id)
-			return storage.GetSkillInstance(id)
+	if inst.Status == "pending_approval" {
+		if auto {
+			if err := ApproveDeps(id, "auto_approve"); err != nil {
+				slog.Warn("skill auto-approve install failed", "err", err, "id", id)
+				return storage.GetSkillInstance(id)
+			}
+		} else {
+			// 推审批卡片给用户（main 订阅 → 飞书交互卡片）。无订阅者时自然丢弃，面板审批兜底。
+			bus.Publish(ApprovalNeededEvent{
+				LifeID:    lid,
+				SkillID:   id,
+				SkillName: fm.Name,
+				Deps:      depsHuman(missing),
+			})
 		}
 	}
 	return storage.GetSkillInstance(id)
+}
+
+// depsHuman 把待装依赖列表拍成人类可读摘要（卡片展示用）。
+func depsHuman(deps []Dep) string {
+	if len(deps) == 0 {
+		return "（无）"
+	}
+	parts := make([]string, 0, len(deps))
+	for _, d := range deps {
+		parts = append(parts, d.Runtime+": "+d.Package)
+	}
+	return strings.Join(parts, "\n")
 }
 
 // sanitizeName 把 skill name 规整为安全的文件夹名。

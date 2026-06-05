@@ -133,7 +133,7 @@ func main() {
 	_ = httpapi.Start(ctx, httpAddr)
 	slog.Info("http listening", "addr", httpAddr)
 
-	wireLark(ctx)
+	wireLark(ctx, lifeID)
 
 	if err := scheduler.Run(ctx, func(cycleID int64) {
 		runCycle(cycleID, lifeID, genome)
@@ -347,7 +347,7 @@ func buildLLM() error {
 	})
 }
 
-func wireLark(ctx context.Context) {
+func wireLark(ctx context.Context, lifeID string) {
 	appID := os.Getenv("FEISHU_APP_ID")
 	if appID == "" {
 		slog.Info("feishu not configured; skip")
@@ -356,10 +356,47 @@ func wireLark(ctx context.Context) {
 	if err := lark.Init(lark.Config{
 		AppID:     appID,
 		AppSecret: os.Getenv("FEISHU_APP_SECRET"),
+		InboxDir:  filepath.Join(envOr("MINDVERSE_SANDBOX", "/workspace/sandbox"), "inbox"),
 	}); err != nil {
 		slog.Error("lark init", "err", err)
 		return
 	}
+	// 卡片按钮回调（走长连接）→ skill 批准/拒绝（单一真相，不复制安装逻辑）。
+	lark.SetCardActionHandler(func(action string, value map[string]any) (string, bool) {
+		sid, _ := value["skill_id"].(string)
+		switch action {
+		case "skill_approve":
+			if err := skill.ApproveDeps(sid, "user_approve"); err != nil {
+				slog.Warn("card approve deps", "skill", sid, "err", err)
+				return "批准失败：" + err.Error(), false
+			}
+			return "已批准，依赖安装中", true
+		case "skill_reject":
+			if err := skill.RejectDeps(sid); err != nil {
+				slog.Warn("card reject deps", "skill", sid, "err", err)
+				return "拒绝失败", false
+			}
+			return "已拒绝该技能", true
+		}
+		return "未知操作", false
+	})
+	// 技能待审批 → 推飞书审批卡片给用户（按钮即点即批）。收件人取最近发言者，否则取最近联系人。
+	bus.Subscribe(skill.ApprovalNeededEvent{}, func(e bus.Event) {
+		ev := e.(skill.ApprovalNeededEvent)
+		to := lark.LastSenderOpenID()
+		if to == "" {
+			if c, err := storage.MostRecentContact(lifeID); err == nil && c != nil {
+				to = c.PeerID
+			}
+		}
+		if to == "" {
+			slog.Warn("skill approval card: no recipient, fallback to panel", "skill", ev.SkillID)
+			return
+		}
+		if err := lark.SendApprovalCard(to, ev.SkillID, ev.SkillName, ev.Deps); err != nil {
+			slog.Error("send approval card", "skill", ev.SkillID, "err", err)
+		}
+	})
 	// 反射对话每一轮的 content → 单独发飞书消息（自然分段）
 	bus.Subscribe(reflex.ReplyEvent{}, func(e bus.Event) {
 		ev := e.(reflex.ReplyEvent)
