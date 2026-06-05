@@ -566,12 +566,19 @@
 > **仍待**：同一 seed 多次探索产生多条不同 digest 候选，低置信的旧 digest 会滞留候选区（无害，是渐进笔记）；未做按 seed 去重。长跑验证 `sem_confirmed` 是否随掌握增长。
 > **影响**：`internal/storage/memory.go`、`internal/storage/memory_test.go`、`internal/runtime/tools/builtin/builtin.go`、`internal/runtime/reflect/reflect.go`、`R74`、`R66`、`R65`。
 
-### R96 · Phase 0.5 持续观察窗口缩短 1 月→1 周 + 飞书全消息矩阵（Phase B 规划）
+### R96 · Phase 0.5 持续观察窗口缩短 1 月→1 周 + 飞书全消息矩阵（已实装+实测 Phase B）
 > 用户 2026-06-05 决策两项：
 > **① 持续观察窗口缩短**：PRD §7.4 / §1 / §2.5 的"养 ≥1 月"改为 **≥1 周**（飞书双向稳定性仍 ≥3 周不变，是更长的硬闸，故长跑实际由飞书 3 周门控）。理由：加速 Phase 0 退出判定迭代。
-> **② 飞书增强（Phase B，全消息矩阵）**：当前 `lark.go` 只收 `text`+p2p、只发 `text`，其余类型全丢。规划升级：**收** post 富文本→文本提取、image 存引用、file 落 sandbox（audio 转写留 Phase 1）；**发** text/post/card/image；**card action 回调 + 确认流**——把现有需用户确认的流程（skill L3 依赖批准、危险操作）走飞书交互卡片获取确认。
-> **排序**：飞书增强是附加 IM 能力、不污染生命内部状态，镜像升级保留数据卷 → 在生命**锁定起跑之后**以镜像升级方式上线，时钟不清零。开发于临时生命/分支。
-> **影响**：`docs/PHASE-0-PRD.md`、`internal/io/lark/lark.go`、`internal/runtime/skill/loader.go`（L3 审批接卡片）、`R55`、Phase 4 `07`（群聊/多渠道）。
+> **② 飞书全消息矩阵（Phase B，已实装+实测）**：`lark.go` 原只收 `text`+p2p、只发 `text`。现：
+> - **收**：`handleMessage` switch MsgType——post 拍平为文本（标题 + text/a/at，[图片]/[视频]占位，容忍语言包裹/直接两形状）；image/file/audio 经 `Im.V1.MessageResource.Get(msgID,key,type)` 下载落 `<sandbox>/inbox` + 合成文本提示喂 reflex/perception（无视觉/转写，audio 留 Phase 1）。
+> - **发**：`SendCard`/`SendApprovalCard` + 导出 `SendPost`/`SendImageKey`。
+> - **确认流（真按钮，走长连接）**：skill 缺非白名单依赖且非 auto → `skill.ApprovalNeededEvent`（bus）→ main 解析收件人（lastSender→MostRecentContact）→ 发 3 选项卡片（**批准一次 / 批准类似请求(→开 auto-approve) / 拒绝**）；`dispatcher.OnP2CardActionTrigger` → `lark.handleCardAction` → 注册的 `CardActionFunc`（main）→ `skill.ApproveDeps`/`RejectDeps`（单一真相，不复制安装逻辑）。
+> **审计纠正**：先前调研误判"card 回调只能 HTTP webhook"——那是 v1 旧机制。v3.9.4 `dispatcher.OnP2CardActionTrigger` + ws `handleDataFrame`（"for cardCallback" 回写）**走长连可收**，无需公网 URL。实测通过。
+> **实测踩坑（均已修）**：① 卡片回调有 **3s 响应硬截止**——批准装依赖（pip，数十秒）必须**异步**，否则飞书提示"回调超时未响应"。② 在回调响应里塞 v1-schema 卡片作 `card_json` data 被拒（**err 200672**）；改用 `Im.V1.Message.Patch(open_message_id, 结果卡片JSON)` **异步更新**原卡片（撤按钮、显示结果），与 3s 截止解耦。`open_message_id` 取自回调 `Context`。
+> **解耦**：lark 不识 skill（注册式 `CardActionFunc`）；skill 不识 lark（bus 事件）。沿用 `ReplyEvent` 同款模式。
+> **一次性外带**：飞书控制台订阅 `card.action.trigger`（事件与回调）+ 选**长连接**投递模式（代码无法自动配）。用户已配。
+> **仍待**：① 接收侧 image/post **实测**仅单测覆盖解析，活体收图/富文本待自然 dogfooding 验证；② 卡片 Patch 用 message Patch（30min 窗口内），超窗不更新；③ 群聊入站仍丢弃（Phase 4）；④ 出站富消息（post/image）已有 helper 但暂无生命体侧工具触发（按需再加）。
+> **影响**：`internal/io/lark/lark.go`+`lark_test.go`、`internal/runtime/skill/loader.go`（`ApprovalNeededEvent`）、`cmd/runtime/main.go`（接线）、`docs/PHASE-0-PRD.md`、`R55`、`R87`、Phase 4 `07`（群聊/多渠道）。
 
 ### R88 · 对话历史 + 行为降频 + 技能生命周期完善（已实装 Phase 0.5）
 > 用户 2026-06-05 一批改进：
