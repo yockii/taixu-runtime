@@ -22,6 +22,7 @@
 	import GoalQueue from '$lib/components/GoalQueue.svelte';
 	import ReflectionList from '$lib/components/ReflectionList.svelte';
 	import ActionLogPanel from '$lib/components/ActionLog.svelte';
+	import DialoguePanel from '$lib/components/DialoguePanel.svelte';
 	import ToolAuditPanel from '$lib/components/ToolAudit.svelte';
 	import ConfigPanel from '$lib/components/ConfigPanel.svelte';
 	import InterestPanel from '$lib/components/InterestPanel.svelte';
@@ -106,7 +107,7 @@
 		<StatePanel {life} {mental} />
 		<GoalQueue />
 		<div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-			<ActionLogPanel mode="dialogue" />
+			<DialoguePanel />
 			<ActionLogPanel mode="action" />
 		</div>
 		<EpisodeStream />

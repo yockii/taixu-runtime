@@ -102,6 +102,7 @@ func Start(ctx context.Context, addr string) *http.Server {
 	mux.HandleFunc("/api/contacts", apiContacts)
 	mux.HandleFunc("/api/config/auto-approve-deps", apiAutoApproveDeps)
 	mux.HandleFunc("/api/config/proactive-im", apiProactiveIM)
+	mux.HandleFunc("/api/dialogue", apiDialogue)
 	mux.HandleFunc("/api/stream", apiStream)
 	mux.HandleFunc("/api/external-request", apiExternalRequest)
 
@@ -171,6 +172,9 @@ func isProtectedRead(r *http.Request) bool {
 	}
 	if r.URL.Path == "/api/actions" {
 		return r.URL.Query().Get("view") != "action"
+	}
+	if r.URL.Path == "/api/dialogue" { // 完整对话（用户原话 + 生命体回复）= 隐私
+		return true
 	}
 	return false
 }
@@ -259,6 +263,18 @@ func apiActions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, xs)
+}
+
+// apiDialogue 返回完整对话（用户原话 + 生命体回复，按时间正序），供对话面板区分双方。
+// 之前对话面板只取 action_log 的 reflex 行（仅生命体单边）→ 看不出谁在说话（"你我不分"）。
+func apiDialogue(w http.ResponseWriter, r *http.Request) {
+	limit := intParam(r, "limit", 30, 1, 200)
+	turns, err := storage.RecentDialogueTurns(lifeID, limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, turns)
 }
 
 func apiToolsAudit(w http.ResponseWriter, r *http.Request) {

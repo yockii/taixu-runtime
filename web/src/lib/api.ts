@@ -183,8 +183,20 @@ export const api = {
 		return r.json();
 	},
 	injectExternal: (content: string, channel = 'cli', from = 'panel') =>
-		apiPost<{ id: string; queued_at: string }>('/api/external-request', { content, channel, from })
+		apiPost<{ id: string; queued_at: string }>('/api/external-request', { content, channel, from }),
+	dialogue: async (limit = 30): Promise<DialogueTurn[]> => {
+		const r = await fetch(`/api/dialogue?limit=${limit}`, { headers: { ...authHeaders() } });
+		if (r.status === 401) throw new Error('unauthorized');
+		if (!r.ok) throw new Error(`/api/dialogue → ${r.status}`);
+		return r.json();
+	}
 };
+
+export interface DialogueTurn {
+	role: string; // 'user' 用户 / 'assistant' 生命体
+	content: string;
+	at: number;
+}
 
 export function unixToDate(unix: number, locale = 'zh-CN'): string {
 	if (!unix) return '—';

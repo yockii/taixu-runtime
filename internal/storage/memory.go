@@ -6,11 +6,11 @@ import (
 	"mindverse/internal/core"
 )
 
-// DialogueTurn 一轮对话（用户或生命体的一句话），供 reflex 载入历史上下文。
+// DialogueTurn 一轮对话（用户或生命体的一句话），供 reflex 载入历史上下文 + 面板展示。
 type DialogueTurn struct {
-	Role    string // "user"（用户）/ "assistant"（生命体）
-	Content string
-	At      int64
+	Role    string `json:"role"` // "user"（用户）/ "assistant"（生命体）
+	Content string `json:"content"`
+	At      int64  `json:"at"`
 }
 
 // RecentDialogueTurns 取最近 limit 轮对话（按时间正序），从 raw_trail 的
