@@ -16,15 +16,17 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
 )
 
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-var (
-	db *sql.DB
-)
+// db 是 *sqlx.DB：内嵌 *sql.DB，故既有 Query/Exec/QueryRow 原样可用，
+// 同时提供 Get/Select 按 struct `db:"col"` tag 扫描，省去手写 Scan 列表（用户 2026-06-05 选型）。
+// 迁移仍走 migrations/*.sql 文件（可审 / 带设计理由 / 可回滚）——不引入 ORM AutoMigrate。
+var db *sqlx.DB
 
 // Init 打开（或创建）SQLite 数据库并应用迁移。
 func Init(path string) error {
@@ -40,7 +42,7 @@ func Init(path string) error {
 		_ = d.Close()
 		return fmt.Errorf("ping sqlite: %w", err)
 	}
-	db = d
+	db = sqlx.NewDb(d, "sqlite")
 	if err := migrate(); err != nil {
 		_ = db.Close()
 		db = nil
@@ -60,7 +62,7 @@ func Close() error {
 }
 
 // DB 暴露原始 *sql.DB（仅 storage 包内部使用；外部不应取）。
-func DB() *sql.DB { return db }
+func DB() *sql.DB { return db.DB }
 
 // ErrNoRows re-export 便于调用方 errors.Is 判断。
 var ErrNoRows = sql.ErrNoRows

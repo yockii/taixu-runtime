@@ -4,6 +4,7 @@ go 1.25.6
 
 require (
 	github.com/go-rod/rod v0.116.2
+	github.com/jmoiron/sqlx v1.4.0
 	github.com/larksuite/oapi-sdk-go/v3 v3.9.4
 	github.com/sashabaranov/go-openai v1.41.2
 	gopkg.in/yaml.v3 v3.0.1

@@ -1,18 +1,23 @@
 package storage
 
+import (
+	"database/sql"
+	"errors"
+)
+
 // Contact 生命体对话过的对象（A 社交联动 / B 主动发消息）。
 //
 // 前瞻（Phase 4）：peer 将不止"用户"，还含其他生命体 / 世界服务；channel 多渠道化；
 // 接 reputation / social 资源与 Relationship/Pact。见 migrations/005_contacts.sql 注释。
 type Contact struct {
-	ID       int64  `json:"id"`
-	Channel  string `json:"channel"`
-	PeerID   string `json:"peer_id"`
-	PeerName string `json:"peer_name,omitempty"`
-	ChatType string `json:"chat_type"` // "direct"（单聊）/ "group"（群聊）
-	MsgCount int64  `json:"msg_count"`
-	FirstAt  int64  `json:"first_at"`
-	LastAt   int64  `json:"last_at"`
+	ID       int64  `json:"id" db:"id"`
+	Channel  string `json:"channel" db:"channel"`
+	PeerID   string `json:"peer_id" db:"peer_id"`
+	PeerName string `json:"peer_name,omitempty" db:"peer_name"`
+	ChatType string `json:"chat_type" db:"chat_type"` // "direct"（单聊）/ "group"（群聊）
+	MsgCount int64  `json:"msg_count" db:"msg_count"`
+	FirstAt  int64  `json:"first_at" db:"first_at"`
+	LastAt   int64  `json:"last_at" db:"last_at"`
 }
 
 // ChatTypeDirect / ChatTypeGroup 会话类型枚举。空串归一为 direct。
@@ -63,15 +68,14 @@ func UpsertContact(lifeID, channel, peer, peerName, chatType string, ts int64) e
 // MostRecentContact 取最近交互的联系人（主动发消息选目标）。无则 (nil, nil)。
 func MostRecentContact(lifeID string) (*Contact, error) {
 	var c Contact
-	err := db.QueryRow(`
-		SELECT id, channel, peer_id, COALESCE(peer_name,''), chat_type, msg_count, first_at, last_at
+	err := db.Get(&c, `
+		SELECT id, channel, peer_id, COALESCE(peer_name,'') AS peer_name, chat_type, msg_count, first_at, last_at
 		FROM contact WHERE life_id = ?
-		ORDER BY last_at DESC LIMIT 1`, lifeID).
-		Scan(&c.ID, &c.Channel, &c.PeerID, &c.PeerName, &c.ChatType, &c.MsgCount, &c.FirstAt, &c.LastAt)
+		ORDER BY last_at DESC LIMIT 1`, lifeID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		if err.Error() == "sql: no rows in result set" {
-			return nil, nil
-		}
 		return nil, err
 	}
 	return &c, nil
@@ -81,15 +85,14 @@ func MostRecentContact(lifeID string) (*Contact, error) {
 func GetContact(lifeID, channel, peer string) (*Contact, error) {
 	peer = peerKey(peer)
 	var c Contact
-	err := db.QueryRow(`
-		SELECT id, channel, peer_id, COALESCE(peer_name,''), chat_type, msg_count, first_at, last_at
+	err := db.Get(&c, `
+		SELECT id, channel, peer_id, COALESCE(peer_name,'') AS peer_name, chat_type, msg_count, first_at, last_at
 		FROM contact WHERE life_id = ? AND channel = ? AND peer_id = ?`,
-		lifeID, channel, peer).
-		Scan(&c.ID, &c.Channel, &c.PeerID, &c.PeerName, &c.ChatType, &c.MsgCount, &c.FirstAt, &c.LastAt)
+		lifeID, channel, peer)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		if err.Error() == "sql: no rows in result set" {
-			return nil, nil
-		}
 		return nil, err
 	}
 	return &c, nil
@@ -100,20 +103,12 @@ func PeerKey(peer string) string { return peerKey(peer) }
 
 // ListContacts 全部联系人（观察用）。
 func ListContacts(lifeID string, limit int) ([]Contact, error) {
-	rows, err := db.Query(`
-		SELECT id, channel, peer_id, COALESCE(peer_name,''), chat_type, msg_count, first_at, last_at
+	out := []Contact{}
+	err := db.Select(&out, `
+		SELECT id, channel, peer_id, COALESCE(peer_name,'') AS peer_name, chat_type, msg_count, first_at, last_at
 		FROM contact WHERE life_id = ? ORDER BY last_at DESC LIMIT ?`, lifeID, limit)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []Contact{}
-	for rows.Next() {
-		var c Contact
-		if err := rows.Scan(&c.ID, &c.Channel, &c.PeerID, &c.PeerName, &c.ChatType, &c.MsgCount, &c.FirstAt, &c.LastAt); err != nil {
-			return nil, err
-		}
-		out = append(out, c)
-	}
-	return out, rows.Err()
+	return out, nil
 }
