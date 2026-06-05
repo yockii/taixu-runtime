@@ -1,6 +1,60 @@
 package storage
 
-import "mindverse/internal/core"
+import (
+	"encoding/json"
+
+	"mindverse/internal/core"
+)
+
+// DialogueTurn 一轮对话（用户或生命体的一句话），供 reflex 载入历史上下文。
+type DialogueTurn struct {
+	Role    string // "user"（用户）/ "assistant"（生命体）
+	Content string
+	At      int64
+}
+
+// RecentDialogueTurns 取最近 limit 轮对话（按时间正序），从 raw_trail 的
+// reflex.received（用户）/ reflex.speak（生命体）事件重建。
+// 给 reflex 注入近期会话历史，避免大模型回复有失忆感（用户 2026-06-05）。
+func RecentDialogueTurns(lifeID string, limit int) ([]DialogueTurn, error) {
+	rows, err := db.Query(`
+		SELECT event_type, payload, created_at FROM raw_trail
+		WHERE life_id = ? AND event_type IN ('reflex.received','reflex.speak')
+		ORDER BY id DESC LIMIT ?`, lifeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var rev []DialogueTurn
+	for rows.Next() {
+		var et, payload string
+		var at int64
+		if err := rows.Scan(&et, &payload, &at); err != nil {
+			return nil, err
+		}
+		var p struct {
+			Content string `json:"content"`
+		}
+		_ = json.Unmarshal([]byte(payload), &p)
+		if p.Content == "" {
+			continue
+		}
+		role := "assistant"
+		if et == "reflex.received" {
+			role = "user"
+		}
+		rev = append(rev, DialogueTurn{Role: role, Content: p.Content, At: at})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// 反转为时间正序
+	out := make([]DialogueTurn, 0, len(rev))
+	for i := len(rev) - 1; i >= 0; i-- {
+		out = append(out, rev[i])
+	}
+	return out, nil
+}
 
 func AppendWorking(lifeID string, cycleID int64, slot, content string, ts int64) (int64, error) {
 	r, err := db.Exec(`

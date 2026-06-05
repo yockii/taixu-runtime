@@ -23,6 +23,7 @@ import (
 	"mindverse/internal/io/llm"
 	"mindverse/internal/runtime/memory"
 	"mindverse/internal/runtime/reflex"
+	"mindverse/internal/runtime/skill"
 	"mindverse/internal/runtime/state"
 	"mindverse/internal/shared"
 	"mindverse/internal/storage"
@@ -184,6 +185,9 @@ func spawnSpontaneousInterest(genome core.Genome) bool {
 		_ = memory.AppendEvent(0, "idle.spontaneous_interest", map[string]any{
 			"content": a.Content, "kind": a.Kind, "why": a.Why,
 		})
+		if revived := skill.ReactivateForInterest(a.Content); len(revived) > 0 {
+			_ = memory.AppendEvent(0, "skill.reactivated", map[string]any{"skills": revived, "interest": a.Content})
+		}
 		slog.Info("idle spawned spontaneous interest", "content", a.Content, "kind", a.Kind)
 		return true
 	}

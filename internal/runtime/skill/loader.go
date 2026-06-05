@@ -289,6 +289,12 @@ func loadFolder(folder, content string) (*storage.SkillInstance, error) {
 		inst.PendingDeps = string(depsJSON)
 		inst.Status = "pending_approval"
 	}
+	// 保留生命周期状态（R88）：已 archived（遗忘待重激活）/ disabled（用户拒绝）的技能，
+	// 重启/rescan 不能因文件夹还在就复活成 ready——否则归档形同虚设。重激活只经 ReactivateForInterest。
+	if prev, _ := storage.GetSkillInstance(id); prev != nil &&
+		(prev.Status == "archived" || prev.Status == "disabled") {
+		inst.Status = prev.Status
+	}
 	if err := storage.UpsertSkillInstance(inst); err != nil {
 		return nil, fmt.Errorf("skill: upsert: %w", err)
 	}
@@ -360,6 +366,62 @@ func ApproveDeps(skillID, installedBy string) error {
 func RejectDeps(skillID string) error {
 	return storage.UpdateSkillStatus(skillID, "disabled", true)
 }
+
+// ReactivateForInterest 当一个新兴趣点出现时，检查是否有相关的**归档**技能可重新拾起（R88）。
+//
+// 命中则 status archived→ready：生命体「想起自己其实会这个」，慎思层即可 use_skill 而非从零重学。
+// 返回被重激活的技能名。匹配保守（避免误激活），用名称/描述与兴趣内容的关键片段重叠判定。
+func ReactivateForInterest(content string) []string {
+	if strings.TrimSpace(content) == "" {
+		return nil
+	}
+	mu.Lock()
+	lid := lifeID
+	mu.Unlock()
+	archived, err := storage.ListSkillsByStatus(lid, "archived", 100)
+	if err != nil || len(archived) == 0 {
+		return nil
+	}
+	now := shared.SystemClock.UnixSec()
+	var revived []string
+	for _, s := range archived {
+		if !looselyRelated(content, s.Name+" "+s.Description) {
+			continue
+		}
+		if err := storage.ReactivateSkill(s.ID, now); err != nil {
+			slog.Warn("reactivate skill", "err", err, "id", s.ID)
+			continue
+		}
+		revived = append(revived, s.Name)
+		slog.Info("reactivated archived skill for interest", "skill", s.Name, "interest", truncate(content, 40))
+	}
+	return revived
+}
+
+// looselyRelated 判断兴趣内容与技能名/描述是否相关（保守）：
+// ascii 词 ≥4 字符重叠，或 CJK ≥3 字连续片段重叠。
+func looselyRelated(interest, skillText string) bool {
+	hay := strings.ToLower(skillText)
+	needle := strings.ToLower(interest)
+	for _, w := range strings.FieldsFunc(needle, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9')
+	}) {
+		if len(w) >= 4 && strings.Contains(hay, w) {
+			return true
+		}
+	}
+	runes := []rune(needle)
+	for i := 0; i+3 <= len(runes); i++ {
+		if isCJK(runes[i]) && isCJK(runes[i+1]) && isCJK(runes[i+2]) {
+			if strings.Contains(hay, string(runes[i:i+3])) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isCJK(r rune) bool { return r >= 0x4E00 && r <= 0x9FFF }
 
 // ListReady 返回当前生命体 ready 的 skill（供 deliberative prompt 列出）。
 func ListReady() ([]storage.SkillInstance, error) {

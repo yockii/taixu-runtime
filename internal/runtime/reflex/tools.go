@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 
 	"mindverse/internal/runtime/memory"
+	"mindverse/internal/runtime/skill"
 	"mindverse/internal/runtime/state"
 	"mindverse/internal/runtime/tools"
 	"mindverse/internal/shared"
@@ -142,5 +143,9 @@ func handlerAddInterest(_ context.Context, tctx tools.Context, argsJSON string) 
 		"kind":    a.Kind,
 		"reason":  a.Reason,
 	})
+	// 相关的归档技能重新拾起（R88）：兴趣再现 → 想起自己其实会这个。
+	if revived := skill.ReactivateForInterest(a.Content); len(revived) > 0 {
+		_ = memory.AppendEvent(0, "skill.reactivated", map[string]any{"skills": revived, "interest": a.Content})
+	}
 	return `{"ok":true}`, nil
 }

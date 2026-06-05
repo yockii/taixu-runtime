@@ -145,6 +145,25 @@ func main() {
 // 慎思烧 LLM/energy，低能量硬磕会油尽灯枯；累了就歇，让能量恢复后再做。
 const RestEnergyThreshold = 0.20
 
+// BehaviorCooldownBaseSec 反思 / 新目标产生的最小间隔基线（R88 降频）。
+// 实际间隔 = 基线 + (cycleID % 900)，即 15-30min 抖动，避免每 60s cycle 就反思/派新目标。
+const BehaviorCooldownBaseSec = 900
+
+// behaviorDue 距上次该行为是否已过冷却（schema_meta 记时间戳；jitter 用 cycleID 抖动到 30min）。
+func behaviorDue(key string, now, jitter int64) bool {
+	v, ok, err := storage.GetMeta(key)
+	if err != nil || !ok {
+		return true
+	}
+	last, _ := strconv.ParseInt(v, 10, 64)
+	interval := BehaviorCooldownBaseSec + (jitter % 900)
+	return now-last >= interval
+}
+
+func markBehavior(key string, now int64) {
+	_ = storage.SetMeta(key, strconv.FormatInt(now, 10))
+}
+
 // runCycle 9 步循环。
 func runCycle(cycleID int64, lifeID string, genome core.Genome) {
 	// 1. Perceive
@@ -170,34 +189,38 @@ func runCycle(cycleID int64, lifeID string, genome core.Genome) {
 	// 3. RecordMemory（工作记忆汇总）
 	memory.PutWorking(cycleID, "perceive.summary", frame.SummaryLine())
 
-	// 4. ConsiderReflect
+	// 4. ConsiderReflect（降频 R88：反思按 15-30min 间隔，不再每 cycle）
 	ls, ms := state.Snapshot()
-	if reflect.ShouldReflect(genome, ls, ms) {
+	cycleNow := shared.SystemClock.UnixSec()
+	if behaviorDue("reflect_last:"+lifeID, cycleNow, cycleID) && reflect.ShouldReflect(genome, ls, ms) {
 		promoted, rid, err := reflect.Run("scheduler.cycle")
 		if err != nil {
 			slog.Warn("reflect", "err", err)
 		} else {
+			markBehavior("reflect_last:"+lifeID, cycleNow)
 			_ = memory.AppendEvent(cycleID, "reflect", map[string]any{"promoted": promoted, "id": rid})
 			slog.Info("reflect", "promoted", promoted, "id", rid)
 		}
 	}
 
-	// 5. CollectGoals
-	ds := drives.Derive(genome, ls, ms, lifeID)
-	cands := goal.CollectCandidates(frame, ds)
-
-	// 6. Arbitrate
-	values, err := storage.LoadValues(lifeID)
-	if err != nil {
-		slog.Warn("load values", "err", err)
-		values = &core.Values{LifeID: lifeID, Weights: map[string]float64{}}
-	}
-	ids, err := goal.Arbitrate(cands, values, 3)
-	if err != nil {
-		slog.Warn("arbitrate", "err", err)
-	}
-	if len(ids) > 0 {
-		_ = memory.AppendEvent(cycleID, "goals.enqueued", map[string]any{"ids": ids})
+	// 5-6. CollectGoals + Arbitrate（降频 R88：新目标按 15-30min 产生一次；
+	// 已在队列的 pending 目标不受影响、照常执行——这里只节流"产生新目标"的频率）。
+	if behaviorDue("goalgen_last:"+lifeID, cycleNow, cycleID) {
+		ds := drives.Derive(genome, ls, ms, lifeID)
+		cands := goal.CollectCandidates(frame, ds)
+		values, err := storage.LoadValues(lifeID)
+		if err != nil {
+			slog.Warn("load values", "err", err)
+			values = &core.Values{LifeID: lifeID, Weights: map[string]float64{}}
+		}
+		ids, err := goal.Arbitrate(cands, values, 3)
+		if err != nil {
+			slog.Warn("arbitrate", "err", err)
+		}
+		if len(ids) > 0 {
+			markBehavior("goalgen_last:"+lifeID, cycleNow)
+			_ = memory.AppendEvent(cycleID, "goals.enqueued", map[string]any{"ids": ids})
+		}
 	}
 
 	// 7-8-9. Plan / Act / Feedback

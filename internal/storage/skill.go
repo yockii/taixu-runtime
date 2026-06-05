@@ -193,8 +193,10 @@ func DecaySkills(lifeID string, now int64, halfLifeDays float64) error {
 		}
 		nm := it.mastery * math.Pow(dailyFactor, elapsedDays)
 		if nm < forgetThreshold {
-			if _, err := db.Exec(`UPDATE skill_instance SET mastery=0, status='disabled' WHERE id=?`, it.id); err != nil {
-				return fmt.Errorf("forget skill %s: %w", it.id, err)
+			// 遗忘 = **归档**（不删、不清 mastery，R88）：保留技能文件夹 + 血缘 + 残留掌握度，
+			// 日后相关兴趣再现时可 ReactivateSkill 重新拾起，不必从零重学。
+			if _, err := db.Exec(`UPDATE skill_instance SET status='archived' WHERE id=?`, it.id); err != nil {
+				return fmt.Errorf("archive skill %s: %w", it.id, err)
 			}
 			continue
 		}
@@ -203,6 +205,29 @@ func DecaySkills(lifeID string, now int64, halfLifeDays float64) error {
 		}
 	}
 	return nil
+}
+
+// ListSkillsByStatus 取某状态的技能（如 'archived' 供重激活匹配）。
+func ListSkillsByStatus(lifeID, status string, limit int) ([]SkillInstance, error) {
+	all, err := ListSkillInstances(lifeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := all[:0]
+	for _, s := range all {
+		if s.Status == status {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+// ReactivateSkill 归档技能重新拾起：status archived→ready，刷新 last_used 起算遗忘。
+func ReactivateSkill(id string, ts int64) error {
+	_, err := db.Exec(`
+		UPDATE skill_instance SET status='ready', last_used_at=?
+		WHERE id=? AND status='archived'`, ts, id)
+	return err
 }
 
 // InsertSkillDependency 记一条依赖装载审计。

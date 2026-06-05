@@ -170,12 +170,18 @@ func applySocialFulfillment(real bool) {
 	_ = state.Apply(d)
 }
 
+// MaxHistoryTurns 注入对话的近期历史轮数（用户+生命体合计）。
+const MaxHistoryTurns = 10
+
+// MaxHistoryCharsPerTurn 单轮历史截断长度（控 token）。
+const MaxHistoryCharsPerTurn = 600
+
 func runAgent(req IncomingRequest, mode Mode) {
 	system := buildSystemPrompt(mode)
-	msgs := []llm.Message{
-		{Role: "system", Content: system},
-		{Role: "user", Content: req.Content},
-	}
+	msgs := make([]llm.Message, 0, MaxHistoryTurns+2)
+	msgs = append(msgs, llm.Message{Role: "system", Content: system})
+	msgs = append(msgs, dialogueHistory(req.Content)...)
+	msgs = append(msgs, llm.Message{Role: "user", Content: req.Content})
 	reflexTools := tools.ListLLMTools(tools.LaneReflex)
 	tctx := tools.Context{LifeID: lifeID, Channel: req.Channel, From: req.From}
 
@@ -325,6 +331,30 @@ func buildSystemPrompt(mode Mode) string {
 		hint = "\n你现在状态很好，对感兴趣的话题可以多说几句，主动追问。"
 	}
 	return base + hint
+}
+
+// dialogueHistory 取近期对话历史（用户+生命体往来）注入 prompt，避免大模型回复失忆/失意。
+// 当前入站消息在 handle 里已先写入 raw_trail，故去掉与之重复的末尾 user 轮，再由调用方追加。
+func dialogueHistory(currentContent string) []llm.Message {
+	turns, err := storage.RecentDialogueTurns(lifeID, MaxHistoryTurns+2)
+	if err != nil || len(turns) == 0 {
+		return nil
+	}
+	if n := len(turns); turns[n-1].Role == "user" && turns[n-1].Content == currentContent {
+		turns = turns[:n-1]
+	}
+	if len(turns) > MaxHistoryTurns {
+		turns = turns[len(turns)-MaxHistoryTurns:]
+	}
+	out := make([]llm.Message, 0, len(turns))
+	for _, t := range turns {
+		c := t.Content
+		if len(c) > MaxHistoryCharsPerTurn {
+			c = c[:MaxHistoryCharsPerTurn] + "…"
+		}
+		out = append(out, llm.Message{Role: t.Role, Content: c})
+	}
+	return out
 }
 
 // selfActivityContext 把生命体「此刻/最近自主在做的事」注入对话 prompt。

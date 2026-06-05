@@ -286,6 +286,7 @@ func buildDeliberativeSystemPrompt(g *core.Goal) string {
 	sb.WriteString("- enqueue_subgoal(intent, payload, priority?)  拆子任务入队\n")
 	sb.WriteString("- record_learning(seed_id, digest, mastery)  可选：回写你的理解摘要，帮未来的你接上进度\n")
 	sb.WriteString("- crystallize_skill(seed_id, name, instructions)  把已掌握知识手动结晶成技能（也会在掌握度够时自动触发）\n")
+	sb.WriteString("- use_skill(name)                  读取某个已掌握技能的详细指引再照做（技能名见下方清单）\n")
 	sb.WriteString("- note_to_self(slot, content)      暂存想法到工作记忆\n")
 	sb.WriteString("- seal_episode()                   主动封段（重要节点）\n")
 	sb.WriteString("- fs.read / fs.write / fs.list / fs.mkdir   sandbox 文件系统\n")
@@ -304,7 +305,28 @@ func buildDeliberativeSystemPrompt(g *core.Goal) string {
 	sb.WriteString("- 若 payload 含 interest_seed#N：踏实地去探索（查资料 / 跑脚本 / 记笔记）。" +
 		"引擎会按你这轮的探索深度自动累积掌握度，学透后自动把它结晶成你的技能——\n")
 	sb.WriteString("  所以**重在真去做、做扎实**，而非走流程。想给未来的自己留个进度摘要可调 record_learning。\n")
+
+	// 渐进式披露（Anthropic skills 规范）：只列技能名 + 一句话描述，正文按需用 use_skill 读，省 token。
+	if skills, err := skill.ListReady(); err == nil && len(skills) > 0 {
+		sb.WriteString("\n你已掌握、可调用的技能（需要时先 use_skill(name) 读详细步骤再照做，别凭记忆臆造）：\n")
+		for _, s := range skills {
+			sb.WriteString(fmt.Sprintf("- %s：%s\n", s.Name, oneLineDesc(s.Description)))
+		}
+	}
 	return sb.String()
+}
+
+// oneLineDesc 把技能描述压成单行短摘要（列清单用）。
+func oneLineDesc(s string) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.TrimSpace(s)
+	if len(s) > 80 {
+		s = s[:80] + "…"
+	}
+	if s == "" {
+		return "(无描述)"
+	}
+	return s
 }
 
 func buildUserMessage(g *core.Goal) string {

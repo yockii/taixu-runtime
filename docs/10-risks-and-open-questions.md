@@ -506,6 +506,15 @@
 > **仍待**：自动结晶在 finalize 内同步跑一次 LLM（最长 120s），多用户时应移异步；纯知识类是否一律尝试结晶可再调（当前交 LLM 判）。
 > **影响**：`internal/runtime/action/action.go`、`internal/storage/interest.go`、`internal/storage/skill.go`、`R77`、`R79`、`R80`。
 
+### R88 · 对话历史 + 行为降频 + 技能生命周期完善（已实装 Phase 0.5）
+> 用户 2026-06-05 一批改进：
+> **① 对话载入历史**：reflex 原本每条消息只给 `[system, user]`，无往来历史 → 大模型回复有失忆/失意感。新增 `storage.RecentDialogueTurns`（从 raw_trail 的 reflex.received/speak 重建近期对话）+ `reflex.dialogueHistory` 注入最近 10 轮（单轮截 600 字控 token，去重末尾当前消息）。
+> **② 反思/目标产生降频**：原每 60s cycle 就可能反思 + 派新目标。`main.behaviorDue`（schema_meta 记时间戳，间隔=15min 基线 + cycleID 抖动到 30min）门控反思与"产生新目标"；**已在队列的 pending 目标不受影响照常执行**——只节流"产生"频率，让生命体一段时间专注做一件事而非不停开新坑。
+> **③ 技能渐进式披露（Anthropic skills 规范）**：`ListReady` 早已存在但 deliberative prompt 从没列技能、use_skill 也没提示 → LLM 不知技能存在、从不用。现 prompt 只列技能 **name + 一句话描述**，正文用 `use_skill(name)` 按需读（省 token）；`use_skill` 已写入工具清单。使用计数 `BumpSkillUsed`（UseByName 内，used_count++/last_used/mastery+0.05）本就有。
+> **④ 遗忘=归档非删除 + 重激活**：`DecaySkills` 由 `status='disabled' + mastery=0` 改为 `status='archived'` 并**保留残留 mastery + 技能文件夹**（好不容易学会的不丢）。`ReactivateForInterest(content)` 在新兴趣创建时（reflex add_interest / idle propose）保守匹配（ascii≥4 字符 / CJK≥3 连字重叠）相关归档技能并 `ReactivateSkill`（archived→ready）——兴趣再现即"想起自己其实会这个"，不必从零重学。boot/rescan 的 `loadFolder` 保留 archived/disabled 状态，不因文件夹还在就复活。
+> **仍待**：reactivation 的关键词匹配较粗（未来可向量相似度）；history 固定 10 轮（可按 token 预算自适应）；降频间隔未做成 config。
+> **影响**：`internal/runtime/reflex/{reflex,tools}.go`、`internal/runtime/idle/idle.go`、`cmd/runtime/main.go`、`internal/runtime/action/action.go`、`internal/runtime/skill/loader.go`、`internal/storage/{memory,skill}.go`、`R82`、`R86`。
+
 ### R87 · 面板写操作鉴权（防公网暴露被陌生人交互，已实装 Phase 0.5）
 > 用户 2026-06-05 提出：用户若不慎把生命体面板暴露到公网，只读内容无妨，但**写/交互**操作（注入对话驱动生命体、改 dangerous-skip-permissions、批准装依赖、装 skill）会被陌生人滥用。
 > **方案（共享令牌，方法级中间件）**：
