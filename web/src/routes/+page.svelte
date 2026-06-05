@@ -103,7 +103,10 @@
 	<div class="order-2 space-y-4 lg:order-1 lg:col-span-2">
 		<StatePanel {life} {mental} />
 		<GoalQueue />
-		<ActionLogPanel />
+		<div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+			<ActionLogPanel mode="dialogue" />
+			<ActionLogPanel mode="action" />
+		</div>
 		<EpisodeStream />
 		<ReflectionList />
 		<ToolAuditPanel />

@@ -188,7 +188,16 @@ func apiReflections(w http.ResponseWriter, r *http.Request) {
 
 func apiActions(w http.ResponseWriter, r *http.Request) {
 	limit := intParam(r, "limit", 50, 1, 500)
-	xs, err := storage.ListActionLog(lifeID, limit)
+	// view=dialogue → 对外言说（reflex/reflex_canned）；view=action → 内在作为（deliberate）；
+	// 空 → 全部。分流让「说的」与「做的」分开展示（二者可背离）。
+	var kinds []string
+	switch r.URL.Query().Get("view") {
+	case "dialogue":
+		kinds = []string{storage.ActionKindReflex, storage.ActionKindReflexCanned}
+	case "action":
+		kinds = []string{storage.ActionKindDeliberate}
+	}
+	xs, err := storage.ListActionLogByKinds(lifeID, kinds, limit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

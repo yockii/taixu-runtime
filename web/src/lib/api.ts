@@ -80,6 +80,7 @@ export interface ActionLog {
 	id: number;
 	goal_id: number;
 	cycle_id: number;
+	kind: string; // deliberate（行动）/ reflex / reflex_canned（对话）
 	plan: string;
 	action: string;
 	result: string;
@@ -133,7 +134,8 @@ export const api = {
 	goals: (status = '', limit = 50) =>
 		getJSON<Goal[]>(`/api/goals?status=${status}&limit=${limit}`),
 	reflections: (limit = 50) => getJSON<Reflection[]>(`/api/reflections?limit=${limit}`),
-	actions: (limit = 50) => getJSON<ActionLog[]>(`/api/actions?limit=${limit}`),
+	actions: (limit = 50, view: '' | 'dialogue' | 'action' = '') =>
+		getJSON<ActionLog[]>(`/api/actions?limit=${limit}${view ? `&view=${view}` : ''}`),
 	toolsAudit: (limit = 50) => getJSON<ToolAudit[]>(`/api/tools/audit?limit=${limit}`),
 	ledger: (resource = '', limit = 100) =>
 		getJSON<Ledger[]>(`/api/ledger?resource=${resource}&limit=${limit}`),

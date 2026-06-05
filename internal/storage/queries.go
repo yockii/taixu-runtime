@@ -181,14 +181,45 @@ type ActionLogEntry struct {
 	FinishedAt int64  `json:"finished_at"`
 }
 
-// ListActionLog 近 N 条行动。
+// placeholders 返回 n 个逗号分隔的 SQL 占位符 "?,?,?"。
+func placeholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	b := make([]byte, 0, 2*n)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b = append(b, ',')
+		}
+		b = append(b, '?')
+	}
+	return string(b)
+}
+
+// ListActionLog 近 N 条行动（所有 kind）。
 func ListActionLog(lifeID string, limit int) ([]ActionLogEntry, error) {
-	rows, err := db.Query(`
-		SELECT id, COALESCE(goal_id,0), cycle_id, kind, COALESCE(plan,''), action,
-		       COALESCE(result,''), COALESCE(feedback,''), success,
-		       started_at, COALESCE(finished_at,0)
-		FROM action_log WHERE life_id = ?
-		ORDER BY id DESC LIMIT ?`, lifeID, limit)
+	return ListActionLogByKinds(lifeID, nil, limit)
+}
+
+// ListActionLogByKinds 近 N 条行动，按 kind 过滤（kinds 为空则不过滤）。
+// 用于将「对话」（reflex/reflex_canned，对外言说）与「行动」（deliberate，内在自主作为）分流展示——
+// 二者可背离（为安慰用户说的话 ≠ 实际在做的事），分开看才看得见这种差异。
+func ListActionLogByKinds(lifeID string, kinds []string, limit int) ([]ActionLogEntry, error) {
+	q := `SELECT id, COALESCE(goal_id,0), cycle_id, kind, COALESCE(plan,''), action,
+	             COALESCE(result,''), COALESCE(feedback,''), success,
+	             started_at, COALESCE(finished_at,0)
+	      FROM action_log WHERE life_id = ?`
+	args := []any{lifeID}
+	if len(kinds) > 0 {
+		q += ` AND kind IN (` + placeholders(len(kinds)) + `)`
+		for _, k := range kinds {
+			args = append(args, k)
+		}
+	}
+	q += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
