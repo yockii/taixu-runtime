@@ -24,7 +24,7 @@ A self-contained runtime that brings one digital life into being and keeps it al
 - Watch its inner state — mood, energy, interests, goals, memories — through a built-in web panel.
 - Talk with it, and see it carry on its own life between your conversations.
 
-This is an early, experimental release (v0.1.0). It is for the curious — people who want to watch a digital life unfold, not run a productivity tool.
+This is an early, experimental release (v0.1.1). It is for the curious — people who want to watch a digital life unfold, not run a productivity tool.
 
 ---
 
@@ -37,7 +37,7 @@ The image needs three things: a **model endpoint** (any OpenAI-compatible API), 
 ```yaml
 services:
   mindverse:
-    image: yockii/mindverse:0.1.0
+    image: yockii/mindverse:0.1.1
     container_name: mindverse
     restart: unless-stopped
     environment:
@@ -75,7 +75,7 @@ docker run -d --name mindverse -p 3000:3000 \
   -e LLM_API_KEY="your-api-key" \
   -e LLM_MODEL="your-model-name" \
   -v mindverse-data:/app/data \
-  yockii/mindverse:0.1.0
+  yockii/mindverse:0.1.1
 ```
 
 ### Configuration
@@ -132,4 +132,4 @@ Mindverse（心域文明）**不是聊天机器人，也不是 AI 助手**，而
 
 ---
 
-*v0.1.0 · early experimental release · the life belongs to its owner, not the platform.*
+*v0.1.1 · early experimental release · the life belongs to its owner, not the platform.*
