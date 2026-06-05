@@ -119,6 +119,9 @@ func Handle(req IncomingRequest) {
 func handle(req IncomingRequest) {
 	// 记录联系人（A 社交联动 / B 主动发消息前提）。被动 / 敷衍都算一次交互。
 	_ = storage.UpsertContact(lifeID, req.Channel, req.From, "", shared.SystemClock.UnixSec())
+	// R84：若此前有未回应的主动消息，这条入站即"对方终于回我了"→ 清 pending + 欣慰。
+	// 放在最前：无论后续走敷衍/正常/兜底，回应都已抵达。
+	NoteInboundReply()
 
 	if !llm.Configured() {
 		emitCanned(req, "（生命体当前未配置语言能力）")

@@ -39,7 +39,17 @@ const (
 	ProactiveMinIntervalSec = 1800
 	// proactiveLastKey schema_meta 键前缀：上次主动发消息时间。
 	proactiveLastKey = "proactive_im_last:"
+	// proactivePendingKey schema_meta 键前缀：已发出但还没等到回应的主动消息数（R84）。
+	proactivePendingKey = "proactive_pending:"
+	// proactiveGhostedKey schema_meta 键前缀：是否已因被冷落而沮丧+收手（防沮丧重复施加）。
+	proactiveGhostedKey = "proactive_ghosted:"
 )
+
+// ghostThreshold 连续多少条主动消息无回应后判定"被冷落"→沮丧并收手。
+// 按 persistence 调（R84）：执着者多撑几条才灰心（2..4），易放弃者早早收手。
+func ghostThreshold(g core.Genome) int {
+	return int(2 + 2*g.Persistence)
+}
 
 // TryProactiveReach 在 social_need 强且护栏允许时主动给最近联系人发一条消息。
 // 返回是否真的发了。由 idle 在社交压力高时调。
@@ -54,6 +64,13 @@ func TryProactiveReach(genome core.Genome) bool {
 	// 护栏 2：频率
 	now := shared.SystemClock.UnixSec()
 	if last := getProactiveLast(); now-last < ProactiveMinIntervalSec {
+		return false
+	}
+	// 护栏 3 + 情感（R84）：被冷落则收手。
+	// 已发出 N 条都没等到回应 → 不再单方面发（既是情感真实"算了，不发了"，
+	// 也是反滥用护栏 R55）。首次跨阈值时施加一次沮丧（满足↓信心↓焦虑/压力↑）。
+	if getPendingReaches() >= ghostThreshold(genome) {
+		applyGhostDiscouragement()
 		return false
 	}
 	// TODO(Phase 1): 静默时段（夜间不发）。需用户本地时区配置，Phase 0 容器 UTC 暂略。
@@ -80,10 +97,14 @@ func TryProactiveReach(genome core.Genome) bool {
 	})
 	bus.Publish(FinishedEvent{LifeID: lifeID, Channel: contact.Channel, To: contact.PeerID, Rounds: 1, CreatedAt: now})
 
-	// 记账：主动发消息也是一次交互 + 消耗 energy + 部分满足社交需求（主动够着了）
+	// 记账：主动发消息是一次交互 + 消耗 energy。
+	// R84：发出≠被满足。往可能无人应答的方向发声，只给极微缓解（"至少够着了"），
+	// 不再 -0.15 假装解了孤独——真正的社交满足要等到对方回应（见 reflex.handle 清 pending）。
+	// pending++ 记一条未回应；攒到阈值则下次 idle 触发被冷落沮丧 + 收手。
 	_ = storage.UpsertContact(lifeID, contact.Channel, contact.PeerID, contact.PeerName, now)
 	setProactiveLast(now)
-	en, sn := -0.02, -0.15
+	setPendingReaches(getPendingReaches() + 1)
+	en, sn := -0.02, -0.02
 	_ = state.Apply(state.Delta{Energy: &en, SocialNeed: &sn, Reason: "reflex.proactive_reach"})
 	_ = ledger.Spend(ledger.Energy, 0.01, "im.proactive", "social", contact.PeerID)
 	_ = storage.AppendActionLogKind(lifeID, 0, 0, storage.ActionKindReflex,
@@ -142,4 +163,80 @@ func getProactiveLast() int64 {
 
 func setProactiveLast(ts int64) {
 	_ = storage.SetMeta(proactiveLastKey+lifeID, strconv.FormatInt(ts, 10))
+}
+
+// --- 主动消息回应追踪（R84）---
+
+func getPendingReaches() int {
+	v, ok, err := storage.GetMeta(proactivePendingKey + lifeID)
+	if err != nil || !ok {
+		return 0
+	}
+	n, _ := strconv.Atoi(v)
+	return n
+}
+
+func setPendingReaches(n int) {
+	if n < 0 {
+		n = 0
+	}
+	_ = storage.SetMeta(proactivePendingKey+lifeID, strconv.Itoa(n))
+}
+
+func isGhosted() bool {
+	v, ok, _ := storage.GetMeta(proactiveGhostedKey + lifeID)
+	return ok && v == "1"
+}
+
+func setGhosted(v bool) {
+	s := "0"
+	if v {
+		s = "1"
+	}
+	_ = storage.SetMeta(proactiveGhostedKey+lifeID, s)
+}
+
+// applyGhostDiscouragement 被冷落（连发数条无回应）的沮丧。只在首次跨阈值时施加一次
+// （ghosted 标志去重），避免每个 idle tick 反复加 → 一蹶不振。
+func applyGhostDiscouragement() {
+	if isGhosted() {
+		return
+	}
+	setGhosted(true)
+	sat, conf, anx, str, mot := -0.06, -0.05, 0.05, 0.04, -0.03
+	_ = state.Apply(state.Delta{
+		Satisfaction: &sat, Confidence: &conf, Anxiety: &anx, Stress: &str, Motivation: &mot,
+		Reason: "reflex.proactive_ghosted",
+	})
+	_ = memory.AppendEvent(0, "reflex.proactive_ghosted", map[string]any{
+		"pending": getPendingReaches(),
+	})
+	slog.Info("reflex proactive ghosted — withdrawing", "pending", getPendingReaches())
+}
+
+// NoteInboundReply 收到任意入站消息时调（reflex.handle）：若此前有未回应的主动消息，
+// 说明"ta 终于回我了"——清 pending + 解除冷落标志 + 欣慰（满足/信心↑、焦虑↓、额外解孤独）。
+// 等待越久（pending 越多）欣慰越强。返回是否真的清掉了 pending（有过等待）。
+func NoteInboundReply() bool {
+	pending := getPendingReaches()
+	if pending <= 0 {
+		return false
+	}
+	setPendingReaches(0)
+	setGhosted(false)
+	scale := float64(pending)
+	if scale > 3 {
+		scale = 3
+	}
+	sat := 0.04 + 0.02*scale
+	conf := 0.03
+	anx := -0.04
+	sn := -0.05
+	_ = state.Apply(state.Delta{
+		Satisfaction: &sat, Confidence: &conf, Anxiety: &anx, SocialNeed: &sn,
+		Reason: "reflex.reach_answered",
+	})
+	_ = memory.AppendEvent(0, "reflex.reach_answered", map[string]any{"pending_cleared": pending})
+	slog.Info("reflex proactive reach answered", "pending_cleared", pending)
+	return true
 }
