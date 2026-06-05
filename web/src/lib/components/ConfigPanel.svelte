@@ -7,6 +7,10 @@
 	let token = $state(getToken());
 	let saved = $state(false);
 
+	let passphrase = $state('');
+	let exporting = $state(false);
+	let exportErr = $state('');
+
 	$effect(() => {
 		void $tokenStore; // 令牌变更后重新拉取（授权后才返回环境信息）
 		api.config().then((c) => (cfg = c));
@@ -16,6 +20,23 @@
 		persistToken(token.trim()); // 经 auth store → 响应式解锁所有受控区块
 		saved = true;
 		setTimeout(() => (saved = false), 1500);
+	}
+
+	async function doExport() {
+		exportErr = '';
+		if (passphrase.length < 8) {
+			exportErr = $t('export_pass_short');
+			return;
+		}
+		exporting = true;
+		try {
+			await api.exportLife(passphrase);
+			passphrase = '';
+		} catch (e) {
+			exportErr = (e as Error).message;
+		} finally {
+			exporting = false;
+		}
 	}
 </script>
 
@@ -66,6 +87,31 @@
 			{/if}
 			{#if cfg.auth_required && !cfg.llm}
 				<p class="text-xs text-zinc-600">{$t('config_locked_hint')}</p>
+			{/if}
+
+			{#if !cfg.auth_required || cfg.llm}
+				<div class="rounded-lg border border-violet-500/30 bg-violet-500/5 p-3">
+					<div class="mb-1 font-semibold text-violet-300">📦 {$t('export_title')}</div>
+					<p class="mb-2 text-zinc-400">{$t('export_hint')}</p>
+					<div class="flex gap-2">
+						<input
+							type="password"
+							bind:value={passphrase}
+							placeholder={$t('export_pass_ph')}
+							class="min-w-0 flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 font-mono text-zinc-200 outline-none focus:border-violet-500"
+						/>
+						<button
+							onclick={doExport}
+							disabled={exporting}
+							class="shrink-0 rounded bg-violet-600/80 px-3 py-1 font-medium text-white transition hover:bg-violet-600 disabled:opacity-50"
+							>{exporting ? $t('exporting') : $t('export_btn')}</button
+						>
+					</div>
+					{#if exportErr}
+						<p class="mt-1 text-rose-400">{exportErr}</p>
+					{/if}
+					<p class="mt-2 text-amber-300/80">⚠ {$t('export_warn')}</p>
+				</div>
 			{/if}
 		</div>
 	{:else}

@@ -19,6 +19,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -28,11 +29,13 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"mindverse/internal/lifepack"
 	"mindverse/internal/runtime/perception"
 	"mindverse/internal/runtime/reflex"
 	"mindverse/internal/runtime/skill"
@@ -105,6 +108,7 @@ func Start(ctx context.Context, addr string) *http.Server {
 	mux.HandleFunc("/api/dialogue", apiDialogue)
 	mux.HandleFunc("/api/stream", apiStream)
 	mux.HandleFunc("/api/external-request", apiExternalRequest)
+	mux.HandleFunc("/api/export", apiExport)
 
 	accessToken = strings.TrimSpace(os.Getenv("MINDVERSE_ACCESS_TOKEN"))
 	if accessToken != "" {
@@ -512,6 +516,76 @@ func apiExternalRequest(w http.ResponseWriter, r *http.Request) {
 		Content:  body.Content,
 	})
 	writeJSON(w, http.StatusAccepted, map[string]any{"id": req.ID, "queued_at": req.ReceivedAt})
+}
+
+// apiExport 导出加密生命包（.mvlife）。POST {passphrase} → 流式下载。
+//
+// 鉴权：POST = isMutating，token 已设时自动需令牌（withAuth）。包含整库（记忆/对话）+ workspace，
+// 是生命体的全部隐私 + 身份，绝不可裸奔。一致性：VACUUM INTO 取快照再打包（无需停写）。
+// 口令是唯一钥匙、丢了不可恢复——前端须在导出时显著提示用户记牢（R17）。
+func apiExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Passphrase string `json:"passphrase"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(body.Passphrase) < 8 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "err": "passphrase too short (min 8 chars)"})
+		return
+	}
+
+	// 一致快照到临时目录（VACUUM INTO 要求目标不存在）。
+	tmpDir, err := os.MkdirTemp("", "mvexport-")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "err": "temp dir: " + err.Error()})
+		return
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+	snap := filepath.Join(tmpDir, "snap.db")
+	if err := storage.SnapshotInto(snap); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "err": "snapshot: " + err.Error()})
+		return
+	}
+
+	man := lifepack.Manifest{
+		AppVersion:    getenvOr("MINDVERSE_VERSION", "dev"),
+		LifeID:        lifeID,
+		ExportedAt:    time.Now().Unix(),
+		GenomeVersion: "",
+	}
+	if g, err := storage.LoadGenome(); err == nil && g != nil {
+		man.GenomeVersion = g.GenomeVersion
+	}
+	if v, ok, _ := storage.GetMeta("version"); ok {
+		man.SchemaVersion = v
+	}
+	ws := getenvOr("MINDVERSE_WORKSPACE", "/workspace")
+
+	// 先打到内存再下发：包失败可干净返回 500（DB 为 MB 级，可接受）。
+	var buf bytes.Buffer
+	if err := lifepack.Export(&buf, snap, ws, man, body.Passphrase); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "err": "export: " + err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="mindverse-%s.mvlife"`, lifeID))
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
+	_, _ = w.Write(buf.Bytes())
+	slog.Info("life exported", "bytes", buf.Len(), "life", lifeID)
+}
+
+// getenvOr 读环境变量，空则回退默认。
+func getenvOr(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
 }
 
 // -------- helpers --------

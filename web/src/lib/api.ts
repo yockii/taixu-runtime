@@ -189,6 +189,37 @@ export const api = {
 		if (r.status === 401) throw new Error('unauthorized');
 		if (!r.ok) throw new Error(`/api/dialogue → ${r.status}`);
 		return r.json();
+	},
+	/** 导出加密生命包（.mvlife）并触发浏览器下载。口令是唯一钥匙，丢失不可恢复。 */
+	exportLife: async (passphrase: string): Promise<void> => {
+		const r = await fetch('/api/export', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', ...authHeaders() },
+			body: JSON.stringify({ passphrase })
+		});
+		if (r.status === 401) throw new Error('unauthorized: 访问令牌缺失或错误');
+		if (!r.ok) {
+			let msg = `/api/export → ${r.status}`;
+			try {
+				const j = await r.json();
+				if (j?.err) msg = j.err;
+			} catch {
+				/* 非 JSON 错误体，保留默认 */
+			}
+			throw new Error(msg);
+		}
+		const blob = await r.blob();
+		const cd = r.headers.get('Content-Disposition') ?? '';
+		const m = cd.match(/filename="?([^"]+)"?/);
+		const name = m ? m[1] : 'mindverse-life.mvlife';
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = name;
+		document.body.appendChild(a);
+		a.click();
+		a.remove();
+		URL.revokeObjectURL(url);
 	}
 };
 

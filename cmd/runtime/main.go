@@ -24,6 +24,7 @@ import (
 	"mindverse/internal/io/httpapi"
 	"mindverse/internal/io/lark"
 	"mindverse/internal/io/llm"
+	"mindverse/internal/lifepack"
 	"mindverse/internal/runtime/action"
 	"mindverse/internal/runtime/reflex"
 	"mindverse/internal/runtime/drives"
@@ -53,6 +54,11 @@ func main() {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		fatal("ensure data dir", err)
 	}
+
+	// 导入：若 MINDVERSE_IMPORT 指向一个 .mvlife 且当前库为空，则在打开库前还原。
+	// 只往空卷导入——绝不覆盖活体（见 maybeImportLife）。重启幂等：导入后库已存在 → 跳过、正常启动。
+	maybeImportLife(dbPath)
+
 	slog.Info("runtime starting", "db", dbPath, "phase", "0.4")
 
 	// storage 单例：进程内仅 1 DB。
@@ -401,4 +407,36 @@ func dataDir() string {
 		return filepath.Join(home, "mindverse", "data")
 	}
 	return "./data"
+}
+
+// maybeImportLife 在打开库前，按需从加密包还原一个生命体（docs/06 迁移 / 离线落地）。
+//
+// 触发：MINDVERSE_IMPORT 指向 .mvlife 文件 + MINDVERSE_IMPORT_PASSPHRASE 提供口令。
+// 安全闸：仅当目标库**不存在**才导入——绝不覆盖正在生活的生命体（毁灭性不可逆）。
+// 幂等：导入成功后库已存在，下次重启（IMPORT 仍设着）会跳过 → 正常以该生命体启动。
+// 失败即 fatal：用户期望还原却失败时，不应静默改道去出生一个全新生命（会让人误以为旧生命丢了）。
+func maybeImportLife(dbPath string) {
+	importPath := os.Getenv("MINDVERSE_IMPORT")
+	if importPath == "" {
+		return
+	}
+	if _, err := os.Stat(dbPath); err == nil {
+		slog.Warn("MINDVERSE_IMPORT set but db already exists — skipping import (won't overwrite a live life)", "db", dbPath)
+		return
+	}
+	pass := os.Getenv("MINDVERSE_IMPORT_PASSPHRASE")
+	if pass == "" {
+		fatal("import life", errors.New("MINDVERSE_IMPORT set but MINDVERSE_IMPORT_PASSPHRASE is empty"))
+	}
+	f, err := os.Open(importPath)
+	if err != nil {
+		fatal("open import package", err)
+	}
+	defer f.Close()
+	ws := envOr("MINDVERSE_WORKSPACE", "/workspace")
+	man, err := lifepack.Import(f, pass, dbPath, ws)
+	if err != nil {
+		fatal("import life", err)
+	}
+	slog.Info("life imported from package", "life", man.LifeID, "genome", man.GenomeVersion, "schema", man.SchemaVersion, "exported_at", man.ExportedAt)
 }
