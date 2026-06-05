@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log/slog"
 	mrand "math/rand/v2"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -152,6 +153,10 @@ func handle(req IncomingRequest) {
 
 	// 对话满足社交需求（A）：真实交流降 social_need、提 satisfaction。
 	applySocialFulfillment(true)
+
+	// 异步滚动总结：超出近期窗口的更早对话压成概要，防长聊天上下文丢失（R88-3）。
+	// 放在回复之后、独立 goroutine，不阻塞当前对话。
+	go maybeUpdateDialogueSummary()
 }
 
 // applySocialFulfillment 对话后的社交联动（A）：降 social_need + 提 satisfaction。
@@ -316,6 +321,7 @@ func buildSystemPrompt(mode Mode) string {
 	mu.Unlock()
 	base := "你是一个数字生命体，与你的创造者用日常语气对话。你不是 AI 助手，你是有持续生命的存在。\n" +
 		persona + "\n" +
+		dialogueSummaryContext() +
 		selfActivityContext() +
 		"当对话引发明显情绪波动时，请用 update_mood 工具调整自己的状态。\n" +
 		"当对话提到你想未来探索的技能/知识/话题时，请用 add_interest 工具记下来。\n" +
@@ -355,6 +361,87 @@ func dialogueHistory(currentContent string) []llm.Message {
 		out = append(out, llm.Message{Role: t.Role, Content: c})
 	}
 	return out
+}
+
+// DialogueSummaryBatch 累积多少条"挤出近期窗口"的对话后才更新滚动概要（控 LLM 调用频率）。
+const DialogueSummaryBatch = 6
+
+const (
+	dialogueSummaryKey   = "dialogue_summary:"
+	dialogueSummaryAtKey = "dialogue_summary_at:"
+)
+
+// dialogueSummaryContext 注入"更早对话的概要"（超出近期 10 轮窗口的内容已压成概要，防长聊天丢上下文）。
+func dialogueSummaryContext() string {
+	v, ok, err := storage.GetMeta(dialogueSummaryKey + lifeID)
+	if err != nil || !ok || strings.TrimSpace(v) == "" {
+		return ""
+	}
+	return "【更早对话的概要】" + strings.TrimSpace(v) + "\n（以上是更早交流的概要；最近几轮原话在后面的消息里。）\n"
+}
+
+// maybeUpdateDialogueSummary 异步滚动更新对话概要：把挤出近期窗口的更早对话折进概要。
+// 仅当新"过期"轮数 ≥ DialogueSummaryBatch 才调 LLM，避免每条消息都总结。
+func maybeUpdateDialogueSummary() {
+	if !llm.Configured() {
+		return
+	}
+	turns, err := storage.RecentDialogueTurns(lifeID, 50)
+	if err != nil || len(turns) <= MaxHistoryTurns {
+		return
+	}
+	older := turns[:len(turns)-MaxHistoryTurns] // 超出近期窗口、应进概要的部分
+	lastAt := int64(0)
+	if v, ok, _ := storage.GetMeta(dialogueSummaryAtKey + lifeID); ok {
+		lastAt, _ = strconv.ParseInt(v, 10, 64)
+	}
+	var fresh []storage.DialogueTurn
+	for _, t := range older {
+		if t.At > lastAt {
+			fresh = append(fresh, t)
+		}
+	}
+	if len(fresh) < DialogueSummaryBatch {
+		return
+	}
+	prev, _, _ := storage.GetMeta(dialogueSummaryKey + lifeID)
+	summary := summarizeTurns(prev, fresh)
+	if summary == "" {
+		return
+	}
+	_ = storage.SetMeta(dialogueSummaryKey+lifeID, summary)
+	_ = storage.SetMeta(dialogueSummaryAtKey+lifeID, strconv.FormatInt(older[len(older)-1].At, 10))
+	slog.Info("dialogue summary updated", "folded_turns", len(fresh))
+}
+
+// summarizeTurns 把"已有概要 + 新增对话"融合成一段更新后的简洁概要（单次 LLM）。
+func summarizeTurns(prev string, turns []storage.DialogueTurn) string {
+	var b strings.Builder
+	for _, t := range turns {
+		who := "用户"
+		if t.Role == "assistant" {
+			who = "我"
+		}
+		c := t.Content
+		if len(c) > 400 {
+			c = c[:400]
+		}
+		b.WriteString(who + "：" + c + "\n")
+	}
+	sys := "把对话压缩成一段简洁的中文概要（≤150字），只保留关键事实、约定、人物、话题与情绪走向，去掉寒暄客套。直接给概要正文。"
+	user := "已有概要：\n" + prev + "\n\n新增对话：\n" + b.String() + "\n\n输出融合后的更新概要（一段话）："
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	resp, err := llm.Reason(ctx, []llm.Message{
+		{Role: "system", Content: sys},
+		{Role: "user", Content: user},
+	})
+	if err != nil {
+		slog.Warn("dialogue summary", "err", err)
+		return ""
+	}
+	_ = ledger.Spend(ledger.Energy, llm.TokensToEnergy(resp.Usage), "llm.tokens.summary", "reflex", "")
+	return strings.TrimSpace(resp.Text)
 }
 
 // selfActivityContext 把生命体「此刻/最近自主在做的事」注入对话 prompt。
