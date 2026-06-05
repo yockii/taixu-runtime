@@ -10,9 +10,10 @@
 data/
 sandbox/
 workspace/sandbox/
-# skill 装的依赖（运行时生成，不入库）；保留 skill 文件夹本身 + SKILL.md + 脚本
-workspace/skills/*/site-packages/
-workspace/skills/*/node_modules/
+# workspace/skills 是运行时挂载目录，生命体自创的 skill 都落在这里（测试/运行产物，不入库）。
+# 保留目录本身（.gitkeep）以便挂载；要纳入版本管理的样例 skill 另放 examples/。
+workspace/skills/*
+!workspace/skills/.gitkeep
 *.db
 *.db-journal
 *.db-wal
@@ -70,4 +71,3 @@ __pycache__/
 
 # Docker
 .docker-cache/
-workspace/skills/python-decorators/
