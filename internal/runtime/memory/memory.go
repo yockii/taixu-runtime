@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"mindverse/internal/bus"
@@ -18,6 +19,14 @@ import (
 	"mindverse/internal/shared"
 	"mindverse/internal/storage"
 )
+
+// noiseEvents 纯内部节拍事件——对"经历"无叙事价值，episode 摘要只计数不列正文。
+// 不过滤这些，episode 摘要会被 cycle.start/idle.daydream 淹没成无意义直方图（修：episode 噪声洪泛）。
+var noiseEvents = map[string]bool{
+	"cycle.start":   true,
+	"idle.daydream": true,
+	"episode.sealed": true,
+}
 
 var (
 	mu            sync.Mutex
@@ -172,19 +181,101 @@ func ExtractSemantic() (int, error) {
 	return added, nil
 }
 
+// summarize 把一段 raw_trail 概括成可读的经历摘要：过滤纯内部节拍噪声，
+// 把有内容的事件（对话/主动/沉淀等）列出其正文片段，纯标记事件按类计数。
+// 引擎侧实现（不调 LLM——ConsiderSealEpisode 在 runCycle 内联，阻塞会拖慢节拍）。
+// PruneConsumedRawTrail 删除已被 episode 封段且已语义抽取消费的旧 raw_trail（控长跑磁盘增长）。
+// 安全游标 = min(封段游标 pendingFromID, 语义抽取游标) - keepBuffer。两游标之前的事件均已消费完，
+// keepBuffer 再留一截余量（含 semWindow 滑窗 + 排障）。返回删除条数。
+func PruneConsumedRawTrail(keepBuffer int64) (int64, error) {
+	mu.Lock()
+	sealCursor := pendingFromID
+	mu.Unlock()
+
+	semCursor := int64(0)
+	if v, ok, err := storage.GetMeta("last_semantic_extract_raw_id:" + lifeID); err == nil && ok && v != "" {
+		_, _ = fmt.Sscan(v, &semCursor)
+	}
+
+	cutoff := sealCursor
+	if semCursor < cutoff {
+		cutoff = semCursor
+	}
+	cutoff -= keepBuffer
+	if cutoff <= 1 {
+		return 0, nil
+	}
+	return storage.PruneRawTrailBefore(lifeID, cutoff)
+}
+
 func summarize(trail []core.RawTrailEntry) string {
 	if len(trail) == 0 {
 		return ""
 	}
-	counts := map[string]int{}
+	noise := 0
+	markers := map[string]int{}
+	var contentful []string
+	seen := map[string]bool{}
 	for _, t := range trail {
-		counts[t.EventType]++
+		if noiseEvents[t.EventType] {
+			noise++
+			continue
+		}
+		snip := payloadSnippet(t.Payload)
+		if snip == "" {
+			markers[t.EventType]++
+			continue
+		}
+		entry := t.EventType + "：" + snip
+		if seen[entry] {
+			continue
+		}
+		seen[entry] = true
+		if len(contentful) < 8 {
+			contentful = append(contentful, entry)
+		}
 	}
 	var parts []string
-	for k, v := range counts {
+	parts = append(parts, contentful...)
+	for k, v := range markers {
 		parts = append(parts, fmt.Sprintf("%s×%d", k, v))
 	}
-	return fmt.Sprintf("auto-segment %d events: %s", len(trail), joinComma(parts))
+	if len(parts) == 0 {
+		return fmt.Sprintf("休息/发呆（%d 个内部节拍，无外显活动）", len(trail))
+	}
+	s := joinComma(parts)
+	if noise > 0 {
+		s += fmt.Sprintf("（另含 %d 内部节拍）", noise)
+	}
+	return s
+}
+
+// payloadSnippet 从事件 payload JSON 抽一段可读片段（content/summary/to/... 常见字段）；无则空串。
+func payloadSnippet(payload string) string {
+	if payload == "" || payload == "null" {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(payload), &m); err != nil {
+		return ""
+	}
+	for _, k := range []string{"content", "summary", "intent", "to", "skill", "kind", "action"} {
+		if v, ok := m[k]; ok {
+			if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+				return truncateRunes(strings.TrimSpace(s), 60)
+			}
+		}
+	}
+	return ""
+}
+
+// truncateRunes 按字符（非字节）截断，避免切坏多字节 UTF-8。
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
 
 func joinComma(parts []string) string {

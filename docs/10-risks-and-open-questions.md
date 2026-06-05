@@ -587,6 +587,33 @@
 > **仍待**：① 已 sediment 的旧 seed（如 interest#1）知识已丢、不回填，仅前向修复；② record_learning 与 sediment 可能产近重复候选（content 略异），未去重，低频无害；③ distill 每个学透主题一次 LLM 调用（与结晶同量级，可接受）。长跑验 `sem_confirmed` 是否随掌握增长（这才真验 PRD §7.2"语义固化增长"）。
 > **影响**：`internal/runtime/action/action.go`+`sediment_test.go`、`internal/io/llm/llm.go`（`Reason`）、`internal/storage/memory.go`（`UpsertSemanticCandidateConf`）、`R95`、`R93`、`R94`、`R74`、`R66`。
 
+### R98 · episode 摘要去噪：内部节拍淹没经历叙事（已修 Phase 0.5）
+> 2026-06-06 ultracode 审计 + 数据实证：每条 episode 摘要都是 `auto-segment 21 events: cycle.start×10, idle.daydream×10, episode.sealed×1` —— 纯内部节拍计数直方图，**无任何经历内容**。raw_trail 87.6% 是 `cycle.start`+`idle.daydream` 噪声，`summarize()` 不加区分全计入 → episode 成无意义直方图，PRD §7.2"跨天记忆连续/引用前几天的事"退出标准悬空（生命无可召回的有意义经历）。
+> **病同 [[R97]]/[[R94]]**：管道（episodic memory）接了线但产出无价值。
+> **修**：`summarize()` 重写——`noiseEvents`（cycle.start/idle.daydream/episode.sealed）只计数不入正文；有内容的事件（reflex.received/speak/proactive_reach、knowledge.sedimented 等，`payloadSnippet` 抽 content/summary/intent/... 字段）列出正文片段（按字符截断防切坏 UTF-8）；纯标记事件按类计数；纯 idle 段 → "休息/发呆（N 个内部节拍）"。引擎侧实现（`ConsiderSealEpisode` 在 runCycle **内联**，加 LLM 会阻塞节拍，故不调 LLM）。
+> **仍待**：未做 LLM 叙事（更高质但内联阻塞节拍，须移异步才能加，Phase 1+）；idle.daydream 仍每 tick 写 raw_trail（噪声生成未减，靠 [[R99]] 剪枝控盘 + 本摘要兜底质量）。
+> **影响**：`internal/runtime/memory/memory.go`+`summarize_test.go`、PRD §7.2。
+
+### R99 · 长跑磁盘增长治理：定时剪枝已消费的 raw_trail + working_memory（已实装 Phase 0.5）
+> 用户 2026-06-06 提出：长跑磁盘占用需预估 + 定时清理过期/无用数据。
+> **实测估算**：DB ~424KB/天（含测试污染），raw_trail（675 行/天，~85% 噪声）+ working_memory（306 行/天）主导增长。不治理 ~0.4MB/天 → ~150MB/年（无界）；加剪枝 → 稳定在几 MB。
+> **修（引擎侧定时剪枝，不动 episode/语义/反思等长期记忆）**：
+> - `raw_trail` 是 episode 封段 + 语义抽取的源，只能删两游标之前的：cutoff = min(`pendingFromID` 封段游标, `last_semantic_extract_raw_id` 语义游标) − `RawTrailKeepBuffer`(500 余量，含 semWindow 滑窗 + 排障)。`memory.PruneConsumedRawTrail` + `storage.PruneRawTrailBefore`。episode.raw_start/end_id 非 FK（仅信息列），删源事件不破坏已封段摘要。
+> - `working_memory`（每 tick 工作记忆回放镜像，in-mem 已每 tick 清空）只保留最近 `WorkingMemoryKeep`(500) 条：`storage.PruneWorkingMemoryKeepRecent`。
+> - `main.runMaintenance` 由 `maintenanceDue`（24h 间隔 + 首次/重启即跑一次，剪枝幂等廉价）门控。
+> **仍待**：① 删行不缩文件（SQLite 空闲页复用 → 文件随插入剪枝平衡后**平台期**，不增不缩；真要缩需 `VACUUM`，重写整库较重，留按需/月度）；② action_log / episode / reflection 不剪（是长期记忆，量小）；③ 保留窗口未做成 config，长跑看实际增速再调；④ embedding BLOB（episode/semantic）体积较大但行数少，暂不单独治理。
+> **影响**：`internal/runtime/memory/memory.go`、`internal/storage/memory.go`（`PruneRawTrailBefore`/`PruneWorkingMemoryKeepRecent`）+`prune_test.go`、`cmd/runtime/main.go`（`maintenanceDue`/`runMaintenance`）、`R66`。
+
+### R100 · Phase 0.5 静默管道审计：其余项评估与暂缓（登记不修）
+> 2026-06-06 ultracode 三 agent 审计锁定生命，除已修 [[R97]]/[[R98]]/[[R99]] 外的发现，逐条核对后**判定暂不修**（多为设计本意或 agent 误判，记录防遗忘）：
+> - **MaxOpenGoals=1 串行探索**（agent 称瓶颈，建议提到 3-4）：**[[R88]] 故意**——让生命体一段时间专注一件事而非不停开新坑。不改。
+> - **idle 占 97% 周期 / boredom 高**（agent 称"空转噪声"）：休息/发呆是数字生命合法行为（[[R86]] 能量休息闸）；真问题只是噪声污染 episode，已由 R98 治。不改节拍。
+> - **mastery 卡 0.55 永不到 0.8**（agent 断言）：**误判**——实测 interest#1 达 0.84 已 sediment 退役、#2 0.67 在涨，mastery 进展正常。
+> - **working_memory 每 tick 清空断跨周期规划**（agent 称 bug）：短期工作记忆本就是单周期作用域（设计本意）；跨周期连续性靠 goal_queue / episode 承载。不改。
+> - **extractor:v2 死管道**（≥2 重复 payload 才触发，几乎不触发）：确为低效，但 [[R97]] 已提供主沉淀路径，extractor:v2 作次要路径留着无害；agent 建议降到 ≥1 会让每个 tool 输出都进候选、噪声更大，否决。暂留。
+> - **ShallowReflect insight 恒空**（硬编码文案）：低价值修复，候选有得 promote 时再考虑 LLM 合成 insight。暂缓。
+> **影响**：登记性条目，无代码改动；`R88`、`R86`、`R97`。
+
 ### R88 · 对话历史 + 行为降频 + 技能生命周期完善（已实装 Phase 0.5）
 > 用户 2026-06-05 一批改进：
 > **① 对话载入历史**：reflex 原本每条消息只给 `[system, user]`，无往来历史 → 大模型回复有失忆/失意感。新增 `storage.RecentDialogueTurns`（从 raw_trail 的 reflex.received/speak 重建近期对话）+ `reflex.dialogueHistory` 注入最近 10 轮（单轮截 600 字控 token，去重末尾当前消息）。

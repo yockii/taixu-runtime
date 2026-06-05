@@ -254,6 +254,41 @@ func ListSemanticConfirmed(lifeID, q string, limit int) ([]core.SemanticConfirme
 	return out, rows.Err()
 }
 
+// PruneRawTrailBefore 删除 id < beforeID 的 raw_trail（已被 episode 封段 + 语义抽取消费的旧事件）。
+// raw_trail 是 episode/semantic 的源，调用方必须保证 beforeID < 两游标，否则会删掉还没消费的事件。
+// episode.raw_start_id/raw_end_id 非 FK（仅信息列），删源事件不破坏已封段 episode 的摘要。返回删除条数。
+func PruneRawTrailBefore(lifeID string, beforeID int64) (int64, error) {
+	if beforeID <= 1 {
+		return 0, nil
+	}
+	res, err := db.Exec(`DELETE FROM raw_trail WHERE life_id = ? AND id < ?`, lifeID, beforeID)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// PruneWorkingMemoryKeepRecent 只保留最近 keep 条 working_memory，删更旧的。
+// working_memory 是每 tick 工作记忆的回放镜像（in-mem 每 tick 已清空），旧行纯历史、可放心剪。
+func PruneWorkingMemoryKeepRecent(lifeID string, keep int) (int64, error) {
+	if keep <= 0 {
+		return 0, nil
+	}
+	res, err := db.Exec(`
+		DELETE FROM working_memory
+		WHERE life_id = ? AND id < (
+			SELECT COALESCE(MIN(id), 0) FROM (
+				SELECT id FROM working_memory WHERE life_id = ? ORDER BY id DESC LIMIT ?
+			)
+		)`, lifeID, lifeID, keep)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 func PromoteToConfirmed(lifeID string, candidateID int64, content string, confidence float64, ts int64) error {
 	tx, err := db.Begin()
 	if err != nil {

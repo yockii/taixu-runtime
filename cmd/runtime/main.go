@@ -170,6 +170,37 @@ func markBehavior(key string, now int64) {
 	_ = storage.SetMeta(key, strconv.FormatInt(now, 10))
 }
 
+// 维护参数：raw_trail 在两消费游标之前再留 RawTrailKeepBuffer 条余量；working_memory 仅留最近若干条。
+const (
+	MaintenanceIntervalSec = 24 * 3600
+	RawTrailKeepBuffer     = 500
+	WorkingMemoryKeep      = 500
+)
+
+// maintenanceDue 距上次日度维护是否已过 24h（首次/重启即跑一次，剪枝幂等且廉价）。
+func maintenanceDue(lifeID string, now int64) bool {
+	v, ok, err := storage.GetMeta("maintenance_last:" + lifeID)
+	if err != nil || !ok {
+		return true
+	}
+	last, _ := strconv.ParseInt(v, 10, 64)
+	return now-last >= MaintenanceIntervalSec
+}
+
+// runMaintenance 剪枝已消费的旧 raw_trail + 旧 working_memory（引擎侧，不动 episode/语义/反思等长期记忆）。
+func runMaintenance(lifeID string) {
+	if n, err := memory.PruneConsumedRawTrail(RawTrailKeepBuffer); err != nil {
+		slog.Warn("maintenance prune raw_trail", "err", err)
+	} else if n > 0 {
+		slog.Info("maintenance pruned raw_trail", "deleted", n)
+	}
+	if n, err := storage.PruneWorkingMemoryKeepRecent(lifeID, WorkingMemoryKeep); err != nil {
+		slog.Warn("maintenance prune working_memory", "err", err)
+	} else if n > 0 {
+		slog.Info("maintenance pruned working_memory", "deleted", n)
+	}
+}
+
 // runCycle 9 步循环。
 func runCycle(cycleID int64, lifeID string, genome core.Genome) {
 	// 1. Perceive
@@ -277,6 +308,11 @@ func runCycle(cycleID int64, lifeID string, genome core.Genome) {
 	}
 	if added, err := memory.ExtractSemantic(); err == nil && added > 0 {
 		_ = memory.AppendEvent(cycleID, "semantic.candidates", map[string]any{"added": added})
+	}
+	// 日度维护：剪枝已消费的旧 raw_trail + 旧 working_memory，控长跑磁盘增长。
+	if maintenanceDue(lifeID, cycleNow) {
+		runMaintenance(lifeID)
+		markBehavior("maintenance_last:"+lifeID, cycleNow)
 	}
 	if reset, err := ledger.MaybeResetEnergyDailyCap(); err == nil && reset {
 		slog.Info("energy daily cap reset")
