@@ -362,17 +362,22 @@ func wireLark(ctx context.Context, lifeID string) {
 		return
 	}
 	// 卡片按钮回调（走长连接）→ skill 批准/拒绝（单一真相，不复制安装逻辑）。
+	// 飞书卡片回调有 3s 响应硬截止：批准要装依赖（pip/npm，可达数十秒）必须异步，
+	// 否则同步阻塞会让飞书提示"回调超时未响应"。装的结果反映在面板/技能状态。
 	lark.SetCardActionHandler(func(action string, value map[string]any) (string, bool) {
 		sid, _ := value["skill_id"].(string)
 		switch action {
 		case "skill_approve":
-			if err := skill.ApproveDeps(sid, "user_approve"); err != nil {
-				slog.Warn("card approve deps", "skill", sid, "err", err)
-				return "批准失败：" + err.Error(), false
-			}
-			return "已批准，依赖安装中", true
+			go func() {
+				if err := skill.ApproveDeps(sid, "user_approve"); err != nil {
+					slog.Warn("card approve deps", "skill", sid, "err", err)
+				} else {
+					slog.Info("card approved skill", "skill", sid)
+				}
+			}()
+			return "已批准，依赖后台安装中", true
 		case "skill_reject":
-			if err := skill.RejectDeps(sid); err != nil {
+			if err := skill.RejectDeps(sid); err != nil { // 仅置状态，快，可同步
 				slog.Warn("card reject deps", "skill", sid, "err", err)
 				return "拒绝失败", false
 			}
