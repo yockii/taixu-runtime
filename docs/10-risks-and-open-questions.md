@@ -580,6 +580,13 @@
 > **仍待**：① 接收侧 image/post **实测**仅单测覆盖解析，活体收图/富文本待自然 dogfooding 验证；② 卡片 Patch 用 message Patch（30min 窗口内），超窗不更新；③ 群聊入站仍丢弃（Phase 4）；④ 出站富消息（post/image）已有 helper 但暂无生命体侧工具触发（按需再加）。
 > **影响**：`internal/io/lark/lark.go`+`lark_test.go`、`internal/runtime/skill/loader.go`（`ApprovalNeededEvent`）、`cmd/runtime/main.go`（接线）、`docs/PHASE-0-PRD.md`、`R55`、`R87`、Phase 4 `07`（群聊/多渠道）。
 
+### R97 · 语义沉淀引擎权威化：探索→语义记忆不靠 LLM 自觉调 record_learning（已修 Phase 0.5）
+> 2026-06-06 长跑观察锁定生命 `local-1b844e59cd694b9e`（跑 ~1 天、28 episode、reflection 8 次）发现：`sem_candidate=0` 且 `sem_confirmed=0`，8 次 ShallowReflect 全 `promoted:0`。interest#1（孤独感，mastery 0.84）已 sediment 退役（strength→0.1）却零候选 = 铁证。
+> **根因**：[[R95]] 修了 candidate 的初始置信（record_learning 以 mastery 入库），但**空转**——`record_learning` 是可选工具、deliberative LLM 常不调（[[R93]] 已注），且 `extractor:v2`（重复 tool.success）也几乎不触发。`maybeCrystallize` 的非技能分支（knowledge/topic/experience 学透→退役）注释假设"digest 已经 record_learning 进 semantic 候选"，但实际什么都没进 → mastery 照涨、知识只散落 episode、语义记忆恒空。病同 [[R94]]：把本该引擎权威的事托付给 LLM 自觉。
+> **修**：`maybeCrystallize` 退役非技能 seed 前调 `sedimentToSemantic`——digest 优先用 seed 已留的；没有则 `distillSeedKnowledge` 单发 LLM 据近期相关经历（`seedRecentContext`）蒸馏一段"真正理解到的核心知识"；`UpsertSemanticCandidateConf(content, "engine:sediment", mastery)`（置信=mastery≥0.8 ＞0.75 阈值）→ 下一轮 ShallowReflect 即固化进 `semantic_confirmed`。不再依赖 LLM 调工具，沉淀成为引擎保证。
+> **仍待**：① 已 sediment 的旧 seed（如 interest#1）知识已丢、不回填，仅前向修复；② record_learning 与 sediment 可能产近重复候选（content 略异），未去重，低频无害；③ distill 每个学透主题一次 LLM 调用（与结晶同量级，可接受）。长跑验 `sem_confirmed` 是否随掌握增长（这才真验 PRD §7.2"语义固化增长"）。
+> **影响**：`internal/runtime/action/action.go`+`sediment_test.go`、`internal/io/llm/llm.go`（`Reason`）、`internal/storage/memory.go`（`UpsertSemanticCandidateConf`）、`R95`、`R93`、`R94`、`R74`、`R66`。
+
 ### R88 · 对话历史 + 行为降频 + 技能生命周期完善（已实装 Phase 0.5）
 > 用户 2026-06-05 一批改进：
 > **① 对话载入历史**：reflex 原本每条消息只给 `[system, user]`，无往来历史 → 大模型回复有失忆/失意感。新增 `storage.RecentDialogueTurns`（从 raw_trail 的 reflex.received/speak 重建近期对话）+ `reflex.dialogueHistory` 注入最近 10 轮（单轮截 600 字控 token，去重末尾当前消息）。

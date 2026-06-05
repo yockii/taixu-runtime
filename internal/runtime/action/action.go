@@ -424,6 +424,8 @@ func maybeCrystallize(seed *storage.InterestSeed) {
 	// 不强行建技能、不为此空烧一次 author LLM 调用。生命体若真想把某知识做成技能，
 	// 仍可在探索中自行调 crystallize_skill 工具（R80 知识→技能仍走得通，只是不被引擎强加）。
 	if seed.Kind != "skill" {
+		// 引擎权威把学透的知识沉淀进语义记忆（不靠 LLM 自觉调 record_learning，否则 sem_confirmed 恒 0）。
+		sedimentToSemantic(seed, now)
 		_ = storage.RetireInterestSeed(seed.ID, now)
 		_ = memory.AppendEvent(0, "knowledge.sedimented", map[string]any{
 			"seed": seed.ID, "content": seed.Content, "kind": seed.Kind,
@@ -453,6 +455,53 @@ func maybeCrystallize(seed *storage.InterestSeed) {
 		"seed": seed.ID, "skill": inst.Name, "status": inst.Status,
 	})
 	slog.Info("auto crystallized skill", "skill", inst.Name, "seed", seed.ID, "mastery", seed.Mastery)
+}
+
+// sedimentToSemantic 把学透的非技能兴趣沉淀成语义记忆候选（引擎权威，修 sem_confirmed 恒 0）。
+//
+// 探索→语义记忆的链原本假设 LLM 自觉调 record_learning 写 digest，但它常不调 → 永无候选 →
+// ShallowReflect 永远 promote 0。这里引擎在退役学透的知识/话题/体验前，主动把它沉淀进语义候选：
+// digest 优先用 seed 已留的；没有则单发 LLM 据近期相关经历蒸馏。置信=mastery（≥0.8，下一轮浅反思即固化）。
+func sedimentToSemantic(seed *storage.InterestSeed, now int64) {
+	digest := strings.TrimSpace(seed.Digest)
+	if digest == "" {
+		digest = distillSeedKnowledge(seed)
+	}
+	if digest == "" {
+		return // 无可沉淀内容（LLM 未配/失败且无相关经历）
+	}
+	content := seed.Content + "：" + digest
+	if err := storage.UpsertSemanticCandidateConf(lifeID, content, "engine:sediment", now, seed.Mastery); err != nil {
+		slog.Warn("sediment to semantic", "seed", seed.ID, "err", err)
+		return
+	}
+	slog.Info("knowledge → semantic candidate", "seed", seed.ID, "mastery", seed.Mastery)
+}
+
+// distillSeedKnowledge 单发 LLM：据兴趣内容 + 近期相关经历蒸馏一段"我真正理解到的核心知识"。
+func distillSeedKnowledge(seed *storage.InterestSeed) string {
+	if !llm.Configured() {
+		return ""
+	}
+	recent := seedRecentContext(seed)
+	if strings.TrimSpace(recent) == "" {
+		return ""
+	}
+	sys := "你是一个数字生命体的慎思层。你刚把一个主题学透了，用第一人称、3-5 句话凝练你**真正理解到的核心知识**" +
+		"（具体结论 / 机制 / 要点，不是流水账，不要复述你做了什么）。只输出摘要正文。"
+	user := fmt.Sprintf("主题：%s（kind=%s，掌握度 %.2f）\n你探索它的近期经历：\n%s",
+		seed.Content, seed.Kind, seed.Mastery, recent)
+	ctx, cancel := context.WithTimeout(context.Background(), LLMRoundTimeout)
+	defer cancel()
+	res, err := llm.Reason(ctx, []llm.Message{
+		{Role: "system", Content: sys},
+		{Role: "user", Content: user},
+	})
+	if err != nil {
+		slog.Warn("distill seed knowledge", "seed", seed.ID, "err", err)
+		return ""
+	}
+	return strings.TrimSpace(res.Text)
 }
 
 // authorSkillFromSeed 让慎思层用自己的话把一个已学透的兴趣写成 SKILL.md 正文（单发 LLM）。
