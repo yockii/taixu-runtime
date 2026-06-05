@@ -11,10 +11,31 @@
 	let exporting = $state(false);
 	let exportErr = $state('');
 
+	// 勿扰时段本地编辑态（从 cfg 初始化）
+	let qEnabled = $state(false);
+	let qStart = $state(23);
+	let qEnd = $state(8);
+	let qTz = $state(0);
+	let qSaved = $state(false);
+
 	$effect(() => {
 		void $tokenStore; // 令牌变更后重新拉取（授权后才返回环境信息）
-		api.config().then((c) => (cfg = c));
+		api.config().then((c) => {
+			cfg = c;
+			if (c.proactive_quiet) {
+				qEnabled = c.proactive_quiet.enabled;
+				qStart = c.proactive_quiet.start;
+				qEnd = c.proactive_quiet.end;
+				qTz = c.proactive_quiet.tz_offset_min;
+			}
+		});
 	});
+
+	async function saveQuiet() {
+		await api.setQuiet({ enabled: qEnabled, start: qStart, end: qEnd, tz_offset_min: qTz });
+		qSaved = true;
+		setTimeout(() => (qSaved = false), 1500);
+	}
 
 	function saveToken() {
 		persistToken(token.trim()); // 经 auth store → 响应式解锁所有受控区块
@@ -87,6 +108,49 @@
 			{/if}
 			{#if cfg.auth_required && !cfg.llm}
 				<p class="text-xs text-zinc-600">{$t('config_locked_hint')}</p>
+			{/if}
+
+			{#if cfg.proactive_quiet}
+				<div class="rounded-lg border border-zinc-700/60 bg-zinc-900/40 p-3">
+					<label class="flex items-center gap-2 font-semibold text-zinc-300">
+						<input type="checkbox" bind:checked={qEnabled} class="accent-violet-500" />
+						🌙 {$t('quiet_enable')}
+					</label>
+					<p class="mt-1 mb-2 text-zinc-500">{$t('quiet_hint')}</p>
+					<div class="flex flex-wrap items-center gap-2 text-zinc-300">
+						<span>{$t('quiet_from')}</span>
+						<input
+							type="number"
+							min="0"
+							max="23"
+							bind:value={qStart}
+							class="w-14 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-center font-mono outline-none focus:border-violet-500"
+						/>
+						<span>{$t('quiet_oclock')}</span>
+						<span>{$t('quiet_to')}</span>
+						<input
+							type="number"
+							min="0"
+							max="23"
+							bind:value={qEnd}
+							class="w-14 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-center font-mono outline-none focus:border-violet-500"
+						/>
+						<span>{$t('quiet_oclock')}</span>
+					</div>
+					<div class="mt-2 flex items-center gap-2">
+						<input
+							type="number"
+							bind:value={qTz}
+							class="w-20 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-center font-mono text-zinc-300 outline-none focus:border-violet-500"
+						/>
+						<span class="text-zinc-500">{$t('quiet_tz')}</span>
+						<button
+							onclick={saveQuiet}
+							class="ml-auto shrink-0 rounded bg-violet-600/80 px-3 py-1 font-medium text-white transition hover:bg-violet-600"
+							>{qSaved ? $t('saved') : $t('save')}</button
+						>
+					</div>
+				</div>
 			{/if}
 
 			{#if !cfg.auth_required || cfg.llm}

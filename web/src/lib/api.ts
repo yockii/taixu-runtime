@@ -119,6 +119,7 @@ export interface Config {
 	feishu?: { app_id: string; app_secret: string };
 	skill_auto_approve_deps?: boolean;
 	proactive_im?: boolean;
+	proactive_quiet?: { enabled: boolean; start: number; end: number; tz_offset_min: number };
 	auth_required?: boolean;
 }
 
@@ -190,6 +191,9 @@ export const api = {
 		if (!r.ok) throw new Error(`/api/dialogue → ${r.status}`);
 		return r.json();
 	},
+	/** 设置主动消息静默时段（勿扰）。 */
+	setQuiet: (q: { enabled: boolean; start: number; end: number; tz_offset_min: number }) =>
+		apiPost<{ enabled: boolean; start: number; end: number; tz_offset_min: number }>('/api/config/quiet', q),
 	/** 导出加密生命包（.mvlife）并触发浏览器下载。口令是唯一钥匙，丢失不可恢复。 */
 	exportLife: async (passphrase: string): Promise<void> => {
 		const r = await fetch('/api/export', {

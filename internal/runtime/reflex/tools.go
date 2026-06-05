@@ -9,6 +9,7 @@ package reflex
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 
 	"mindverse/internal/runtime/memory"
 	"mindverse/internal/runtime/skill"
@@ -59,7 +60,49 @@ func registerCoreTools() error {
 	}); err != nil {
 		return err
 	}
+	if err := tools.Register(tools.Tool{
+		Name: "set_quiet",
+		Description: "当对方明确表示暂时不想被打扰（如『接下来1小时别发消息』『我在忙，晚点再说』『今晚先这样』），调用此工具。" +
+			"在指定时长内你不会再主动给ta发消息（ta主动找你时你仍照常回应）。",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"minutes": map[string]any{"type": "number", "description": "安静多少分钟（如 60=一小时；『今晚』可估到次日早晨的分钟数）"},
+				"reason":  map[string]any{"type": "string", "description": "对方说了什么（用于记忆）"},
+			},
+			"required": []string{"minutes"},
+		},
+		Lanes:   []tools.Lane{tools.LaneReflex},
+		Handler: handlerSetQuiet,
+	}); err != nil {
+		return err
+	}
 	return nil
+}
+
+type quietArgs struct {
+	Minutes float64 `json:"minutes"`
+	Reason  string  `json:"reason"`
+}
+
+func handlerSetQuiet(_ context.Context, tctx tools.Context, argsJSON string) (string, error) {
+	var a quietArgs
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return `{"ok":false,"err":"invalid args"}`, err
+	}
+	if a.Minutes <= 0 {
+		return `{"ok":false,"err":"minutes must be > 0"}`, nil
+	}
+	if a.Minutes > 10080 { // 上限 7 天，防离谱时长
+		a.Minutes = 10080
+	}
+	until := shared.SystemClock.UnixSec() + int64(a.Minutes*60)
+	setSnoozeUntil(tctx.Channel, tctx.From, until)
+	_ = memory.AppendEvent(0, "reflex.quiet_set", map[string]any{
+		"minutes": a.Minutes, "until": until, "reason": a.Reason,
+		"channel": tctx.Channel, "from": tctx.From,
+	})
+	return `{"ok":true,"until":` + strconv.FormatInt(until, 10) + `}`, nil
 }
 
 type moodArgs struct {

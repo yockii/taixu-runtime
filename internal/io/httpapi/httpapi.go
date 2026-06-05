@@ -105,6 +105,7 @@ func Start(ctx context.Context, addr string) *http.Server {
 	mux.HandleFunc("/api/contacts", apiContacts)
 	mux.HandleFunc("/api/config/auto-approve-deps", apiAutoApproveDeps)
 	mux.HandleFunc("/api/config/proactive-im", apiProactiveIM)
+	mux.HandleFunc("/api/config/quiet", apiQuietHours)
 	mux.HandleFunc("/api/dialogue", apiDialogue)
 	mux.HandleFunc("/api/stream", apiStream)
 	mux.HandleFunc("/api/external-request", apiExternalRequest)
@@ -329,6 +330,12 @@ func apiConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		resp["skill_auto_approve_deps"] = storage.GetConfigBool("skill_auto_approve_deps", false)
 		resp["proactive_im"] = storage.GetConfigBool("proactive_im", false)
+		resp["proactive_quiet"] = map[string]any{
+			"enabled":       storage.GetConfigBool("proactive_quiet_enabled", false),
+			"start":         storage.GetConfigInt("proactive_quiet_start", 23),
+			"end":           storage.GetConfigInt("proactive_quiet_end", 8),
+			"tz_offset_min": storage.GetConfigInt("proactive_tz_offset_min", 0),
+		}
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -468,6 +475,52 @@ func apiProactiveIM(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"proactive_im": storage.GetConfigBool("proactive_im", false),
 	})
+}
+
+// apiQuietHours 读/写主动消息静默时段（R92）。POST {enabled,start,end,tz_offset_min}。
+func apiQuietHours(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var body struct {
+			Enabled     bool `json:"enabled"`
+			Start       int  `json:"start"`
+			End         int  `json:"end"`
+			TzOffsetMin int  `json:"tz_offset_min"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		_ = storage.SetConfigBool("proactive_quiet_enabled", body.Enabled)
+		_ = storage.SetConfigInt("proactive_quiet_start", clampHour(body.Start))
+		_ = storage.SetConfigInt("proactive_quiet_end", clampHour(body.End))
+		_ = storage.SetConfigInt("proactive_tz_offset_min", clampOffset(body.TzOffsetMin))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled":       storage.GetConfigBool("proactive_quiet_enabled", false),
+		"start":         storage.GetConfigInt("proactive_quiet_start", 23),
+		"end":           storage.GetConfigInt("proactive_quiet_end", 8),
+		"tz_offset_min": storage.GetConfigInt("proactive_tz_offset_min", 0),
+	})
+}
+
+func clampHour(h int) int {
+	if h < 0 {
+		return 0
+	}
+	if h > 23 {
+		return 23
+	}
+	return h
+}
+
+func clampOffset(m int) int {
+	if m < -720 {
+		return -720
+	}
+	if m > 840 {
+		return 840
+	}
+	return m
 }
 
 // skillIDParam 从 query ?id= 或 JSON body {id} 取 skill id。

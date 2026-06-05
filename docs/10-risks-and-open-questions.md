@@ -524,6 +524,25 @@
 > **仍待**：主动社交频率闸现按会话（不会单方刷爆某人），但多联系人时缺**全局速率上限**（可能一轮对许多人各发一条）——Phase 4 升级 `TryProactiveReach` 为"遍历各会话、按 social_need/reputation/上次联系时机决策去提醒谁"时一并处理；当前只挑 `MostRecentContact` 单个。
 > **影响**：`internal/storage/memory.go`、`internal/storage/contact.go`（新增 `GetContact`/`PeerKey`）、`internal/runtime/reflex/proactive.go`、`internal/runtime/reflex/reflex.go`、`R84`、`R88`、`R89`、Phase 4 `07`。
 
+### R91 · 主动消息复读（低温确定性导致逐字重复，已修 Phase 0.5）
+> 用户 2026-06-05 发现：两条主动消息内容**逐字相同**（17:49 与 18:21，间隔 ~32min 过冷却）。查实 raw_trail：id 557 与 684 完全一致，中间无用户回复（pending 1→2→3）。
+> **根因**：`composeProactiveMessage` 每次 prompt 几乎不变（无人回 → 历史/pending 同），`llm.Reason` 走全局温度（偏低）→ 输出塌缩成同一句。即便历史已含上一条主动消息（assistant 轮，R90 已喂），prompt 没明令禁止复读，模型仍复读。
+> **修**：
+> - **防复读 prompt**：compose 的 nudge 点出上一条主动消息原文（meta `proactive_last_msg:<life>:<ck>`），明令"别说同样的话——换角度/换话头/聊新的"。
+> - **去重守卫**：生成后 `normalizeMsg`（去空白）比对上一条；逐字重复则**不发**，但仍推进冷却 + pending++ → 朝收手推进。涌现效果：说不出新意就发一次后攒到阈值收手（"说过一次没回，算了"），而非每 30min 复读轰炸。
+> - 对方一回（`NoteInboundReply`）清掉 last_msg：会话翻篇，下次主动不必回避旧话。
+> **仍待**：`Reason` 无 per-call 温度；将来可给主动 compose 单独提温增加多样性（现靠 prompt + 守卫足够）。
+> **影响**：`internal/runtime/reflex/proactive.go`、`R84`、`R89`、`R90`。
+
+### R92 · 主动消息勿扰：静默时段 + 临时勿扰（已实装 Phase 0.5）
+> 用户 2026-06-05：需能设"哪些时段不发消息"避免打扰；用户在对话里说"接下来1小时别打扰我"也要实际生效。补 PRD §7.2 / R55 的静默时段 TODO。
+> **两道闸**（都在 `TryProactiveReach` 早退，不动 pending/冷却——"现在不合适"≠被冷落）：
+> - **静默时段**（配置，全局，按用户本地时区）：`inQuietHours(now)`。config 键 `proactive_quiet_enabled/start/end` + `proactive_tz_offset_min`（分钟偏移，避容器 tzdata 依赖）。跨午夜支持（start>end）。面板可设（`/api/config/quiet`），`apiConfig` 回传当前值。单测覆盖跨午夜/同日/时区/空窗。
+> - **临时勿扰**（按会话，用户对话触发）：新增 reflex tool `set_quiet(minutes)`——LLM 听懂"别打扰"就调（结构化走 tool-call，不解析自由文本，合 [[feedback_llm_structured_via_tools]]）。写 meta `proactive_snooze_until:<life>:<ck>`，未到点不主动发。上限 7 天。buildSystemPrompt 告知生命体有此工具。
+> **要点**：勿扰只挡**主动消息**；用户主动来找，生命体照常回应（受邀≠打扰）。
+> **仍待**：静默时段目前单窗口；多窗口 / 工作日区分留后。时区靠手填偏移（Phase 1 可由飞书用户资料/前端时区自动探测）。
+> **影响**：`internal/runtime/reflex/proactive.go`、`internal/runtime/reflex/tools.go`、`internal/runtime/reflex/reflex.go`、`internal/storage/config.go`（int 配置）、`internal/io/httpapi/httpapi.go`、面板 ConfigPanel、`R55`、`R84`、`R90`。
+
 ### R88 · 对话历史 + 行为降频 + 技能生命周期完善（已实装 Phase 0.5）
 > 用户 2026-06-05 一批改进：
 > **① 对话载入历史**：reflex 原本每条消息只给 `[system, user]`，无往来历史 → 大模型回复有失忆/失意感。新增 `storage.RecentDialogueTurns`（从 raw_trail 的 reflex.received/speak 重建近期对话）+ `reflex.dialogueHistory` 注入最近 10 轮（单轮截 600 字控 token，去重末尾当前消息）。

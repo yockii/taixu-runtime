@@ -328,6 +328,7 @@ func buildSystemPrompt(mode Mode, chatType, channel, peer string) string {
 		selfActivityContext() +
 		"当对话引发明显情绪波动时，请用 update_mood 工具调整自己的状态。\n" +
 		"当对话提到你想未来探索的技能/知识/话题时，请用 add_interest 工具记下来。\n" +
+		"当对方表示暂时别打扰你（在忙 / 晚点说 / 今晚先这样 / 接下来一段别发消息）时，用 set_quiet 工具记下时长，这段时间你就不会再主动找ta（ta来找你时你照常回应）。\n" +
 		"对话回复用简洁自然的中文。可以分多次发送（每轮一条消息），像人聊天那样断句。"
 
 	hint := ""

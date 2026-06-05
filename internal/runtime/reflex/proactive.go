@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	"mindverse/internal/bus"
@@ -43,7 +44,58 @@ const (
 	proactivePendingKey = "proactive_pending:"
 	// proactiveGhostedKey schema_meta 键前缀：是否已因被冷落而沮丧+收手（防沮丧重复施加）。
 	proactiveGhostedKey = "proactive_ghosted:"
+	// proactiveLastMsgKey schema_meta 键前缀：上一条主动消息正文，用于去重防复读（R91）。
+	proactiveLastMsgKey = "proactive_last_msg:"
+	// proactiveSnoozeKey schema_meta 键前缀：临时勿扰截止 unix 时刻（按会话，R92）。
+	proactiveSnoozeKey = "proactive_snooze_until:"
 )
+
+// 静默时段配置键（R92，按用户本地时区；offset 避免容器 tzdata 依赖）。
+const (
+	cfgQuietEnabled = "proactive_quiet_enabled"
+	cfgQuietStart   = "proactive_quiet_start"  // 起始小时 0-23（本地）
+	cfgQuietEnd     = "proactive_quiet_end"    // 结束小时 0-23（本地）
+	cfgTZOffsetMin  = "proactive_tz_offset_min" // 用户本地相对 UTC 的分钟偏移（如 +480 = UTC+8）
+)
+
+// inQuietHours 当前是否落在配置的静默时段（按用户本地时区）。未启用 / 空窗恒 false。
+// 跨午夜支持：start>end 视作过夜窗口（如 23→8）。
+func inQuietHours(nowUnix int64) bool {
+	if !storage.GetConfigBool(cfgQuietEnabled, false) {
+		return false
+	}
+	start := storage.GetConfigInt(cfgQuietStart, 23)
+	end := storage.GetConfigInt(cfgQuietEnd, 8)
+	if start == end {
+		return false // 空窗
+	}
+	off := storage.GetConfigInt(cfgTZOffsetMin, 0)
+	local := nowUnix + int64(off)*60
+	hour := int((local % 86400) / 3600)
+	if hour < 0 {
+		hour += 24
+	}
+	if start < end {
+		return hour >= start && hour < end // 同日窗口
+	}
+	return hour >= start || hour < end // 跨午夜
+}
+
+// snoozedUntil 该会话临时勿扰的截止时刻（0 = 无）。
+func snoozedUntil(ck string) int64 {
+	v, ok, err := storage.GetMeta(proactiveSnoozeKey + lifeID + ":" + ck)
+	if err != nil || !ok {
+		return 0
+	}
+	n, _ := strconv.ParseInt(v, 10, 64)
+	return n
+}
+
+// setSnoozeUntil 设某会话临时勿扰截止时刻（供 set_quiet 工具调用）。
+func setSnoozeUntil(channel, peer string, until int64) {
+	ck := convoKey(channel, peer)
+	_ = storage.SetMeta(proactiveSnoozeKey+lifeID+":"+ck, strconv.FormatInt(until, 10))
+}
 
 // convoKey 会话作用域键 channel|peer（R90）：主动消息的 pending/ghosted/last 计数按会话隔离，
 // 不再全生命体共享——给 A 发 1 条不会因给 B 发过而被算成"发了 2 条没回"。
@@ -71,6 +123,12 @@ func TryProactiveReach(genome core.Genome) bool {
 	}
 	now := shared.SystemClock.UnixSec()
 
+	// 护栏 1.5：静默时段（R92）。配置的"夜间不打扰"窗口内不主动发——全局、按用户本地时区。
+	// 早退、不动 pending/冷却：这是"现在不合适"，不是被冷落（窗口过了照常）。
+	if inQuietHours(now) {
+		return false
+	}
+
 	// 选目标：最近交互的联系人（Phase 0 = 用户本人）。
 	// 必须先选会话再做频率/冷落判定——计数按会话隔离（R90）。
 	// 前瞻（Phase 4）：此处应升级为"遍历各会话、按 social_need / reputation / 上次联系时机
@@ -80,6 +138,12 @@ func TryProactiveReach(genome core.Genome) bool {
 		return false
 	}
 	ck := convoKey(contact.Channel, contact.PeerID)
+
+	// 护栏 1.6：临时勿扰（R92）。用户在对话里说过"接下来 N 别打扰我"→ set_quiet 工具记下截止时刻。
+	// 未到点前不主动发（按会话）。早退、不动 pending/冷却：用户主动要求的安静，不该算作冷落。
+	if until := snoozedUntil(ck); now < until {
+		return false
+	}
 
 	// 护栏 2：频率（按会话）
 	if last := getProactiveLast(ck); now-last < ProactiveMinIntervalSec {
@@ -92,10 +156,19 @@ func TryProactiveReach(genome core.Genome) bool {
 		applyGhostDiscouragement(ck)
 		return false
 	}
-	// TODO(Phase 1): 静默时段（夜间不发）。需用户本地时区配置，Phase 0 容器 UTC 暂略。
 
 	msg := composeProactiveMessage(genome, contact)
 	if msg == "" {
+		return false
+	}
+
+	// 去重守卫（R91）：若 LLM 复读了上一条主动消息（低温确定性，prompt 几乎不变），
+	// 别重复轰炸用户。仍推进冷却 + pending——这次"想找却没新话说"也算一次够不着，朝收手推进；
+	// 但不把重复内容发出去。涌现效果：说不出新意 → 攒到阈值就收手（"说过一次没回，算了"）。
+	if last := getProactiveLastMsg(ck); last != "" && normalizeMsg(msg) == normalizeMsg(last) {
+		setProactiveLast(ck, now)
+		setPendingReaches(ck, getPendingReaches(ck)+1)
+		slog.Info("reflex proactive reach skipped — duplicate of last message", "to", contact.PeerID)
 		return false
 	}
 
@@ -116,6 +189,7 @@ func TryProactiveReach(genome core.Genome) bool {
 	// pending++ 记一条未回应；攒到阈值则下次 idle 触发被冷落沮丧 + 收手。
 	_ = storage.UpsertContact(lifeID, contact.Channel, contact.PeerID, contact.PeerName, contact.ChatType, now)
 	setProactiveLast(ck, now)
+	setProactiveLastMsg(ck, msg) // R91：记下这次内容，下次比对防复读
 	setPendingReaches(ck, getPendingReaches(ck)+1)
 	// R89：主动发消息给实质缓解（-0.12，原 -0.02 太抠）——"表达了一下，没那么急了"。
 	// 发完掉下阈值，不再钉在 1.0、自然拉长下次主动间隔，少打扰用户。回应仍有额外欣慰（NoteInboundReply）。
@@ -158,6 +232,11 @@ func composeProactiveMessage(genome core.Genome, contact *storage.Contact) strin
 	nudge := "（现在请你主动发一条消息给ta。"
 	if pending >= 2 {
 		nudge += fmt.Sprintf("你心里清楚：在这个会话里你最近已经连发了 %d 条，都还没等到回应。", pending)
+	}
+	// 防复读（R91）：低温下同一 prompt 会塌缩成同一句。把上一条点出来、明令换说法。
+	if last := getProactiveLastMsg(ck); last != "" {
+		nudge += fmt.Sprintf("⚠ 你上一条主动消息是：『%s』。别再说同样的话——换个角度、换个话头，"+
+			"或聊点新的（比如你最近在做 / 在想的事）。", last)
 	}
 	nudge += "直接给消息正文：）"
 	msgs = append(msgs, llm.Message{Role: "user", Content: nudge})
@@ -224,6 +303,26 @@ func setProactiveLast(ck string, ts int64) {
 	_ = storage.SetMeta(proactiveLastKey+lifeID+":"+ck, strconv.FormatInt(ts, 10))
 }
 
+// --- 防复读（R91）：记上一条主动消息正文，下次比对 ---
+
+func getProactiveLastMsg(ck string) string {
+	v, ok, err := storage.GetMeta(proactiveLastMsgKey + lifeID + ":" + ck)
+	if err != nil || !ok {
+		return ""
+	}
+	return v
+}
+
+func setProactiveLastMsg(ck, msg string) {
+	_ = storage.SetMeta(proactiveLastMsgKey+lifeID+":"+ck, msg)
+}
+
+// normalizeMsg 归一文本做相等比较：去掉所有空白（含换行）。表情/标点保留——
+// 仅防"逐字 / 仅空白差异"的复读，措辞真有变化则放行。
+func normalizeMsg(s string) string {
+	return strings.Join(strings.Fields(s), "")
+}
+
 // --- 主动消息回应追踪（R84，会话作用域 R90）---
 
 func getPendingReaches(ck string) int {
@@ -285,6 +384,7 @@ func NoteInboundReply(channel, peer string) bool {
 	}
 	setPendingReaches(ck, 0)
 	setGhosted(ck, false)
+	setProactiveLastMsg(ck, "") // R91：对方回了，会话翻篇，下次主动不必再回避旧话
 	scale := float64(pending)
 	if scale > 3 {
 		scale = 3
