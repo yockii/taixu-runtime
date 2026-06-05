@@ -506,6 +506,14 @@
 > **仍待**：自动结晶在 finalize 内同步跑一次 LLM（最长 120s），多用户时应移异步；纯知识类是否一律尝试结晶可再调（当前交 LLM 判）。
 > **影响**：`internal/runtime/action/action.go`、`internal/storage/interest.go`、`internal/storage/skill.go`、`R77`、`R79`、`R80`。
 
+### R89 · 社交节奏调校 + 主动消息视角 bug（已修 Phase 0.5）
+> 用户 2026-06-05 观察：
+> **① social_need 涨太快**：`idle.Tick` 每 tick `0.005+0.03·sociability`，cycle ~60s 几十轮就顶满 → 老想打扰用户。改 `0.0015+0.006·sociability`（~4× 慢）；genesis 基线 `0.3+0.4·soc`→`0.2+0.3·soc`（起点别贴阈值）。
+> **② 满了却"没社交行为"**：实为主动消息已发（受 30min 冷却节流），但 R84 把"发出"设成只 -0.02 social_need、不算满足 → 用户不回则 social_need **永钉 1.0**，看着像没动作。改：主动发消息给**实质缓解** `social_need-0.12`（"表达了一下，没那么急了"），发完掉下阈值、自然拉长下次间隔、不再钉满。ghosting（被冷落收手）仍保留；回应仍有额外欣慰。
+> **③ 主动消息视角 bug**：`composeProactiveMessage` 喂 `recentEpisodeContext` 的 raw 事件 dump（`idle.daydream×7`），LLM 误把"自己发呆"当成对方活动，发出"是你在……发呆？"。修：prompt 明确"这些是【你自己】的状态/活动日志（含自己 idle.daydream），别把自己做的事说成对方在做"。同类视角混淆见 [[reflex 自我活动注入]]（R88 dialogueHistory / selfActivityContext）。
+> **仍待**：social_need 涨速宜按真实时间而非 tick（cycle 间隔可变）；30min 冷却可配。
+> **影响**：`internal/runtime/idle/idle.go`、`internal/runtime/reflex/proactive.go`、`internal/runtime/genesis/genesis.go`、`R84`、`R82`。
+
 ### R88 · 对话历史 + 行为降频 + 技能生命周期完善（已实装 Phase 0.5）
 > 用户 2026-06-05 一批改进：
 > **① 对话载入历史**：reflex 原本每条消息只给 `[system, user]`，无往来历史 → 大模型回复有失忆/失意感。新增 `storage.RecentDialogueTurns`（从 raw_trail 的 reflex.received/speak 重建近期对话）+ `reflex.dialogueHistory` 注入最近 10 轮（单轮截 600 字控 token，去重末尾当前消息）。

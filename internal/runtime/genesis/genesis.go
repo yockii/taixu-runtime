@@ -46,7 +46,7 @@ func Bear() (string, error) {
 		LifeID:          lifeID,
 		Energy:          1.0,
 		Competence:      0.1,
-		SocialNeed:      0.3 + 0.4*g.Sociability,
+		SocialNeed:      0.2 + 0.3*g.Sociability, // 起点别太接近触发阈值（R89）
 		Stress:          0.0,
 		Confidence:      0.5,
 		Stability:       0.7,

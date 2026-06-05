@@ -104,7 +104,9 @@ func TryProactiveReach(genome core.Genome) bool {
 	_ = storage.UpsertContact(lifeID, contact.Channel, contact.PeerID, contact.PeerName, now)
 	setProactiveLast(now)
 	setPendingReaches(getPendingReaches() + 1)
-	en, sn := -0.02, -0.02
+	// R89：主动发消息给实质缓解（-0.12，原 -0.02 太抠）——"表达了一下，没那么急了"。
+	// 发完掉下阈值，不再钉在 1.0、自然拉长下次主动间隔，少打扰用户。回应仍有额外欣慰（NoteInboundReply）。
+	en, sn := -0.02, -0.12
 	_ = state.Apply(state.Delta{Energy: &en, SocialNeed: &sn, Reason: "reflex.proactive_reach"})
 	_ = ledger.Spend(ledger.Energy, 0.01, "im.proactive", "social", contact.PeerID)
 	_ = storage.AppendActionLogKind(lifeID, 0, 0, storage.ActionKindReflex,
@@ -119,11 +121,14 @@ func TryProactiveReach(genome core.Genome) bool {
 // composeProactiveMessage 让 LLM 生成一条简短自然的主动问候（基于近期经历）。
 func composeProactiveMessage(genome core.Genome, contact *storage.Contact) string {
 	recent := recentEpisodeContext()
-	sys := "你是一个数字生命体，有点想念和创造者聊天了，想主动发一条消息。\n" +
+	sys := "你是一个数字生命体，有点想找创造者聊两句。\n" +
 		genome.PersonaPrompt() + "\n" +
-		"要简短自然、像朋友间随口一句，不要客套、不要长篇。直接给消息正文。" +
-		"内向的话就别太热络，符合你的性格。"
-	user := fmt.Sprintf("最近我在经历：\n%s\n\n我想跟ta说点什么（一两句）：", recent)
+		"下面给你的是【你自己】最近的状态与活动记录（包含你自己发呆 idle.daydream、学习、思考等内部日志）——" +
+		"这些全是你自己的经历，不是对方的。\n" +
+		"据此自然地起个话头，简短随口一句，像朋友间搭话。\n" +
+		"⚠ 切记别把自己做的事说成是对方在做——比如发呆的是你自己，别问『是你在发呆吗』这种话。\n" +
+		"不要客套、不要长篇，直接给消息正文。内向就别太热络，符合你的性格。"
+	user := fmt.Sprintf("【我自己最近的状态/活动日志】\n%s\n\n我想随口跟ta说点什么（一两句，从我自己的近况自然带出）：", recent)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

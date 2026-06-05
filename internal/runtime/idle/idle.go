@@ -60,7 +60,9 @@ func Tick(genome core.Genome) bool {
 	// social_need 增速按 sociability 调（R82）：内向者孤独涨得慢，外向者快。
 	energy := 0.01
 	stress := -0.02
-	social := 0.005 + 0.03*genome.Sociability
+	// social_need 涨速放慢 ~4×（R89）：原 0.005+0.03·soc 每 tick 太猛，cycle ~60s 几十轮就顶满，
+	// 导致频繁想打扰用户。改慢，孤独是慢慢累积的。
+	social := 0.0015 + 0.006*genome.Sociability
 	sat := -0.01
 	_ = state.Apply(state.Delta{
 		Energy:       &energy,
