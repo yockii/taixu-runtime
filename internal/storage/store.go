@@ -64,6 +64,13 @@ func Close() error {
 // DB 暴露原始 *sql.DB（仅 storage 包内部使用；外部不应取）。
 func DB() *sql.DB { return db.DB }
 
+// SnapshotInto 用 VACUUM INTO 产出一致的库快照到 path（WAL 已合并，无需停写）。
+// path 必须不存在（VACUUM INTO 要求目标为新文件）。供 lifepack 导出取一致镜像。
+func SnapshotInto(path string) error {
+	_, err := db.Exec("VACUUM INTO ?", path)
+	return err
+}
+
 // ErrNoRows re-export 便于调用方 errors.Is 判断。
 var ErrNoRows = sql.ErrNoRows
 
