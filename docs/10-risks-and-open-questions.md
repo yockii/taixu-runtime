@@ -552,6 +552,27 @@
 > **仍待**：mastery 仍按 substantive 给、不检测"这轮是否真比上轮新"——靠 prompt 让探索递进来间接保证，未做硬性新颖度闸（重复刨理论上仍能涨分）。若长跑仍见浅结晶，再考虑 `masteryDelta` 引入"与上次 digest 的差异度"折扣。
 > **影响**：`internal/runtime/action/action.go`、`R83`、`R80`、`R75`、`R91`。
 
+### R94 · ghost-skill 收养：清库换生命但 workspace 仍在 → 新生命收养前主技能（已修 Phase 0.5）
+> 用户 2026-06-05 数据体检发现：新生命 `local-7cb130f13e6a89e1`（2h）有 13 条 skill_instance，其中 **12 条在 genesis 瞬间（11:10:45）mastery=0 注册**，名字（`hn-digest`/`static-blog-homepage`/`regex-engine-nfa-dfa`/`micro-expression-reading`…）根本不是这生命的兴趣（它只学 Rust 所有权/宏、意识流、贝叶斯）。
+> **根因**：上次"清库重开"只删了 `mindverse-data` volume，**没删 `./workspace` bind-mount**。boot 时 `skill.ScanDir`（`loader.go`）扫 `/workspace/skills/*`，对每个含 SKILL.md 的文件夹无条件 `loadFolder`，以**新生命的 life_id** 重新 keying（`id=hash(lifeID:name)`）成自己的 mastery=0 行——前几个测试生命留下的 SKILL.md 被新生命静默收养成幽灵技能，污染技能/自我模型。SKILL.md 文件夹**无任何归属标记**（`authored_from` 仅标自创来源，外部/前主技能为空）。病根同 [[R91]]/[[R93]]——不校验"这东西是不是我的"。
+> **修**：技能文件夹加 `.owner` 归属标记（内容=创建该技能的 life_id）。`loadFolder` 是唯一采纳入口（ScanDir 过滤后 / Load 粘贴 / AuthorFromKnowledge 自创均经此），在此统一盖 owner=当前 life_id。`ScanDir` 装载前先读 `.owner`，**不匹配（含无标记）则跳过**，不静默收养。lifepack 导入会带上 `.owner`（=原 life_id=导入后 life_id）故正常认领；裸 volume-wipe 换新随机 life_id 则正确遗弃旧 folder。注：`id=hash(lifeID:name)` 已让跨生命 id 碰撞结构上不可能，故 `.owner` filter 即完整修复，无需加 DB migration。
+> **仍待**：Phase 4 技能社群分发时，外部投放的 SKILL.md 无 `.owner` → 当前会被 ScanDir 跳过，需走显式 import/审批流采纳（R18/R80），届时设计。当前生命的 12 条幽灵行由"全清重生"（volume+workspace 同删）一并清除，本修复为前向防护。
+> **影响**：`internal/runtime/skill/loader.go`、`internal/runtime/skill/loader_test.go`、`R80`、`R88`、`R82`、Phase 4 `07`。
+
+### R95 · 语义固化链断点：record_learning digest 永不固化（sem_confirmed 恒 0，已修 Phase 0.5）
+> 用户 2026-06-05 数据体检发现：`sem_confirmed=0`、reflect 日志全 `promoted:0`，而 PRD §7.2 观察验收项之一正是"SemanticConfirmed 增长可见"——长跑会直接挂掉这一条。
+> **根因**：`UpsertSemanticCandidate` 初见死值 confidence=0.5，同内容再现一次 +0.1，`ShallowReflect` 固化阈值 ≥0.75 → 需同一内容被见 **3+ 次**才升语义记忆（这是为 `extractor:v2` 的"重复模式"路径设计的）。但 `record_learning` 写入的 candidate content = **学习 digest**（每次探索都是不同长文）→ 永远走 INSERT 新行、卡在 0.5、`support_count` 永不累加 → 永不固化。= 学透的知识被当"需重复 3 次才采信的暂定模式"，机制错配。docs/10 line 700 早登记"探索→SemanticCandidate→浅审固化链尚未闭合"。
+> **修**：新增 `UpsertSemanticCandidateConf(...,initialConf)`，`record_learning` 以来源 seed 的 **mastery** 作初见置信入库——学透的 digest（mastery≥0.75）直接达阈值，经 ShallowReflect 沉淀进 `semantic_confirmed`；浅学的（<0.75）留候选区，待掌握加深后的新 digest 再够格。`extractor:v2` 重复模式路径仍走默认 0.5 不变。固化的"反思才能把经历升为知识"语义保持不变（仍由 ShallowReflect 当闸）。
+> **仍待**：同一 seed 多次探索产生多条不同 digest 候选，低置信的旧 digest 会滞留候选区（无害，是渐进笔记）；未做按 seed 去重。长跑验证 `sem_confirmed` 是否随掌握增长。
+> **影响**：`internal/storage/memory.go`、`internal/storage/memory_test.go`、`internal/runtime/tools/builtin/builtin.go`、`internal/runtime/reflect/reflect.go`、`R74`、`R66`、`R65`。
+
+### R96 · Phase 0.5 持续观察窗口缩短 1 月→1 周 + 飞书全消息矩阵（Phase B 规划）
+> 用户 2026-06-05 决策两项：
+> **① 持续观察窗口缩短**：PRD §7.4 / §1 / §2.5 的"养 ≥1 月"改为 **≥1 周**（飞书双向稳定性仍 ≥3 周不变，是更长的硬闸，故长跑实际由飞书 3 周门控）。理由：加速 Phase 0 退出判定迭代。
+> **② 飞书增强（Phase B，全消息矩阵）**：当前 `lark.go` 只收 `text`+p2p、只发 `text`，其余类型全丢。规划升级：**收** post 富文本→文本提取、image 存引用、file 落 sandbox（audio 转写留 Phase 1）；**发** text/post/card/image；**card action 回调 + 确认流**——把现有需用户确认的流程（skill L3 依赖批准、危险操作）走飞书交互卡片获取确认。
+> **排序**：飞书增强是附加 IM 能力、不污染生命内部状态，镜像升级保留数据卷 → 在生命**锁定起跑之后**以镜像升级方式上线，时钟不清零。开发于临时生命/分支。
+> **影响**：`docs/PHASE-0-PRD.md`、`internal/io/lark/lark.go`、`internal/runtime/skill/loader.go`（L3 审批接卡片）、`R55`、Phase 4 `07`（群聊/多渠道）。
+
 ### R88 · 对话历史 + 行为降频 + 技能生命周期完善（已实装 Phase 0.5）
 > 用户 2026-06-05 一批改进：
 > **① 对话载入历史**：reflex 原本每条消息只给 `[system, user]`，无往来历史 → 大模型回复有失忆/失意感。新增 `storage.RecentDialogueTurns`（从 raw_trail 的 reflex.received/speak 重建近期对话）+ `reflex.dialogueHistory` 注入最近 10 轮（单轮截 600 字控 token，去重末尾当前消息）。

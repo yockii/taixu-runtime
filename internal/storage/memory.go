@@ -165,7 +165,25 @@ func LatestEpisodeRawEndID(lifeID string) (int64, error) {
 	return *v, nil
 }
 
+// UpsertSemanticCandidate 复现 +1 支持度；初见以默认置信 0.5 入库。
+// 用于"重复模式"路径（extractor:v2 同一 tool.success 反复出现才升置信）。
 func UpsertSemanticCandidate(lifeID, content, sourceRef string, ts int64) error {
+	return UpsertSemanticCandidateConf(lifeID, content, sourceRef, ts, 0.5)
+}
+
+// UpsertSemanticCandidateConf 同上，但初见置信由调用方给定。
+//
+// 修语义固化链断点：record_learning 写入的 digest 每次都是不同长文，永远走 INSERT 新行、
+// 卡在死值 0.5 < 0.75 promote 阈值 → 永不固化（sem_confirmed 恒 0）。改由来源 seed 的 mastery
+// 作初见置信：学透的知识 digest 直接达阈值，经 ShallowReflect 沉淀进 semantic_confirmed；
+// 浅学的 digest 仍留候选区，待掌握加深后的新 digest 再够格。固化的"反思闸"语义不变。
+func UpsertSemanticCandidateConf(lifeID, content, sourceRef string, ts int64, initialConf float64) error {
+	if initialConf < 0 {
+		initialConf = 0
+	}
+	if initialConf > 1 {
+		initialConf = 1
+	}
 	res, err := db.Exec(`
 		UPDATE semantic_candidate
 		SET support_count = support_count + 1,
@@ -180,7 +198,7 @@ func UpsertSemanticCandidate(lifeID, content, sourceRef string, ts int64) error 
 	}
 	_, err = db.Exec(`
 		INSERT INTO semantic_candidate (life_id, content, source_ref, support_count, confidence, created_at, last_seen_at)
-		VALUES (?, ?, ?, 1, 0.5, ?, ?)`, lifeID, content, sourceRef, ts, ts)
+		VALUES (?, ?, ?, 1, ?, ?, ?)`, lifeID, content, sourceRef, initialConf, ts, ts)
 	return err
 }
 

@@ -36,6 +36,10 @@ const (
 	SkillsRoot = "/skills"
 	// DepInstallTimeout 单次依赖安装超时。
 	DepInstallTimeout = 300 * time.Second
+	// ownerFile 技能文件夹归属标记文件名，内容为创建该技能的生命体 life_id（修 ghost-skill 收养）。
+	// boot 扫描据此只装载属于当前生命体的技能；清库换生命后宿主 workspace 仍在，
+	// 前主遗留的技能文件夹因 owner 不匹配而被跳过，不再被新生命静默收养成 mastery=0 幽灵技能。
+	ownerFile = ".owner"
 )
 
 // pkgNameRe 校验包名 + 版本约束，防 shell 注入（H09）。
@@ -133,6 +137,7 @@ func ParseSkillMd(content string) (Frontmatter, string, error) {
 func ScanDir() (int, error) {
 	mu.Lock()
 	root := skillsRoot
+	lid := lifeID
 	mu.Unlock()
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -141,7 +146,7 @@ func ScanDir() (int, error) {
 		}
 		return 0, err
 	}
-	n := 0
+	n, skipped := 0, 0
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -152,11 +157,22 @@ func ScanDir() (int, error) {
 		if err != nil {
 			continue // 没有 SKILL.md 的子目录跳过
 		}
+		// 归属校验（修 ghost-skill 收养）：只装载属于当前生命体的技能文件夹。
+		// owner 不匹配 = 前主生命遗留（清库换生命但 workspace 仍在）或外部投放，boot 时不静默收养。
+		// 无 owner 标记同样跳过——视作非本生命所创，避免把陌生 SKILL.md 当自己的技能。
+		if owner := folderOwner(folder); owner != lid {
+			skipped++
+			slog.Info("skill scan skip non-owned", "folder", filepath.Base(folder), "owner", owner, "current", lid)
+			continue
+		}
 		if _, err := loadFolder(folder, string(content)); err != nil {
 			slog.Warn("skill scan load", "folder", folder, "err", err)
 			continue
 		}
 		n++
+	}
+	if skipped > 0 {
+		slog.Info("skill scan done", "loaded", n, "skipped_non_owned", skipped)
 	}
 	return n, nil
 }
@@ -283,6 +299,11 @@ func loadFolder(folder, content string) (*storage.SkillInstance, error) {
 		Status:       "ready",
 		InstallPath:  folder,
 		CreatedAt:    now,
+	}
+	// 盖归属标记：此文件夹归当前生命体所创/采纳。loadFolder 是唯一采纳入口（ScanDir 已过滤、
+	// Load 显式粘贴、AuthorFromKnowledge 自创均经此），故在此统一写 owner，使下次 boot 扫描认得它。
+	if err := writeOwner(folder, lid); err != nil {
+		slog.Warn("skill write owner", "folder", folder, "err", err)
 	}
 	if len(missing) > 0 {
 		depsJSON, _ := json.Marshal(missing)
@@ -518,6 +539,23 @@ func persistBody(installPath, content string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(installPath, "SKILL.md"), []byte(content), 0o644)
+}
+
+// writeOwner 写技能文件夹归属标记（当前生命体 life_id）。
+func writeOwner(folder, lid string) error {
+	if err := os.MkdirAll(folder, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(folder, ownerFile), []byte(lid), 0o644)
+}
+
+// folderOwner 读技能文件夹归属标记；无标记 / 读失败返 ""。
+func folderOwner(folder string) string {
+	b, err := os.ReadFile(filepath.Join(folder, ownerFile))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
 }
 
 // --- small helpers ---

@@ -282,8 +282,10 @@ func handleRecordLearning(_ context.Context, tctx tools.Context, argsJSON string
 	}
 	// R74 闭环：学习摘要进 semantic memory 候选，后续被 ShallowReflect 固化为知识。
 	// 探索不再只是落 sandbox 文件 / 兴趣衰减，而是真正沉淀进生命体的语义记忆。
+	// 初见置信 = 该 seed 的 mastery（学透的 digest 直接达固化阈值）—— 修语义固化链断点，
+	// digest 每次唯一无法靠"重复 +0.1"升置信，必须以 mastery 入库才可能被 ShallowReflect 固化。
 	if a.Digest != "" && tctx.LifeID != "" {
-		if err := storage.UpsertSemanticCandidate(tctx.LifeID, a.Digest, "skill:record_learning", now); err != nil {
+		if err := storage.UpsertSemanticCandidateConf(tctx.LifeID, a.Digest, "skill:record_learning", now, a.Mastery); err != nil {
 			// 非致命：记录失败不影响 mastery 回写
 			return mustJSON(map[string]any{"ok": true, "seed_id": a.SeedID, "mastery": a.Mastery, "semantic": "skip"}), nil
 		}
