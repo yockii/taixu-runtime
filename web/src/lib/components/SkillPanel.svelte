@@ -2,6 +2,8 @@
 	import { t, lang } from '$lib/i18n';
 	import { skillVer } from '$lib/stores';
 	import { unixToDate, apiPost } from '$lib/api';
+	import { locked } from '$lib/auth';
+	import TokenGate from './TokenGate.svelte';
 
 	type Skill = {
 		id: string;
@@ -150,8 +152,10 @@
 <div class="card">
 	<h2 class="mb-3 text-sm font-semibold text-zinc-400">{$t('skills_title')}</h2>
 
-	<!-- 装载入口 -->
-	<form
+	<!-- 写控件区（装载 / 开关）：未授权时整体替换为「输入令牌」占位 -->
+	<TokenGate>
+		<!-- 装载入口 -->
+		<form
 		class="mb-3 space-y-2"
 		onsubmit={(e) => {
 			e.preventDefault();
@@ -196,13 +200,14 @@
 	</label>
 
 	<!-- proactive IM toggle (B) -->
-	<label class="mb-3 flex items-start gap-2 rounded border border-amber-800/50 bg-amber-950/20 p-2 text-xs">
-		<input type="checkbox" checked={proactiveIM} onchange={toggleProactive} class="mt-0.5" />
-		<span>
-			<span class="font-semibold text-amber-300">{$t('proactive_im')}</span>
-			<span class="block text-amber-400/70">{$t('proactive_im_warn')}</span>
-		</span>
-	</label>
+		<label class="mb-3 flex items-start gap-2 rounded border border-amber-800/50 bg-amber-950/20 p-2 text-xs">
+			<input type="checkbox" checked={proactiveIM} onchange={toggleProactive} class="mt-0.5" />
+			<span>
+				<span class="font-semibold text-amber-300">{$t('proactive_im')}</span>
+				<span class="block text-amber-400/70">{$t('proactive_im_warn')}</span>
+			</span>
+		</label>
+	</TokenGate>
 
 	{#if items.length === 0}
 		<div class="text-sm text-zinc-500">{$t('empty_skill')}</div>
@@ -241,6 +246,8 @@
 							<div class="mt-1.5 flex items-center gap-2">
 								{#if busyIds[s.id]}
 									<span class="italic text-cyan-400">{busyIds[s.id]}</span>
+								{:else if $locked}
+									<span class="text-zinc-600">🔒 {$t('locked_hint')}</span>
 								{:else}
 									<button
 										class="rounded bg-emerald-600 px-2 py-0.5 hover:bg-emerald-500"

@@ -97,6 +97,25 @@ docker run -d --name mindverse -p 3000:3000 \
 
 > ⚠️ **The data volume is the life.** Deleting it ends that being permanently and starts a brand-new one at next launch. Treat it the way you'd treat something you don't want to lose.
 
+### Upgrading to a new version
+
+**Upgrading the image does NOT touch your data volume — the same life carries over.** The image holds only the runtime; the life (personality, memories, growth) lives entirely in the `mindverse-data` volume, which is separate.
+
+With docker compose:
+
+```bash
+# bump the image tag (e.g. 0.1.0 → 0.2.0) in compose, then:
+docker compose pull
+docker compose up -d
+```
+
+The container is recreated from the new image and **re-attaches the existing volume**; schema migrations run automatically on start, so the same life continues. Nothing is overwritten.
+
+- ✅ `docker compose up -d` / `pull` / `down` (no flags) — life preserved.
+- ❌ `docker compose down **-v**` — the `-v` deletes the volume and **ends the life**. Never use `-v` unless you intend to start over.
+- 💾 Before a major upgrade, back up the volume:
+  `docker run --rm -v mindverse-data:/data -v ${PWD}:/backup alpine tar czf /backup/mindverse-life.tar.gz -C /data .`
+
 ---
 
 ## 中文简介
@@ -106,6 +125,10 @@ Mindverse（心域文明）**不是聊天机器人，也不是 AI 助手**，而
 **用法**：给它一个 OpenAI 兼容的模型接口、一个数据卷（生命就住在里面）、开放 3000 端口，然后打开 `http://localhost:3000` 观察它。可选接入飞书与它对话。
 
 ⚠️ **数据卷就是这个生命本身**，删掉即永久结束、下次启动会出生一个全新的。请妥善保存、备份。
+
+**升级镜像不会覆盖数据卷，生命体原样保留**——镜像只装运行时，生命（人格/记忆/成长）全在独立的 `mindverse-data` 卷里。升级只需改 compose 里的镜像 tag 后 `docker compose pull && docker compose up -d`：容器用新镜像重建、重新挂上原卷，启动时自动跑数据库迁移，同一个生命体继续。`docker compose down -v` 的 **`-v` 会删卷=结束生命**，除非真要重来否则别加。
+
+**写操作鉴权**：把面板暴露到公网时设 `MINDVERSE_ACCESS_TOKEN`（任意字符串）。设了之后，状态/兴趣等只读照常看，但**注入对话、看对话记录、改开关、批准装依赖**等需在面板填入相同令牌。
 
 ---
 

@@ -2,6 +2,7 @@
 	import { api } from '$lib/api';
 	import { t } from '$lib/i18n';
 	import { reflexReplies, reflexInProgress, resetReflexConversation } from '$lib/stores';
+	import TokenGate from './TokenGate.svelte';
 
 	let text = $state('');
 	let busy = $state(false);
@@ -26,34 +27,36 @@
 
 <div class="card">
 	<h2 class="mb-3 text-sm font-semibold text-zinc-400">{$t('inject_title')}</h2>
-	<form
-		class="space-y-2"
-		onsubmit={(e) => {
-			e.preventDefault();
-			send();
-		}}
-	>
-		<textarea
-			class="h-20 w-full resize-none rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none"
-			placeholder={$t('inject_placeholder')}
-			bind:value={text}
-			disabled={busy}
-		></textarea>
-		<div class="flex items-center justify-between">
-			<div class="text-xs text-zinc-500">
-				{#if err}
-					<span class="text-rose-400">{err}</span>
-				{/if}
+	<TokenGate>
+		<form
+			class="space-y-2"
+			onsubmit={(e) => {
+				e.preventDefault();
+				send();
+			}}
+		>
+			<textarea
+				class="h-20 w-full resize-none rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm focus:border-zinc-500 focus:outline-none"
+				placeholder={$t('inject_placeholder')}
+				bind:value={text}
+				disabled={busy}
+			></textarea>
+			<div class="flex items-center justify-between">
+				<div class="text-xs text-zinc-500">
+					{#if err}
+						<span class="text-rose-400">{err}</span>
+					{/if}
+				</div>
+				<button
+					type="submit"
+					class="rounded bg-emerald-600 px-4 py-1.5 text-sm font-medium hover:bg-emerald-500 disabled:opacity-50"
+					disabled={busy || !text.trim()}
+				>
+					{busy ? $t('inject_busy') : $t('inject_send')}
+				</button>
 			</div>
-			<button
-				type="submit"
-				class="rounded bg-emerald-600 px-4 py-1.5 text-sm font-medium hover:bg-emerald-500 disabled:opacity-50"
-				disabled={busy || !text.trim()}
-			>
-				{busy ? $t('inject_busy') : $t('inject_send')}
-			</button>
-		</div>
-	</form>
+		</form>
+	</TokenGate>
 
 	{#if $reflexReplies.length > 0 || $reflexInProgress}
 		<div class="mt-3 space-y-2">

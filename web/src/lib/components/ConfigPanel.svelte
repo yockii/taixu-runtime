@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { api, type Config, getToken, setToken } from '$lib/api';
+	import { api, type Config, getToken } from '$lib/api';
+	import { saveToken as persistToken } from '$lib/auth';
 	import { t } from '$lib/i18n';
 
 	let cfg = $state<Config | null>(null);
@@ -11,7 +12,7 @@
 	});
 
 	function saveToken() {
-		setToken(token.trim());
+		persistToken(token.trim()); // 经 auth store → 响应式解锁所有受控区块
 		saved = true;
 		setTimeout(() => (saved = false), 1500);
 	}

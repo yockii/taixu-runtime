@@ -512,8 +512,10 @@
 > - env `MINDVERSE_ACCESS_TOKEN`：非空时启用；空（默认）不鉴权，适合本机 dogfooding。
 > - `httpapi.withAuth` 中间件：`/api/` 下**变更类方法**（POST/PUT/PATCH/DELETE）需带 `X-Mindverse-Token` 且 `subtle.ConstantTimeCompare` 匹配，否则 401。读（GET/HEAD，含 SSE `/api/stream`）与静态资源永远开放。方法级 → 自动覆盖现有 + 未来所有写端点。
 > - `/api/config` 暴露 `auth_required`，前端据此在 ConfigPanel 显示令牌输入框（存 localStorage，仅本机），写请求经 `apiPost` 统一带 header；401 提示令牌无效。
-> **实测**：GET 读无 token→200；POST 写无/错 token→401；POST 写对 token→202。
-> **仍待**：HTTP 明文传输令牌（建议生产配 HTTPS 反代）；单一共享令牌无多用户/权限分级（Phase 4 社交期再细化）；无频率限制。
+> **隐私读保护（用户 2026-06-05 追加）**：对话含用户原话 = 用户隐私，仅写鉴权不够。`isProtectedRead` 把 `/api/actions?view=dialogue`（及无 view 的全量，含对话）也纳入令牌保护；`view=action`（生命体自主行动，非隐私）仍开放。前端对话面板用 `TokenGate` 整块上锁、未授权不拉取。
+> **前端「锁」UX（用户提议）**：`auth.ts`（token/authRequired/locked 响应式 store）+ `TokenGate.svelte`——未授权时把交互区块整体替换成居中的「输入访问令牌」按钮（内联填入即一处解锁、处处解锁）。已套在 InjectForm、SkillPanel 写控件、对话面板。
+> **实测**：GET 状态读无 token→200；对话读 `view=dialogue` 无 token→401、对 token→200；行动读 `view=action` 无 token→200；POST 写无/错 token→401、对 token→202。
+> **仍待**：① SSE `/api/stream` 未鉴权——其中 `reflex_reply` 实时事件含对话，理论上仍可被未授权连接收到（EventSource 不支持自定义 header，需改 query token 或事件过滤，Phase 1 处理）；② HTTP 明文传令牌（生产配 HTTPS 反代）；③ 单一共享令牌无多用户/权限分级（Phase 4）；④ 无频率限制。
 > **影响**：`internal/io/httpapi/httpapi.go`、`web/src/lib/api.ts`、`ConfigPanel.svelte`、`SkillPanel.svelte`、`R55`、`R72`、`R73`。
 
 ### R86 · 能量休息闸 + 知识沉淀不强行建技能（已实装 Phase 0.5）

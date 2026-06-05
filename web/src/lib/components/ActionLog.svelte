@@ -2,9 +2,12 @@
 	import { api, type ActionLog, unixToDate } from '$lib/api';
 	import { t, lang } from '$lib/i18n';
 	import { actionVer } from '$lib/stores';
+	import { locked } from '$lib/auth';
+	import TokenGate from './TokenGate.svelte';
 
 	// mode='dialogue' 展示对外言说（reflex），mode='action' 展示内在自主作为（deliberate）。
 	// 二者分流：生命体「说的」与「做的」可背离，分开看才看得见这种差异。
+	// 对话含用户原话 = 用户隐私，未授权时整块上锁（R87）。
 	let { mode = 'action' }: { mode?: 'dialogue' | 'action' } = $props();
 
 	let items = $state<ActionLog[]>([]);
@@ -21,22 +24,25 @@
 	$effect(() => {
 		$actionVer;
 		void mode;
+		if (isDialogue && $locked) {
+			items = []; // 隐私：未授权不拉对话
+			return;
+		}
 		load();
 	});
 
 	$effect(() => {
-		const ti = setInterval(load, 30000);
+		const ti = setInterval(() => {
+			if (isDialogue && $locked) return;
+			load();
+		}, 30000);
 		return () => clearInterval(ti);
 	});
 
 	const locale = $derived($lang === 'zh' ? 'zh-CN' : 'en-US');
 </script>
 
-<div class="card">
-	<h2 class="mb-3 text-sm font-semibold text-zinc-400">
-		{title}
-		{#if isDialogue}<span class="ml-1 text-zinc-600">· {$t('dialogue_hint')}</span>{/if}
-	</h2>
+{#snippet body()}
 	{#if items.length === 0}
 		<div class="text-sm text-zinc-500">{emptyMsg}</div>
 	{:else}
@@ -77,5 +83,17 @@
 				{/if}
 			{/each}
 		</div>
+	{/if}
+{/snippet}
+
+<div class="card">
+	<h2 class="mb-3 text-sm font-semibold text-zinc-400">
+		{title}
+		{#if isDialogue}<span class="ml-1 text-zinc-600">· {$t('dialogue_hint')}</span>{/if}
+	</h2>
+	{#if isDialogue}
+		<TokenGate>{@render body()}</TokenGate>
+	{:else}
+		{@render body()}
 	{/if}
 </div>

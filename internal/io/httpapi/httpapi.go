@@ -136,7 +136,8 @@ var accessToken string
 // 暴露面板看看无妨，但注入消息 / 改 dangerous-skip / 批准装依赖等必须授权。
 func withAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if accessToken != "" && isMutating(r.Method) && strings.HasPrefix(r.URL.Path, "/api/") {
+		if accessToken != "" && strings.HasPrefix(r.URL.Path, "/api/") &&
+			(isMutating(r.Method) || isProtectedRead(r)) {
 			got := r.Header.Get("X-Mindverse-Token")
 			if subtle.ConstantTimeCompare([]byte(got), []byte(accessToken)) != 1 {
 				writeJSON(w, http.StatusUnauthorized, map[string]any{
@@ -156,6 +157,22 @@ func isMutating(method string) bool {
 	default:
 		return false
 	}
+}
+
+// isProtectedRead 标记含**用户隐私**的读端点（R87 补充：对话内容是用户与生命体的私密交流）。
+// 即便 token 已设，统计/状态类读仍开放（看看数字生命无妨），但对话不行。
+//
+//	/api/actions?view=action     生命体自主行动 → 开放
+//	/api/actions?view=dialogue   对话（含用户原话）→ 需令牌
+//	/api/actions（无 view，含全部 kind = 含对话）→ 需令牌
+func isProtectedRead(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	if r.URL.Path == "/api/actions" {
+		return r.URL.Query().Get("view") != "action"
+	}
+	return false
 }
 
 // -------- API handlers --------

@@ -13,6 +13,7 @@
 		markReflexFinished
 	} from '$lib/stores';
 	import { t } from '$lib/i18n';
+	import { authRequired } from '$lib/auth';
 	import StatePanel from '$lib/components/StatePanel.svelte';
 	import GenomePanel from '$lib/components/GenomePanel.svelte';
 	import ValuesPanel from '$lib/components/ValuesPanel.svelte';
@@ -42,6 +43,7 @@
 		api.genome().then((g) => (genome = g));
 		api.values().then((v) => (values = v));
 		api.lifecycle().then((l) => (lifecycleNow = l.state));
+		api.config().then((c) => authRequired.set(!!c.auth_required));
 	});
 
 	$effect(() => {
