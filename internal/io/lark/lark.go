@@ -308,18 +308,69 @@ func handleCardAction(ctx context.Context, ev *callback.CardActionTriggerEvent) 
 	h := cardActionHandler
 	mu.Unlock()
 	if h == nil {
-		return toast("warning", "暂无处理器"), nil
+		return &callback.CardActionTriggerResponse{Toast: &callback.Toast{Type: "warning", Content: "暂无处理器"}}, nil
 	}
 	msg, ok := h(action, value)
 	typ := "success"
 	if !ok {
 		typ = "error"
 	}
-	return toast(typ, msg), nil
+	// 异步把原卡片 Patch 成结果卡片（撤掉按钮、显示处理结果），避免按钮一直挂着可重复点。
+	// 不在回调响应里塞 card（v1 schema 作 card_json data 会被拒：err 200672），改用消息 Patch API。
+	mid := ""
+	if ev.Event.Context != nil {
+		mid = ev.Event.Context.OpenMessageID
+	}
+	slog.Info("card action", "action", action, "ok", ok, "open_message_id", mid)
+	if mid != "" {
+		go patchCardResult(mid, msg, ok)
+	}
+	return &callback.CardActionTriggerResponse{Toast: &callback.Toast{Type: typ, Content: msg}}, nil
 }
 
-func toast(typ, content string) *callback.CardActionTriggerResponse {
-	return &callback.CardActionTriggerResponse{Toast: &callback.Toast{Type: typ, Content: content}}
+// patchCardResult 把已发出的审批卡片更新为结果卡片（无按钮）。3s 截止外异步跑。
+func patchCardResult(messageID, result string, ok bool) {
+	mu.Lock()
+	cli := appCli
+	mu.Unlock()
+	if cli == nil {
+		return
+	}
+	b, _ := json.Marshal(buildResultCard(result, ok))
+	resp, err := cli.Im.V1.Message.Patch(context.Background(), larkim.NewPatchMessageReqBuilder().
+		MessageId(messageID).
+		Body(larkim.NewPatchMessageReqBodyBuilder().Content(string(b)).Build()).
+		Build())
+	if err != nil {
+		slog.Warn("lark patch card", "err", err)
+		return
+	}
+	if !resp.Success() {
+		slog.Warn("lark patch card rsp", "code", resp.Code, "msg", resp.Msg)
+		return
+	}
+	slog.Info("lark patched card", "message_id", messageID)
+}
+
+// buildResultCard 处理后替换原审批卡片的结果卡片（无按钮）。
+func buildResultCard(result string, ok bool) map[string]any {
+	icon := "✅"
+	if !ok {
+		icon = "⚠️"
+	}
+	return map[string]any{
+		"config": map[string]any{"wide_screen_mode": true},
+		"header": map[string]any{
+			"template": "grey",
+			"title":    map[string]any{"tag": "plain_text", "content": "技能依赖审批"},
+		},
+		"elements": []any{
+			map[string]any{
+				"tag":  "div",
+				"text": map[string]any{"tag": "lark_md", "content": icon + " " + result + "\n\n（详情见观察面板技能状态）"},
+			},
+		},
+	}
 }
 
 // ingestResource 下载入站附件到 inbox 并返回一句文本提示；inbox 未配/下载失败则只返类型提示。
