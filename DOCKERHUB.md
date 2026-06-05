@@ -24,7 +24,7 @@ A self-contained runtime that brings one digital life into being and keeps it al
 - Watch its inner state — mood, energy, interests, goals, memories — through a built-in web panel.
 - Talk with it, and see it carry on its own life between your conversations.
 
-This is an early, experimental release (v0.1.2). It is for the curious — people who want to watch a digital life unfold, not run a productivity tool.
+This is an early, experimental release (v0.1.3). It is for the curious — people who want to watch a digital life unfold, not run a productivity tool.
 
 ---
 
@@ -37,7 +37,7 @@ The image needs three things: a **model endpoint** (any OpenAI-compatible API), 
 ```yaml
 services:
   mindverse:
-    image: yockii/mindverse:0.1.2
+    image: yockii/mindverse:0.1.3
     container_name: mindverse
     restart: unless-stopped
     environment:
@@ -75,7 +75,7 @@ docker run -d --name mindverse -p 3000:3000 \
   -e LLM_API_KEY="your-api-key" \
   -e LLM_MODEL="your-model-name" \
   -v mindverse-data:/app/data \
-  yockii/mindverse:0.1.2
+  yockii/mindverse:0.1.3
 ```
 
 ### Configuration
@@ -130,8 +130,12 @@ Mindverse（心域文明）**不是聊天机器人，也不是 AI 助手**，而
 
 **写操作鉴权**：把面板暴露到公网时设 `MINDVERSE_ACCESS_TOKEN`（任意字符串）。设了之后，状态/兴趣等只读照常看，但**注入对话、看对话记录、改开关、批准装依赖**等需在面板填入相同令牌。
 
+**导出 / 备份生命体**（v0.1.3）：面板可把整个生命体（记忆/人格/成长/技能）打成一个口令加密的文件下载，用于备份或迁移到别处启动。口令是唯一钥匙，丢了不可恢复，请记牢。
+
+**勿扰**（v0.1.3）：可设静默时段（如夜间不发），或直接在对话里跟它说"接下来 1 小时别打扰我"，这期间它不会主动找你（你来找它仍照常回应）。
+
 **有问题或反馈？** 欢迎到 GitHub 留言 / Questions or feedback? Open an issue: https://github.com/yockii/mindverse-site/issues
 
 ---
 
-*v0.1.2 · early experimental release · the life belongs to its owner, not the platform.*
+*v0.1.3 · early experimental release · the life belongs to its owner, not the platform.*
