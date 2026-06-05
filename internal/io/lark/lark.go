@@ -119,6 +119,9 @@ func handleMessage(ctx context.Context, ev *larkim.P2MessageReceiveV1) error {
 		return nil
 	}
 	msg := ev.Event.Message
+	// Phase 0：仅单聊（p2p）。群聊（group）入站暂丢弃——群聊需 @ 检测 / 多方归属 / 群 id 作会话键，
+	// 留 Phase 4（Life Network 多方在场）启用。届时此处放行 group 并把 reflex.IncomingRequest 的
+	// ChatType 设为 "group"、From 改填群 id、另带发言者 id+名。当前单聊路径下 ChatType="direct"。
 	if msg.ChatType != nil && *msg.ChatType != "p2p" {
 		return nil
 	}
@@ -153,8 +156,9 @@ func handleMessage(ctx context.Context, ev *larkim.P2MessageReceiveV1) error {
 
 	// 反射层即时处理对话（goroutine）
 	reflex.Handle(reflex.IncomingRequest{
-		Channel: "feishu",
-		From:    openID,
+		Channel:  "feishu",
+		ChatType: "direct", // Phase 0 仅放行 p2p 单聊
+		From:     openID,
 		Content: text,
 	})
 	return nil

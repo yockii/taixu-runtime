@@ -484,9 +484,10 @@ func apiExternalRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		From    string `json:"from"`
-		Channel string `json:"channel"`
-		Content string `json:"content"`
+		From     string `json:"from"`
+		Channel  string `json:"channel"`
+		ChatType string `json:"chat_type"` // "direct"（默认）/ "group"
+		Content  string `json:"content"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -505,9 +506,10 @@ func apiExternalRequest(w http.ResponseWriter, r *http.Request) {
 	// 慎思感知 + 反射即时回应
 	perception.Inject(req)
 	reflex.Handle(reflex.IncomingRequest{
-		Channel: body.Channel,
-		From:    body.From,
-		Content: body.Content,
+		Channel:  body.Channel,
+		ChatType: body.ChatType,
+		From:     body.From,
+		Content:  body.Content,
 	})
 	writeJSON(w, http.StatusAccepted, map[string]any{"id": req.ID, "queued_at": req.ReceivedAt})
 }

@@ -13,14 +13,36 @@ type DialogueTurn struct {
 	At      int64  `json:"at"`
 }
 
-// RecentDialogueTurns 取最近 limit 轮对话（按时间正序），从 raw_trail 的
-// reflex.received（用户）/ reflex.speak（生命体）事件重建。
-// 给 reflex 注入近期会话历史，避免大模型回复有失忆感（用户 2026-06-05）。
+// RecentDialogueTurns 取最近 limit 轮对话（按时间正序，跨全部会话），从 raw_trail 的
+// reflex.received（用户）/ reflex.speak / reflex.proactive_reach（生命体）事件重建。
+// 给面板做全局观察用。reflex 注入对话历史 / 主动消息须用 RecentDialogueTurnsForConvo 按会话隔离。
 func RecentDialogueTurns(lifeID string, limit int) ([]DialogueTurn, error) {
+	return dialogueTurns(lifeID, "", "", false, limit)
+}
+
+// RecentDialogueTurnsForConvo 取某一会话（channel + peer）的最近 limit 轮对话（按时间正序）。
+//
+// 关键（用户 2026-06-05）：未来多渠道（飞书/钉钉/slack）多会话并存，对话历史与"主动发了几条没回"
+// 的计数必须**按会话隔离**——给 A 发了 1 条，不能因为给 B 发过而说成"我发了 2 条怎么没回"。
+// 这里按事件 payload 的 channel + 对端（received 看 from / speak·proactive 看 to）过滤。
+func RecentDialogueTurnsForConvo(lifeID, channel, peer string, limit int) ([]DialogueTurn, error) {
+	return dialogueTurns(lifeID, channel, peerKey(peer), true, limit)
+}
+
+// dialogueTurns 内部实现：filterConvo=false 取全部；true 仅取 (channel, peer) 会话。
+func dialogueTurns(lifeID, channel, peer string, filterConvo bool, limit int) ([]DialogueTurn, error) {
+	// 过滤会话时事件经 payload 筛掉，故先多取一些候选再截断。
+	scan := limit
+	if filterConvo {
+		scan = limit * 8
+		if scan < 64 {
+			scan = 64
+		}
+	}
 	rows, err := db.Query(`
 		SELECT event_type, payload, created_at FROM raw_trail
 		WHERE life_id = ? AND event_type IN ('reflex.received','reflex.speak','reflex.proactive_reach')
-		ORDER BY id DESC LIMIT ?`, lifeID, limit)
+		ORDER BY id DESC LIMIT ?`, lifeID, scan)
 	if err != nil {
 		return nil, err
 	}
@@ -34,16 +56,27 @@ func RecentDialogueTurns(lifeID string, limit int) ([]DialogueTurn, error) {
 		}
 		var p struct {
 			Content string `json:"content"`
+			Channel string `json:"channel"`
+			From    string `json:"from"`
+			To      string `json:"to"`
 		}
 		_ = json.Unmarshal([]byte(payload), &p)
 		if p.Content == "" {
 			continue
 		}
 		role := "assistant"
+		evPeer := p.To // speak / proactive_reach：对端是收件人
 		if et == "reflex.received" {
 			role = "user"
+			evPeer = p.From // received：对端是发件人
+		}
+		if filterConvo && (p.Channel != channel || peerKey(evPeer) != peer) {
+			continue
 		}
 		rev = append(rev, DialogueTurn{Role: role, Content: p.Content, At: at})
+		if len(rev) >= limit {
+			break
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

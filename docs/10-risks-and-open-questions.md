@@ -514,6 +514,16 @@
 > **仍待**：social_need 涨速宜按真实时间而非 tick（cycle 间隔可变）；30min 冷却可配。
 > **影响**：`internal/runtime/idle/idle.go`、`internal/runtime/reflex/proactive.go`、`internal/runtime/genesis/genesis.go`、`R84`、`R82`。
 
+### R90 · 对话历史 / 主动计数按会话隔离 + 会话自我标识（已实装 Phase 0.5）
+> 用户 2026-06-05 指出：未来多渠道（飞书/钉钉/slack）多会话并存，对话历史与"主动发了几条没回"的计数**全是全生命体共享**——给某会话发 1 条，会因给别处发过而错说成"我发了 2 条怎么没回"；对话历史也把不同人/渠道串成一锅。
+> **修**：以 `convoKey = channel|peer` 为作用域隔离一切会话态。
+> - 历史：新增 `storage.RecentDialogueTurnsForConvo(channel,peer)`（按事件 payload 的 channel + 对端 from/to 过滤；received 看 from，speak/proactive_reach 看 to）。`reflex.dialogueHistory`、滚动概要 `dialogueSummary*`、主动消息 `composeProactiveMessage` 全切到会话版。`RecentDialogueTurns`（全局）仅留给面板观察。
+> - 计数：`proactive_pending/ghosted/last` 三个 meta 键由 `:<lifeID>` 改 `:<lifeID>:<convoKey>`。`getPendingReaches/setPendingReaches/isGhosted/setGhosted/getProactiveLast/setProactiveLast/applyGhostDiscouragement/NoteInboundReply` 全带 `ck`。A 回我只清 A 的等待，不影响"还在等 B 回"。
+> - 自我标识：`conversationContext`（对话）+ `whoAmITalkingTo`（主动）注入"这是哪个渠道、和谁会话"（`channelLabel` 机读名→飞书/钉钉/Slack/网页/命令行）。这是未来"上午和 B 说过了、再去提醒他"这类跨会话记忆/决策的入口。
+> - **单聊 vs 群聊**（用户追问）：`IncomingRequest.ChatType` + `contact.chat_type`（migration 007）。对话方式随类型变——群聊不问"你是谁"、不每条都接话、要 @ 具体人、主动发声不用"怎么不回我"单聊口吻。`conversationContext`/`whoAmITalkingTo` 按 `direct`/`group` 分支。Phase 0 仅放行飞书 p2p 单聊（`ChatType="direct"`），群聊入站仍丢弃；群聊真正启用（群 id 作会话键 + 发言者归属 + @ 检测）留 Phase 4。
+> **仍待**：主动社交频率闸现按会话（不会单方刷爆某人），但多联系人时缺**全局速率上限**（可能一轮对许多人各发一条）——Phase 4 升级 `TryProactiveReach` 为"遍历各会话、按 social_need/reputation/上次联系时机决策去提醒谁"时一并处理；当前只挑 `MostRecentContact` 单个。
+> **影响**：`internal/storage/memory.go`、`internal/storage/contact.go`（新增 `GetContact`/`PeerKey`）、`internal/runtime/reflex/proactive.go`、`internal/runtime/reflex/reflex.go`、`R84`、`R88`、`R89`、Phase 4 `07`。
+
 ### R88 · 对话历史 + 行为降频 + 技能生命周期完善（已实装 Phase 0.5）
 > 用户 2026-06-05 一批改进：
 > **① 对话载入历史**：reflex 原本每条消息只给 `[system, user]`，无往来历史 → 大模型回复有失忆/失意感。新增 `storage.RecentDialogueTurns`（从 raw_trail 的 reflex.received/speak 重建近期对话）+ `reflex.dialogueHistory` 注入最近 10 轮（单轮截 600 字控 token，去重末尾当前消息）。

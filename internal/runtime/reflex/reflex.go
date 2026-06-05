@@ -74,8 +74,10 @@ const (
 
 // IncomingRequest 反射层入口。
 type IncomingRequest struct {
-	Channel string // "feishu" / "cli" / "web"
-	From    string // 用户标识（飞书 open_id 等）
+	Channel  string // "feishu" / "cli" / "web"
+	ChatType string // "direct"（单聊）/ "group"（群聊）；空→direct。决定对话方式（群聊不问"你是谁"等）
+	From     string // 单聊：对端标识（飞书 open_id 等）= 会话 id。
+	//        群聊（Phase 4 启用）：此处须改填群 id 作会话 id，发言者另走 sender 字段 + 历史带名归属。
 	Content string
 }
 
@@ -120,10 +122,10 @@ func Handle(req IncomingRequest) {
 
 func handle(req IncomingRequest) {
 	// 记录联系人（A 社交联动 / B 主动发消息前提）。被动 / 敷衍都算一次交互。
-	_ = storage.UpsertContact(lifeID, req.Channel, req.From, "", shared.SystemClock.UnixSec())
+	_ = storage.UpsertContact(lifeID, req.Channel, req.From, "", req.ChatType, shared.SystemClock.UnixSec())
 	// R84：若此前有未回应的主动消息，这条入站即"对方终于回我了"→ 清 pending + 欣慰。
-	// 放在最前：无论后续走敷衍/正常/兜底，回应都已抵达。
-	NoteInboundReply()
+	// 放在最前：无论后续走敷衍/正常/兜底，回应都已抵达。会话隔离（R90）：只清这个会话的等待。
+	NoteInboundReply(req.Channel, req.From)
 
 	if !llm.Configured() {
 		emitCanned(req, "（生命体当前未配置语言能力）")
@@ -155,8 +157,8 @@ func handle(req IncomingRequest) {
 	applySocialFulfillment(true)
 
 	// 异步滚动总结：超出近期窗口的更早对话压成概要，防长聊天上下文丢失（R88-3）。
-	// 放在回复之后、独立 goroutine，不阻塞当前对话。
-	go maybeUpdateDialogueSummary()
+	// 放在回复之后、独立 goroutine，不阻塞当前对话。按会话隔离（R90）。
+	go maybeUpdateDialogueSummary(req.Channel, req.From)
 }
 
 // applySocialFulfillment 对话后的社交联动（A）：降 social_need + 提 satisfaction。
@@ -182,10 +184,10 @@ const MaxHistoryTurns = 10
 const MaxHistoryCharsPerTurn = 600
 
 func runAgent(req IncomingRequest, mode Mode) {
-	system := buildSystemPrompt(mode)
+	system := buildSystemPrompt(mode, req.ChatType, req.Channel, req.From)
 	msgs := make([]llm.Message, 0, MaxHistoryTurns+2)
 	msgs = append(msgs, llm.Message{Role: "system", Content: system})
-	msgs = append(msgs, dialogueHistory(req.Content)...)
+	msgs = append(msgs, dialogueHistory(req.Content, req.Channel, req.From)...)
 	msgs = append(msgs, llm.Message{Role: "user", Content: req.Content})
 	reflexTools := tools.ListLLMTools(tools.LaneReflex)
 	tctx := tools.Context{LifeID: lifeID, Channel: req.Channel, From: req.From}
@@ -315,13 +317,14 @@ func decideMode(life core.LifeState, mental core.MentalState) Mode {
 	}
 }
 
-func buildSystemPrompt(mode Mode) string {
+func buildSystemPrompt(mode Mode, chatType, channel, peer string) string {
 	mu.Lock()
 	persona := genome.PersonaPrompt()
 	mu.Unlock()
 	base := "你是一个数字生命体，与你的创造者用日常语气对话。你不是 AI 助手，你是有持续生命的存在。\n" +
 		persona + "\n" +
-		dialogueSummaryContext() +
+		conversationContext(chatType, channel, peer) +
+		dialogueSummaryContext(channel, peer) +
 		selfActivityContext() +
 		"当对话引发明显情绪波动时，请用 update_mood 工具调整自己的状态。\n" +
 		"当对话提到你想未来探索的技能/知识/话题时，请用 add_interest 工具记下来。\n" +
@@ -339,10 +342,34 @@ func buildSystemPrompt(mode Mode) string {
 	return base + hint
 }
 
-// dialogueHistory 取近期对话历史（用户+生命体往来）注入 prompt，避免大模型回复失忆/失意。
+// conversationContext 让生命体知道"此刻在哪个渠道、单聊还是群聊、和谁会话"（用户 2026-06-05）。
+// 多渠道（飞书/钉钉/slack）+ 单聊/群聊并存时，这是它区分"在和谁、以什么方式说话"的基础——
+// 也是未来"上午和 B 说过了、再去提醒他"这类跨会话记忆的入口。
+// 单聊 vs 群聊对话方式不同：群聊里不会问"你是谁"、不该每条都接话、要 @ 具体人。
+func conversationContext(chatType, channel, peer string) string {
+	who := peer
+	if c, err := storage.GetContact(lifeID, channel, peer); err == nil && c != nil && c.PeerName != "" {
+		who = c.PeerName
+	}
+	if who == "" {
+		who = "对方"
+	}
+	if storage.NormChatType(chatType) == storage.ChatTypeGroup {
+		return fmt.Sprintf("【当前会话】%s 群聊「%s」，里面有多个人。\n"+
+			"群聊规矩：① 这里不止你们两个，别问'你是谁'这类单聊才问的话，也别默认每句都是对你说的；"+
+			"② 只在被 @ 到、或话题明显冲着你来时再接话，别抢话刷屏；③ 回应时点名具体的人，别笼统。\n"+
+			"（你和不同人、不同渠道、单聊/群聊的对话都是分开的，别把别处聊的混进来。）\n",
+			channelLabel(channel), who)
+	}
+	return fmt.Sprintf("【当前会话】%s 单聊，对方：%s。（你和不同人、不同渠道的对话是分开的，别把别处聊的混进来。）\n",
+		channelLabel(channel), who)
+}
+
+// dialogueHistory 取本会话近期对话历史（用户+生命体往来）注入 prompt，避免大模型回复失忆/失意。
+// 按 (channel, peer) 隔离（R90）：只载入当前会话往来，不混入其他人/渠道的对话。
 // 当前入站消息在 handle 里已先写入 raw_trail，故去掉与之重复的末尾 user 轮，再由调用方追加。
-func dialogueHistory(currentContent string) []llm.Message {
-	turns, err := storage.RecentDialogueTurns(lifeID, MaxHistoryTurns+2)
+func dialogueHistory(currentContent, channel, peer string) []llm.Message {
+	turns, err := storage.RecentDialogueTurnsForConvo(lifeID, channel, peer, MaxHistoryTurns+2)
 	if err != nil || len(turns) == 0 {
 		return nil
 	}
@@ -371,28 +398,31 @@ const (
 	dialogueSummaryAtKey = "dialogue_summary_at:"
 )
 
-// dialogueSummaryContext 注入"更早对话的概要"（超出近期 10 轮窗口的内容已压成概要，防长聊天丢上下文）。
-func dialogueSummaryContext() string {
-	v, ok, err := storage.GetMeta(dialogueSummaryKey + lifeID)
+// dialogueSummaryContext 注入"本会话更早对话的概要"（超出近期 10 轮窗口的内容已压成概要，防长聊天丢上下文）。
+// 按 (channel, peer) 隔离（R90）：每个会话各有独立概要，不串味。
+func dialogueSummaryContext(channel, peer string) string {
+	ck := channel + "|" + storage.PeerKey(peer)
+	v, ok, err := storage.GetMeta(dialogueSummaryKey + lifeID + ":" + ck)
 	if err != nil || !ok || strings.TrimSpace(v) == "" {
 		return ""
 	}
-	return "【更早对话的概要】" + strings.TrimSpace(v) + "\n（以上是更早交流的概要；最近几轮原话在后面的消息里。）\n"
+	return "【更早对话的概要】" + strings.TrimSpace(v) + "\n（以上是和ta更早交流的概要；最近几轮原话在后面的消息里。）\n"
 }
 
-// maybeUpdateDialogueSummary 异步滚动更新对话概要：把挤出近期窗口的更早对话折进概要。
-// 仅当新"过期"轮数 ≥ DialogueSummaryBatch 才调 LLM，避免每条消息都总结。
-func maybeUpdateDialogueSummary() {
+// maybeUpdateDialogueSummary 异步滚动更新某会话的对话概要：把挤出近期窗口的更早对话折进概要。
+// 仅当新"过期"轮数 ≥ DialogueSummaryBatch 才调 LLM，避免每条消息都总结。按会话隔离（R90）。
+func maybeUpdateDialogueSummary(channel, peer string) {
 	if !llm.Configured() {
 		return
 	}
-	turns, err := storage.RecentDialogueTurns(lifeID, 50)
+	ck := channel + "|" + storage.PeerKey(peer)
+	turns, err := storage.RecentDialogueTurnsForConvo(lifeID, channel, peer, 50)
 	if err != nil || len(turns) <= MaxHistoryTurns {
 		return
 	}
 	older := turns[:len(turns)-MaxHistoryTurns] // 超出近期窗口、应进概要的部分
 	lastAt := int64(0)
-	if v, ok, _ := storage.GetMeta(dialogueSummaryAtKey + lifeID); ok {
+	if v, ok, _ := storage.GetMeta(dialogueSummaryAtKey + lifeID + ":" + ck); ok {
 		lastAt, _ = strconv.ParseInt(v, 10, 64)
 	}
 	var fresh []storage.DialogueTurn
@@ -404,14 +434,14 @@ func maybeUpdateDialogueSummary() {
 	if len(fresh) < DialogueSummaryBatch {
 		return
 	}
-	prev, _, _ := storage.GetMeta(dialogueSummaryKey + lifeID)
+	prev, _, _ := storage.GetMeta(dialogueSummaryKey + lifeID + ":" + ck)
 	summary := summarizeTurns(prev, fresh)
 	if summary == "" {
 		return
 	}
-	_ = storage.SetMeta(dialogueSummaryKey+lifeID, summary)
-	_ = storage.SetMeta(dialogueSummaryAtKey+lifeID, strconv.FormatInt(older[len(older)-1].At, 10))
-	slog.Info("dialogue summary updated", "folded_turns", len(fresh))
+	_ = storage.SetMeta(dialogueSummaryKey+lifeID+":"+ck, summary)
+	_ = storage.SetMeta(dialogueSummaryAtKey+lifeID+":"+ck, strconv.FormatInt(older[len(older)-1].At, 10))
+	slog.Info("dialogue summary updated", "convo", ck, "folded_turns", len(fresh))
 }
 
 // summarizeTurns 把"已有概要 + 新增对话"融合成一段更新后的简洁概要（单次 LLM）。
