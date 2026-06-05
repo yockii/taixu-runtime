@@ -141,6 +141,10 @@ func main() {
 	slog.Info("runtime stopped")
 }
 
+// RestEnergyThreshold 能量低于此值 → 本轮休息回血，不慎思执行目标（R86）。
+// 慎思烧 LLM/energy，低能量硬磕会油尽灯枯；累了就歇，让能量恢复后再做。
+const RestEnergyThreshold = 0.20
+
 // runCycle 9 步循环。
 func runCycle(cycleID int64, lifeID string, genome core.Genome) {
 	// 1. Perceive
@@ -202,7 +206,9 @@ func runCycle(cycleID int64, lifeID string, genome core.Genome) {
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		slog.Warn("next pending goal", "err", err)
 	}
-	if g != nil {
+	switch {
+	case g != nil && frame.Life.Energy >= RestEnergyThreshold:
+		// 有目标且体力够 → 慎思执行。
 		res, err := action.Execute(g, cycleID)
 		if err != nil {
 			slog.Warn("execute", "err", err, "goal", g.ID)
@@ -218,7 +224,17 @@ func runCycle(cycleID int64, lifeID string, genome core.Genome) {
 		}
 		_ = ledger.Spend(ledger.Energy, 0.02, "action.cost", "goal", "")
 		idle.Reset() // 真的在做事 → 清零无聊
-	} else {
+	case g != nil:
+		// 有目标但太累 → 休息回血，目标留到能量恢复再做（R86）。
+		// 关键：慎思烧 LLM=烧能量，低能量还硬磕会油尽灯枯。累了就该歇，让能量自然恢复，
+		// 而非靠"放缓目标产生"治标。目标仍 pending，不消耗，醒来接着干。
+		en, str := 0.05, -0.03
+		_ = state.Apply(state.Delta{Energy: &en, Stress: &str, Reason: "cycle.rest"})
+		_ = memory.AppendEvent(cycleID, "cycle.rest", map[string]any{
+			"energy": frame.Life.Energy, "pending_goal": g.ID,
+		})
+		slog.Info("resting (too tired to deliberate)", "energy", frame.Life.Energy, "pending_goal", g.ID)
+	default:
 		// 无具体目标 → 发呆（state 演化 + boredom 累积 + 阈值自发兴趣）（R79）
 		if spawned := idle.Tick(genome); spawned {
 			_ = memory.AppendEvent(cycleID, "idle.spontaneous_interest", nil)

@@ -369,13 +369,35 @@ func isSubstantiveTool(name string) bool { return substantiveTools[name] }
 // 跳过结晶但仍退役（已学透，免无限重刷）。即引擎保证"机会"，LLM 把"质量"关。
 func maybeCrystallize(seed *storage.InterestSeed) {
 	authoredFrom := fmt.Sprintf("interest_seed#%d", seed.ID)
-	if exists, err := storage.SkillAuthoredFromExists(lifeID, authoredFrom); err != nil || exists {
+	exists, err := storage.SkillAuthoredFromExists(lifeID, authoredFrom)
+	if err != nil {
+		return
+	}
+	now := shared.SystemClock.UnixSec()
+	if exists {
+		// 已结晶——可能是慎思层 LLM 自己调了 crystallize_skill 工具（那条路径不退役 seed）。
+		// 无论谁结晶的，一旦该兴趣已有对应技能且已学透 → 退役 seed，免反复学已掌握的东西。
+		if seed.Strength > 0.1 {
+			_ = storage.RetireInterestSeed(seed.ID, now)
+			slog.Info("retire mastered interest (skill already exists)", "seed", seed.ID, "from", authoredFrom)
+		}
+		return
+	}
+	// 并非所有知识都要做成技能（R86）：只有生命体自己框定为 kind=="skill" 的兴趣才引擎自动结晶。
+	// 纯知识 / 话题 / 体验学透了，沉淀进语义记忆即可（digest 已经 record_learning 进 semantic 候选），
+	// 不强行建技能、不为此空烧一次 author LLM 调用。生命体若真想把某知识做成技能，
+	// 仍可在探索中自行调 crystallize_skill 工具（R80 知识→技能仍走得通，只是不被引擎强加）。
+	if seed.Kind != "skill" {
+		_ = storage.RetireInterestSeed(seed.ID, now)
+		_ = memory.AppendEvent(0, "knowledge.sedimented", map[string]any{
+			"seed": seed.ID, "content": seed.Content, "kind": seed.Kind,
+		})
+		slog.Info("knowledge sedimented (not skill-ified)", "seed", seed.ID, "kind", seed.Kind)
 		return
 	}
 	if !llm.Configured() {
 		return
 	}
-	now := shared.SystemClock.UnixSec()
 	name, desc, instr, atools := authorSkillFromSeed(seed)
 	if instr == "" {
 		// LLM 判定不值得固化为技能：标记已学透并退役，免反复刷同一兴趣。

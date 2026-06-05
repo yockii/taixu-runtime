@@ -500,8 +500,40 @@
 > - `BumpInterestExplored(id, masteryDelta, ts)`：成功探索引擎按**探索深度**（工作型工具成功调用数）+ persistence 给 mastery 地板（`masteryDelta`≈0.18–0.38/次，~3 轮越 0.8）；**移除 strength 衰减**——反重复改由 `drives.Derive` 既有 `exploreFactor·masteryFactor` 节流优先级。`record_learning` 仍可 MAX-merge 拔高（引擎管下限，LLM 校上限）。
 > - mastery 跨 0.8 → `action.maybeCrystallize` 引擎**自动结晶**：单发 LLM `author_skill` 写 SKILL.md 正文（喂近期相关 episode 当回忆素材，即便没 digest 也能重建）→ `skill.AuthorFromKnowledge` 落盘 → `RetireInterestSeed`（strength→0.1）退出派生。LLM 可判定不值得（instructions 留空）→ 跳过结晶但仍退役。引擎保证「机会」，LLM 把「质量」关。
 > - `SkillAuthoredFromExists(life, "interest_seed#N")` 防同一 seed 反复结晶。
+> **V0.2.2 续修（用户 2026-06-05 验证发现）**：
+> - **mastery 自评割裂**：引擎地板 MIN(0.9,+delta) 三轮粗暴顶到 0.9，而 `RecordLearning` 用 MAX-merge → 生命体老实自评 0.65 被引擎 0.9 盖掉，面板与自评不符。改：① `RecordLearning` 改**权威 SET**（生命体自评说了算，可下调，它最懂自己掌握多少）；② `BumpInterestExplored` 改**递减收益** `mastery += delta·(1-mastery)`（asymptotic，~4 轮越 0.8，不再压过自评）。引擎只在生命体不自评时保非零进度。
+> - **退役漏失 bug**：实测慎思层 LLM 现会**自己**调 `record_learning`+`crystallize_skill` 工具结晶（prompt reframing 生效），但工具路径不退役 seed，且 `maybeCrystallize` 见技能已存在即早退 → 漏退役 → 已掌握的兴趣仍被反复学（goal 重复派生）。改：`maybeCrystallize` 的 exists 分支也退役 seed（strength→0.1），无论谁结晶的。
 > **仍待**：自动结晶在 finalize 内同步跑一次 LLM（最长 120s），多用户时应移异步；纯知识类是否一律尝试结晶可再调（当前交 LLM 判）。
 > **影响**：`internal/runtime/action/action.go`、`internal/storage/interest.go`、`internal/storage/skill.go`、`R77`、`R79`、`R80`。
+
+### R86 · 能量休息闸 + 知识沉淀不强行建技能（已实装 Phase 0.5）
+> 用户 2026-06-05 观察：能量已低值，仍按原速产目标执行。三个机制问题：
+> **① 能量不门控慎思（核心）**：`runCycle` 第7-9步执行目标前**无能量闸**。能量只调度节拍（`scheduler.nextInterval` 低能量×2/×4 变慢），但有目标就硬磕慎思（烧 LLM=烧 energy），回血只在 idle.Tick(+0.01)，而持续兴趣→持续目标→永不进 idle→能量螺旋下降。
+> **修复**：`RestEnergyThreshold=0.20`，能量低于此 → 本轮**休息回血**（energy+0.05, stress-0.03），不慎思；目标仍 pending 留到恢复。累了就歇，非靠"放缓目标产生"治标。`ShouldReflect` 同加能量闸（energy<0.15 不反思）；注：当前 ShallowReflect 纯 DB 提升不调 LLM，故慎思才是能耗大头。
+> **② 强行建技能**：`maybeCrystallize` 对所有 kind（含 knowledge/topic/experience）都尝试结晶，每个还空烧一次 author LLM 调用。
+> **修复**：只有生命体自己框定为 `kind=="skill"` 的兴趣才引擎自动结晶；纯知识/话题/体验学透 → 退役 + 沉淀进语义记忆（digest 已经 record_learning 进 semantic 候选），不强行建技能、不烧 LLM。生命体若真想知识→技能仍可自行调 `crystallize_skill` 工具（R80 走得通，只是不被引擎强加）。
+> **③ 重复学习**：核心已由 R83 退役 bug 修复消解（学透即退役不再重学）；剩余为"必要迭代"（学习本需多轮，digest 逐轮累积，mastery 递减~4 轮封顶），非病态。
+> **影响**：`cmd/runtime/main.go`、`internal/runtime/reflect/reflect.go`、`internal/runtime/action/action.go`、`R79`、`R83`。
+
+### R85 · 出生基因预算带（已实装 Phase 0.5）
+> **问题**：genesis 6 维各自独立 `rng.Float64()` 均匀 [0,1] → 高方差，会蹦出"6 维全低废柴"或"全高超人"，且均匀分布极端值过多，生命体基因不稳定。
+> **V0.2.2 方案（用户 2026-06-05，选中性中心）**：
+> - 每维三角分布（两均匀取平均）——集中 0.5、压极端，仍保宽幅差异（单维实测仍跨 [0.05,0.95]）。
+> - 软预算带 sum∈[2.7,3.3]（中心 3.0，每维均值 ~0.5，性格差异最大化）：越界则迭代 renormalize 到最近带边——按比例缩放保留性格**形状**，只调总预算。
+> - ~5% 越界放行 → 极个别天才/弱鸡特例（sumRange 实测 [1.35,4.52]）。
+> - 单维 floor/ceil [0.05,0.95]，无绝对零维/满维。
+> **实测**（5 万抽样，`genesis_dist_test.go` 守卫）：inBand 95.7%，allLow+allHigh ≈ 1/5万（全低/全高根除）。`genome_version` 升 v2。
+> **拒绝的方案**：高中心 sum≈5.0（每维 ~0.83）——会让人人各维都"高"，PersonaPrompt 分档失去区分度，基因意义被抹平。
+> **影响**：`internal/runtime/genesis/genesis.go`、`docs/02 §2`。
+
+### R84 · 主动社交无回应 → 沮丧 + 收手（已实装 Phase 0.5）
+> **问题**：主动发消息（`TryProactiveReach`）原立刻 `social_need -0.15`，**假装发出即被满足**。但若用户从不回应，生命体会错误地"觉得满足了"，且每 30min 无脑重发，永不沮丧——既不真实，也是 IM 滥用风险（R55）。
+> **V0.2.2 方案（用户 2026-06-05）情感弧**：
+> - **发出≠被满足**：去掉 -0.15，只给极微缓解（-0.02）。真正社交满足要等对方回应。pending 未回应计数 +1。
+> - **得到回应**（`reflex.handle` 任意入站 → `NoteInboundReply`）：清 pending + 解除冷落标志 + 欣慰（满足/信心↑、焦虑↓、额外解孤独，等待越久欣慰越强）。
+> - **被冷落**（pending ≥ 阈值，阈值 `2+2·persistence` 按执着度调）：首次跨阈值施加一次沮丧（满足↓信心↓焦虑/压力↑，ghosted 标志去重防一蹶不振）+ **收手不再发**（孤独默默累积，比刷屏更真实，也是反滥用护栏）。直到用户回应才清零重启。
+> **前瞻（Phase 4）**：多渠道社交后，"被冷落"应按渠道/对象分别建模，不只是单一 IM 计数。
+> **影响**：`internal/runtime/reflex/proactive.go`、`internal/runtime/reflex/reflex.go`、`R55`。
 
 ### R81 · Skill 自定义依赖的运行时可达性（已修 Phase 0.5）
 > skill 装的私有依赖（`/workspace/skills/<id>/site-packages` 等）默认不在 script.python/node 的 import 路径上，导致带非 baseline 依赖的 skill 装了也用不了。

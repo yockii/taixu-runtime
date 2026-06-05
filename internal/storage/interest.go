@@ -92,8 +92,13 @@ func GetInterestSeed(id int64) (*InterestSeed, error) {
 	return &s, nil
 }
 
-// RecordLearning 回写一次学习成果（R77）：更新 digest + mastery（取较大 mastery，
-// 学习只增不减掌握度）+ last_seen。由 deliberative record_learning tool 调。
+// RecordLearning 回写一次学习成果（R77 / R84）：更新 digest + mastery + last_seen。
+// 由 deliberative record_learning tool 调。
+//
+// mastery 改**权威 SET**（不再 MAX-merge）：生命体的自评是对自己掌握程度最真实的判断，
+// 它说了算——可以比引擎地板累积的值更低（"我以为懂了，其实没那么透"）。引擎地板
+// （BumpInterestExplored）只在生命体不自评时保证非零进度，一旦它开口自评就以自评为准。
+// 否则会出现"面板 0.9 但生命体自评 0.65"的割裂（用户 2026-06-05 发现）。
 func RecordLearning(id int64, digest string, mastery float64, ts int64) error {
 	if mastery < 0 {
 		mastery = 0
@@ -104,7 +109,7 @@ func RecordLearning(id int64, digest string, mastery float64, ts int64) error {
 	_, err := db.Exec(`
 		UPDATE interest_seed
 		SET digest = ?,
-		    mastery = MAX(mastery, ?),
+		    mastery = ?,
 		    last_seen_at = ?
 		WHERE id = ?`, digest, mastery, ts, id)
 	return err
@@ -119,9 +124,11 @@ func ListAllInterestSeeds(lifeID string, limit int) ([]InterestSeed, error) {
 //
 // 副作用（R83 修复"学不会→零技能"）：
 //   - explored_count++
-//   - mastery = MIN(0.9, mastery + masteryDelta)  引擎给掌握度地板：每次真探索都沉淀一点，
-//     不再靠 LLM 自愿调 record_learning（实测 39 次工具调用里它一次没调，mastery 永 0）。
-//     record_learning 仍可 MAX-merge 拔高到更准的值；引擎管下限，LLM 校上限。
+//   - mastery 递减收益累积：mastery += masteryDelta·(1-mastery)，封顶 0.95（R84 调整）。
+//     每次真探索都沉淀一点，不再靠 LLM 自愿调 record_learning（实测它几乎不调，mastery 永 0）。
+//     **递减**（越接近掌握涨得越慢，asymptotic）避免 3 轮粗暴顶到 0.9 而压过生命体自评——
+//     原 MIN(0.9, +delta) 会出现"面板 0.9 但生命体自评 0.65"的割裂（用户 2026-06-05 发现）。
+//     record_learning 现以生命体自评**权威覆盖**此地板值；引擎只在它不自评时保证非零进度。
 //   - last_seen_at = ts
 //
 // 注意：**不再衰减 strength**。原 -0.15/次让 strength 两轮就跌破 0.4 门槛，
@@ -135,7 +142,7 @@ func BumpInterestExplored(id int64, masteryDelta float64, ts int64) error {
 	_, err := db.Exec(`
 		UPDATE interest_seed
 		SET explored_count = explored_count + 1,
-		    mastery = MIN(0.9, mastery + ?),
+		    mastery = MIN(0.95, mastery + ? * (1.0 - mastery)),
 		    last_seen_at = ?
 		WHERE id = ?`, masteryDelta, ts, id)
 	return err

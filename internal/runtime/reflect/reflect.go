@@ -44,6 +44,10 @@ func Init(id string) error {
 
 // ShouldReflect 由生命体自身决定本轮是否反思。
 func ShouldReflect(g core.Genome, ls core.LifeState, ms core.MentalState) bool {
+	// 太累无心反思（R86）：低能量优先休息回血，不在此处空耗。
+	if ls.Energy < 0.15 {
+		return false
+	}
 	p := 0.10 + 0.35*g.Curiosity + 0.25*g.Persistence - 0.20*ms.Anxiety
 	if p < 0.02 {
 		p = 0.02
