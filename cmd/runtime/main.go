@@ -347,6 +347,15 @@ func buildLLM() error {
 	})
 }
 
+// approveSkillAsync 后台安装技能依赖（卡片回调 3s 截止内必须返回，安装异步跑）。
+func approveSkillAsync(skillID string) {
+	if err := skill.ApproveDeps(skillID, "user_approve"); err != nil {
+		slog.Warn("card approve deps", "skill", skillID, "err", err)
+		return
+	}
+	slog.Info("card approved skill", "skill", skillID)
+}
+
 func wireLark(ctx context.Context, lifeID string) {
 	appID := os.Getenv("FEISHU_APP_ID")
 	if appID == "" {
@@ -368,14 +377,16 @@ func wireLark(ctx context.Context, lifeID string) {
 		sid, _ := value["skill_id"].(string)
 		switch action {
 		case "skill_approve":
-			go func() {
-				if err := skill.ApproveDeps(sid, "user_approve"); err != nil {
-					slog.Warn("card approve deps", "skill", sid, "err", err)
-				} else {
-					slog.Info("card approved skill", "skill", sid)
-				}
-			}()
+			go approveSkillAsync(sid)
 			return "已批准，依赖后台安装中", true
+		case "skill_approve_all":
+			// 批准本次 + 后续同类（缺依赖）请求自动批准，不再逐次问。
+			if err := storage.SetConfigBool("skill_auto_approve_deps", true); err != nil {
+				slog.Warn("card approve_all set config", "err", err)
+			}
+			skill.SetAutoApprove(true)
+			go approveSkillAsync(sid)
+			return "已批准，后续同类请求将自动批准", true
 		case "skill_reject":
 			if err := skill.RejectDeps(sid); err != nil { // 仅置状态，快，可同步
 				slog.Warn("card reject deps", "skill", sid, "err", err)

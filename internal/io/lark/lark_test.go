@@ -29,8 +29,8 @@ func TestBuildApprovalCard(t *testing.T) {
 			actions, _ = m["actions"].([]any)
 		}
 	}
-	if len(actions) != 2 {
-		t.Fatalf("want 2 buttons, got %d", len(actions))
+	if len(actions) != 3 {
+		t.Fatalf("want 3 buttons, got %d", len(actions))
 	}
 	gotActions := map[string]string{}
 	for _, a := range actions {
@@ -43,11 +43,10 @@ func TestBuildApprovalCard(t *testing.T) {
 		}
 		gotActions[act] = sid
 	}
-	if _, ok := gotActions["skill_approve"]; !ok {
-		t.Error("missing skill_approve button")
-	}
-	if _, ok := gotActions["skill_reject"]; !ok {
-		t.Error("missing skill_reject button")
+	for _, want := range []string{"skill_approve", "skill_approve_all", "skill_reject"} {
+		if _, ok := gotActions[want]; !ok {
+			t.Errorf("missing %s button", want)
+		}
 	}
 	if !strings.Contains(raw, "my-skill") || !strings.Contains(raw, "numpy") {
 		t.Error("card should mention skill name + deps")

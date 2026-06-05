@@ -169,9 +169,15 @@ func buildApprovalCard(skillID, skillName, deps string) string {
 				"actions": []any{
 					map[string]any{
 						"tag":   "button",
-						"text":  map[string]any{"tag": "plain_text", "content": "批准"},
-						"type":  "primary",
+						"text":  map[string]any{"tag": "plain_text", "content": "批准一次"},
+						"type":  "default",
 						"value": map[string]any{"action": "skill_approve", "skill_id": skillID},
+					},
+					map[string]any{
+						"tag":   "button",
+						"text":  map[string]any{"tag": "plain_text", "content": "批准类似请求"},
+						"type":  "primary",
+						"value": map[string]any{"action": "skill_approve_all", "skill_id": skillID},
 					},
 					map[string]any{
 						"tag":   "button",
