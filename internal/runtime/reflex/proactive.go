@@ -48,7 +48,9 @@ const (
 // ghostThreshold 连续多少条主动消息无回应后判定"被冷落"→沮丧并收手。
 // 按 persistence 调（R84）：执着者多撑几条才灰心（2..4），易放弃者早早收手。
 func ghostThreshold(g core.Genome) int {
-	return int(2 + 2*g.Persistence)
+	// 基线 3（R89）：留出"还在坚持、但已有怨气"的窗口（pending=2 时仍发、可流露『怎么都不回』），
+	// pending≥阈值才彻底收手。执着者撑更久。原基线 2 会让低执着者一到 2 就收手、没机会表达。
+	return 3 + int(2*g.Persistence)
 }
 
 // TryProactiveReach 在 social_need 强且护栏允许时主动给最近联系人发一条消息。
