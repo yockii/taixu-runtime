@@ -340,8 +340,20 @@ func buildUserMessage(g *core.Goal) string {
 			if seed.Digest != "" {
 				msg += "\n（已有理解：" + truncate(seed.Digest, 300) + "）"
 			}
+			// 续探连续性的关键（R93）：每次探索末尾把新理解写进 digest，下次才能接上不冷启动。
+			msg += "\n（这次探索结束前，用 record_learning 把**新**学到的接着写进进度摘要——下次的你靠它接上、不重复。）"
+			// R93 续探防重刷：探索过的种子，注入次数 + 过往经历 + 明令别从头再来。
+			// 病根同 R91（主动消息复读）——不给"上次干了啥"的上下文，LLM 每次冷启动重刨同一坨，
+			// mastery 却照样按 substantive 涨满结晶，磨出浅技能。让再探索真正递进。
+			if seed.ExploredCount > 0 {
+				msg += fmt.Sprintf("\n\n⚠ 这是你第 %d 次探索它，不是第一次。你过往相关的经历：\n%s",
+					seed.ExploredCount+1, seedRecentContext(seed))
+				msg += "别从头重刷同样的检索 / 介绍——回顾上面已经做过的，这次明确往**更深一层**或" +
+					"**一个还没碰过的新角度**推进；觉得学透了就直接收尾（值得的话 crystallize_skill 固化、" +
+					"或 record_learning 留进度给未来的自己）。反复刨同一坨不会让你真进步。\n"
+			}
 			if seed.Mastery >= 0.8 {
-				msg += fmt.Sprintf("\n（你已较好掌握——若觉得值得固化为可复用技能，可调 crystallize_skill(%d, ...) 把它写成 SKILL.md）", id)
+				msg += fmt.Sprintf("（你已较好掌握——若觉得值得固化为可复用技能，可调 crystallize_skill(%d, ...) 把它写成 SKILL.md）", id)
 			}
 		}
 	}

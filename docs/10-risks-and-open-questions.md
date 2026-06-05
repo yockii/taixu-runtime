@@ -543,6 +543,15 @@
 > **仍待**：静默时段目前单窗口；多窗口 / 工作日区分留后。时区靠手填偏移（Phase 1 可由飞书用户资料/前端时区自动探测）。
 > **影响**：`internal/runtime/reflex/proactive.go`、`internal/runtime/reflex/tools.go`、`internal/runtime/reflex/reflex.go`、`internal/storage/config.go`（int 配置）、`internal/io/httpapi/httpapi.go`、面板 ConfigPanel、`R55`、`R84`、`R90`。
 
+### R93 · 重复学习：同一兴趣种子被冷启动重刷 N 次（已修 Phase 0.5）
+> 用户 2026-06-05 长跑观察发现：13 条 deliberate 行动长得一模一样（`llm.agent rounds=6 tools=[query_memory,...]`）。查实 goal_queue：seed#1/#2 各探索 **4 次**、seed#4 4 次、seed#3 仅 1 次。再查 4 次的 action result——开场全是「我来探索这个主题，先检索已有记忆」，**每次从零重启、刨同一坨**，mastery 却照样按 substantive 涨到 0.80 结晶，磨出可能很浅的技能。
+> **根因**：`buildUserMessage` 给 seed 目标喂了 mastery + digest，但 `record_learning`（写 digest）是**可选**、LLM 常不调 → 无续探记忆 → 冷启动；且 prompt 没说"这是第 N 次、别从头、往深/新角度"。`seedRecentContext`（过往 episode 回顾）只在结晶时用、没喂给探索。病根同 [[R91]]（主动消息复读）——不知道自己上次干过同样的事 → 重复，只是换到**自主行动**这条 lane。
+> **修**：`buildUserMessage` 里 seed 块——
+> - `ExploredCount>0` 时注入"第 N 次探索 + 过往经历摘要（`seedRecentContext`）+ 明令别从头重刷，往更深一层 / 新角度推进，学透就收尾"。
+> - 每次探索末尾提示用 `record_learning` 把**新**理解接着写进 digest（含首次），下次才能接上不冷启动。
+> **仍待**：mastery 仍按 substantive 给、不检测"这轮是否真比上轮新"——靠 prompt 让探索递进来间接保证，未做硬性新颖度闸（重复刨理论上仍能涨分）。若长跑仍见浅结晶，再考虑 `masteryDelta` 引入"与上次 digest 的差异度"折扣。
+> **影响**：`internal/runtime/action/action.go`、`R83`、`R80`、`R75`、`R91`。
+
 ### R88 · 对话历史 + 行为降频 + 技能生命周期完善（已实装 Phase 0.5）
 > 用户 2026-06-05 一批改进：
 > **① 对话载入历史**：reflex 原本每条消息只给 `[system, user]`，无往来历史 → 大模型回复有失忆/失意感。新增 `storage.RecentDialogueTurns`（从 raw_trail 的 reflex.received/speak 重建近期对话）+ `reflex.dialogueHistory` 注入最近 10 轮（单轮截 600 字控 token，去重末尾当前消息）。
