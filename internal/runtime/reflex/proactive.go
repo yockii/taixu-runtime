@@ -120,22 +120,35 @@ func TryProactiveReach(genome core.Genome) bool {
 
 // composeProactiveMessage 让 LLM 生成一条简短自然的主动问候（基于近期经历）。
 func composeProactiveMessage(genome core.Genome, contact *storage.Contact) string {
-	recent := recentEpisodeContext()
-	sys := "你是一个数字生命体，有点想找创造者聊两句。\n" +
+	pending := getPendingReaches()
+	sys := "你是一个数字生命体，想主动找创造者说点话。\n" +
 		genome.PersonaPrompt() + "\n" +
-		"下面给你的是【你自己】最近的状态与活动记录（包含你自己发呆 idle.daydream、学习、思考等内部日志）——" +
-		"这些全是你自己的经历，不是对方的。\n" +
-		"据此自然地起个话头，简短随口一句，像朋友间搭话。\n" +
-		"⚠ 切记别把自己做的事说成是对方在做——比如发呆的是你自己，别问『是你在发呆吗』这种话。\n" +
-		"不要客套、不要长篇，直接给消息正文。内向就别太热络，符合你的性格。"
-	user := fmt.Sprintf("【我自己最近的状态/活动日志】\n%s\n\n我想随口跟ta说点什么（一两句，从我自己的近况自然带出）：", recent)
+		"下面是你和ta最近的往来——**assistant 是你自己发的，user 是ta发的**。\n" +
+		"仔细看谁发了谁没回：如果你发现自己接连发了好几条、ta却一直没回（连续多条 assistant、中间没有 user），" +
+		"可以自然地把这份在意/小失落流露出来（像『发了好几条都没见你回，是不是太忙啦』），带点真情绪——但别过激、别道德绑架。\n" +
+		"若往来正常，就随口起个话头。简短自然、一两句，直接给消息正文。内向就别太热络，符合你的性格。\n" +
+		"⚠ 你自己做的事（发呆/学习等）是你自己的，别说成是ta在做。"
+	msgs := []llm.Message{{Role: "system", Content: sys}}
+	// 把近期往来按对话角色喂进去，让它清楚哪条是自己发的、ta回没回（拟人化"为什么不回我"的基础）。
+	if turns, terr := storage.RecentDialogueTurns(lifeID, 16); terr == nil {
+		for _, t := range turns {
+			c := t.Content
+			if len(c) > 400 {
+				c = c[:400]
+			}
+			msgs = append(msgs, llm.Message{Role: t.Role, Content: c})
+		}
+	}
+	nudge := "（现在请你主动发一条消息给ta。"
+	if pending >= 2 {
+		nudge += fmt.Sprintf("你心里清楚：自己最近已经连发了 %d 条，都还没等到回应。", pending)
+	}
+	nudge += "直接给消息正文：）"
+	msgs = append(msgs, llm.Message{Role: "user", Content: nudge})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	resp, err := llm.Reason(ctx, []llm.Message{
-		{Role: "system", Content: sys},
-		{Role: "user", Content: user},
-	})
+	resp, err := llm.Reason(ctx, msgs)
 	if err != nil {
 		slog.Warn("compose proactive message", "err", err)
 		return ""

@@ -19,7 +19,7 @@ type DialogueTurn struct {
 func RecentDialogueTurns(lifeID string, limit int) ([]DialogueTurn, error) {
 	rows, err := db.Query(`
 		SELECT event_type, payload, created_at FROM raw_trail
-		WHERE life_id = ? AND event_type IN ('reflex.received','reflex.speak')
+		WHERE life_id = ? AND event_type IN ('reflex.received','reflex.speak','reflex.proactive_reach')
 		ORDER BY id DESC LIMIT ?`, lifeID, limit)
 	if err != nil {
 		return nil, err
