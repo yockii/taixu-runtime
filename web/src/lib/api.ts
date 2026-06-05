@@ -114,8 +114,11 @@ export interface Ledger {
 }
 
 export interface Config {
-	llm: { base_url: string; model: string; temperature: string; api_key: string };
-	feishu: { app_id: string; app_secret: string };
+	// 未授权时服务端不返回 llm/feishu（配置隐私）→ 设为可选。
+	llm?: { base_url: string; model: string; temperature: string; api_key: string };
+	feishu?: { app_id: string; app_secret: string };
+	skill_auto_approve_deps?: boolean;
+	proactive_im?: boolean;
 	auth_required?: boolean;
 }
 
@@ -174,7 +177,11 @@ export const api = {
 	toolsAudit: (limit = 50) => getJSON<ToolAudit[]>(`/api/tools/audit?limit=${limit}`),
 	ledger: (resource = '', limit = 100) =>
 		getJSON<Ledger[]>(`/api/ledger?resource=${resource}&limit=${limit}`),
-	config: () => getJSON<Config>('/api/config'),
+	config: async (): Promise<Config> => {
+		const r = await fetch('/api/config', { headers: { ...authHeaders() } });
+		if (!r.ok) throw new Error(`/api/config → ${r.status}`);
+		return r.json();
+	},
 	injectExternal: (content: string, channel = 'cli', from = 'panel') =>
 		apiPost<{ id: string; queued_at: string }>('/api/external-request', { content, channel, from })
 };

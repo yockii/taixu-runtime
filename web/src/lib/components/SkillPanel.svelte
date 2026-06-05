@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { t, lang } from '$lib/i18n';
 	import { skillVer } from '$lib/stores';
-	import { unixToDate, apiPost } from '$lib/api';
+	import { unixToDate, apiPost, api } from '$lib/api';
 	import { locked } from '$lib/auth';
 	import TokenGate from './TokenGate.svelte';
 
@@ -30,11 +30,12 @@
 	async function load() {
 		const r = await fetch('/api/skills?limit=50');
 		if (r.ok) items = (await r.json()) ?? [];
-		const c = await fetch('/api/config');
-		if (c.ok) {
-			const cfg = await c.json();
+		try {
+			const cfg = await api.config(); // 带 token；未授权时无 toggle 字段（默认 false）
 			autoApprove = !!cfg.skill_auto_approve_deps;
 			proactiveIM = !!cfg.proactive_im;
+		} catch {
+			/* ignore */
 		}
 	}
 
@@ -147,6 +148,13 @@
 		}
 	}
 	const locale = $derived($lang === 'zh' ? 'zh-CN' : 'en-US');
+
+	// 技能可能积累上百个 → 默认只显示计数，点击弹框看全部（R88-2）。
+	let showModal = $state(false);
+	const readyCount = $derived(items.filter((s) => s.status === 'ready').length);
+	const selfCount = $derived(items.filter((s) => s.authored_from).length);
+	const archivedCount = $derived(items.filter((s) => s.status === 'archived').length);
+	const pendingCount = $derived(items.filter((s) => s.status === 'pending_approval').length);
 </script>
 
 <div class="card">
@@ -209,12 +217,51 @@
 		</label>
 	</TokenGate>
 
+	<!-- 计数摘要 + 查看全部（避免上百技能铺满面板）-->
 	{#if items.length === 0}
 		<div class="text-sm text-zinc-500">{$t('empty_skill')}</div>
 	{:else}
-		<div class="max-h-80 space-y-2 overflow-y-auto text-xs">
-			{#each items as s (s.id)}
-				<div class="border-b border-zinc-800 py-1">
+		<button
+			onclick={() => (showModal = true)}
+			class="flex w-full items-center justify-between rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-left text-xs transition hover:border-zinc-700"
+		>
+			<span class="text-zinc-300">
+				{$t('skills_total')} <span class="font-semibold text-zinc-100">{items.length}</span>
+				<span class="ml-2 text-zinc-500">
+					ready {readyCount}
+					{#if selfCount > 0}· {$t('skill_self')} {selfCount}{/if}
+					{#if archivedCount > 0}· {$t('skill_status_archived')} {archivedCount}{/if}
+				</span>
+			</span>
+			<span class="text-zinc-500">
+				{#if pendingCount > 0}<span class="mr-2 text-amber-400">{pendingCount} {$t('skill_status_pending_approval')}</span>{/if}
+				{$t('view_all')} →
+			</span>
+		</button>
+	{/if}
+</div>
+
+<!-- 弹框：完整技能列表 -->
+{#if showModal}
+	<div
+		class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+		onclick={() => (showModal = false)}
+		onkeydown={(e) => e.key === 'Escape' && (showModal = false)}
+		role="button"
+		tabindex="-1"
+	>
+		<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+		<div
+			class="card max-h-[80vh] w-full max-w-2xl overflow-hidden"
+			onclick={(e) => e.stopPropagation()}
+		>
+			<div class="mb-3 flex items-center justify-between">
+				<h2 class="text-sm font-semibold text-zinc-300">{$t('skills_title')} · {items.length}</h2>
+				<button onclick={() => (showModal = false)} class="text-zinc-500 hover:text-zinc-200">✕</button>
+			</div>
+			<div class="max-h-[68vh] space-y-2 overflow-y-auto text-xs">
+				{#each items as s (s.id)}
+					<div class="border-b border-zinc-800 py-1">
 					<div class="flex items-baseline gap-2">
 						<span class="font-medium text-zinc-200">{s.name}</span>
 						{#if s.authored_from}
@@ -264,5 +311,6 @@
 				</div>
 			{/each}
 		</div>
-	{/if}
-</div>
+		</div>
+	</div>
+{/if}

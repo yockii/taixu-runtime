@@ -293,22 +293,32 @@ func apiInterests(w http.ResponseWriter, r *http.Request) {
 }
 
 func apiConfig(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"llm": map[string]any{
+	// 环境信息（LLM 端点 / 飞书 app_id 等）属配置隐私：开了鉴权且未授权时不返回，
+	// 只给 auth_required 让前端弹令牌输入（用户 2026-06-05；亦避免公网/截图泄漏）。
+	resp := map[string]any{"auth_required": accessToken != ""}
+	if authed(r) {
+		resp["llm"] = map[string]any{
 			"base_url":    os.Getenv("LLM_BASE_URL"),
 			"model":       os.Getenv("LLM_MODEL"),
 			"temperature": os.Getenv("LLM_TEMPERATURE"),
 			"api_key":     maskSecret(os.Getenv("LLM_API_KEY")),
-		},
-		"feishu": map[string]any{
+		}
+		resp["feishu"] = map[string]any{
 			"app_id":     os.Getenv("FEISHU_APP_ID"),
 			"app_secret": maskSecret(os.Getenv("FEISHU_APP_SECRET")),
-		},
-		"skill_auto_approve_deps": storage.GetConfigBool("skill_auto_approve_deps", false),
-		"proactive_im":            storage.GetConfigBool("proactive_im", false),
-		// 前端据此决定是否需要让用户填访问令牌（写操作才需要）。
-		"auth_required": accessToken != "",
-	})
+		}
+		resp["skill_auto_approve_deps"] = storage.GetConfigBool("skill_auto_approve_deps", false)
+		resp["proactive_im"] = storage.GetConfigBool("proactive_im", false)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// authed 请求是否通过鉴权（未设令牌则恒真；设了则需 header 匹配）。
+func authed(r *http.Request) bool {
+	if accessToken == "" {
+		return true
+	}
+	return subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Mindverse-Token")), []byte(accessToken)) == 1
 }
 
 // -------- skill handlers (D.2 / D.3) --------
