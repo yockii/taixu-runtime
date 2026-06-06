@@ -46,7 +46,9 @@ func ListGoals(lifeID, status string, limit int) ([]core.Goal, error) {
 	rows, err := db.Query(`
 		SELECT id, source, intent, payload, priority, status,
 		       created_at, COALESCE(started_at,0), COALESCE(finished_at,0),
-		       COALESCE(arbitration_note,'')
+		       COALESCE(arbitration_note,''),
+		       COALESCE(parent_id,0), COALESCE(depth,0),
+		       COALESCE(result_digest,''), COALESCE(pending_children,0)
 		FROM goal_queue WHERE `+where+`
 		ORDER BY id DESC LIMIT ?`, args...)
 	if err != nil {
@@ -57,7 +59,8 @@ func ListGoals(lifeID, status string, limit int) ([]core.Goal, error) {
 	for rows.Next() {
 		var g core.Goal
 		if err := rows.Scan(&g.ID, &g.Source, &g.Intent, &g.Payload, &g.Priority, &g.Status,
-			&g.CreatedAt, &g.StartedAt, &g.FinishedAt, &g.ArbitrationNote); err != nil {
+			&g.CreatedAt, &g.StartedAt, &g.FinishedAt, &g.ArbitrationNote,
+			&g.ParentID, &g.Depth, &g.ResultDigest, &g.PendingChildren); err != nil {
 			return nil, err
 		}
 		out = append(out, g)

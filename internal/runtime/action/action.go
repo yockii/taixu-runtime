@@ -265,15 +265,49 @@ func finalize(g *core.Goal, cycleID int64, startedAt int64, res Result, complete
 		StartedAt: startedAt,
 	})
 
-	// MarkGoal 兜底：LLM 调过 complete_goal 已 mark；否则引擎据 success 推断 mark。
-	completed := res.Success // LLM 调 complete_goal 即视为完成（与引擎推断一致）
-	if !completedByLLM {
-		status := core.GoalCompleted
-		if !res.Success {
-			status = core.GoalFailed
+	// ---- 递归研究目标树状态机（migration 009）：决定本目标这次是「回 pending 等子目标」还是「完成」 ----
+	//
+	// 关键判定：本次执行期间该目标是否新增了子目标？以执行后重读的 pending_children 为准
+	//（enqueue_subgoal 工具会在 loop 内给当前目标 +1）。不变量：
+	//   - pending_children > 0  →  母目标「被阻塞」：不完成、置回 pending（保持 children>0），写中间 digest。
+	//                              即使 LLM 这轮误调了 complete_goal（completedByLLM），也强制覆盖回 pending——
+	//                              引擎权威，子目标没做完母目标不算完。
+	//   - pending_children == 0 →  无未结子目标：照常 completed/failed，写 result_digest=本次成果摘要。
+	//
+	// 子目标全完后母 pending_children 被 MarkGoal 逐个减到 0 → 下个 cycle NextPendingGoal 重选 →
+	// 母目标带着子成果回归（buildUserMessage 注入子 digest）→ 综合 → 走到这里 children==0 → 真完成。
+	pendingChildren := 0
+	if cur, err := storage.GetGoalByID(g.ID); err == nil && cur != nil {
+		pendingChildren = cur.PendingChildren
+	}
+
+	completed := false
+	if pendingChildren > 0 {
+		// 被阻塞：回 pending 等子目标。写中间进度 digest 供恢复时参考 / 面板展示。
+		digest := fmt.Sprintf("已把此目标拆成 %d 个子目标，待它们完成后再综合得出结论。", pendingChildren)
+		_ = storage.SetResultDigest(g.ID, digest)
+		if err := storage.SetGoalPending(g.ID); err != nil {
+			return res, fmt.Errorf("block goal to pending: %w", err)
 		}
-		if err := storage.MarkGoal(g.ID, status, finishedAt); err != nil {
-			return res, fmt.Errorf("mark goal: %w", err)
+		slog.Info("goal blocked on subgoals, returned to pending",
+			"goal", g.ID, "pending_children", pendingChildren)
+	} else {
+		// 无未结子目标 → 终态。LLM 调过 complete_goal 已 mark；否则引擎据 success 推断 mark。
+		completed = res.Success
+		// 写本目标的成果摘要（供母目标回归综合 + 知识库 dossier）。
+		_ = storage.SetResultDigest(g.ID, composeResultDigest(g, res))
+		if !completedByLLM {
+			status := core.GoalCompleted
+			if !res.Success {
+				status = core.GoalFailed
+			}
+			if err := storage.MarkGoal(g.ID, status, finishedAt); err != nil {
+				return res, fmt.Errorf("mark goal: %w", err)
+			}
+		}
+		// 根研究目标完成 → 综合整棵子树成果，沉淀一篇知识库 dossier（任务 B）。
+		if completed {
+			maybeSedimentKnowledge(g, finishedAt)
 		}
 	}
 
@@ -283,6 +317,218 @@ func finalize(g *core.Goal, cycleID int64, startedAt int64, res Result, complete
 		maybeReportToRequester(g, res, finishedAt)
 	}
 	return res, nil
+}
+
+// composeResultDigest 把本次执行的成果压成一段简短摘要（写入 goal.result_digest）。
+//
+// 用 LLM 蒸馏 res.Output（本轮思考链/产出）为「这个目标我得出了什么结论」；LLM 未配或产出为空
+// 时退化为朴素文本。该 digest 是回归综合（母目标读子 digest）与知识库 dossier 的原料。
+func composeResultDigest(g *core.Goal, res Result) string {
+	material := strings.TrimSpace(res.Output)
+	if material == "" || material == "(no llm content emitted)" {
+		if res.Success {
+			return fmt.Sprintf("已就「%s」完成研究（未留详细产出）。", truncate(g.Payload, 120))
+		}
+		return fmt.Sprintf("未能完成「%s」。", truncate(g.Payload, 120))
+	}
+	if !llm.Configured() {
+		return truncate(material, 800)
+	}
+	sys := "你是一个数字生命体的慎思层。把你刚完成的这个研究目标的产出，凝练成 3-6 句话的成果摘要：" +
+		"具体结论 / 要点，而非流水账。只输出摘要正文。"
+	user := fmt.Sprintf("目标：%s\n\n你这次的产出/思考记录：\n%s\n\n凝练成果摘要：", g.Payload, truncate(material, 4000))
+	ctx, cancel := context.WithTimeout(context.Background(), LLMRoundTimeout)
+	defer cancel()
+	resp, err := llm.Reason(ctx, []llm.Message{
+		{Role: "system", Content: sys},
+		{Role: "user", Content: user},
+	})
+	if err != nil {
+		slog.Warn("compose result digest", "goal", g.ID, "err", err)
+		return truncate(material, 800)
+	}
+	_ = ledger.Spend(ledger.Energy, llm.TokensToEnergy(resp.Usage), "llm.tokens.digest", "goal", "")
+	out := strings.TrimSpace(resp.Text)
+	if out == "" {
+		return truncate(material, 800)
+	}
+	return out
+}
+
+// maybeSedimentKnowledge 根研究目标完成时，把整棵子树的成果综合成一篇结构化 dossier 入知识库（任务 B）。
+//
+// 触发条件（全部满足）：
+//   - parent_id == 0（是根目标，整棵研究树的顶——回归到此即「最初目标」已综合完）；
+//   - source 属知识类研究（ExternalRequest 用户托付 / IntrinsicDrive 且 intent=knowledge）；
+//   - 该根目标尚未生成过 dossier（防重复入库）。
+//
+// 综合素材：根目标自身 result_digest + 各（递归）子目标 result_digest。LLM 把它们综合成
+// {topic, body}；LLM 未配则朴素拼接兜底。沉淀仍兼顾 sedimentToSemantic（细碎知识点向量可检索，
+// 此处不重复——根目标的语义沉淀已在 maybeCrystallize/sedimentToSemantic 的兴趣链路覆盖，
+// 知识库 dossier 是另一份「成篇档案」视图）。
+func maybeSedimentKnowledge(g *core.Goal, now int64) {
+	if g.ParentID != 0 {
+		return // 非根目标：等回归到根再综合整棵树
+	}
+	if !isKnowledgeResearchGoal(g) {
+		return
+	}
+	if has, err := storage.HasKnowledgeForRootGoal(lifeID, g.ID); err != nil || has {
+		return
+	}
+
+	// 收集整棵子树的成果摘要（根 + 递归子）。
+	rootDigest := strings.TrimSpace(g.ResultDigest)
+	if rootDigest == "" {
+		if cur, err := storage.GetGoalByID(g.ID); err == nil && cur != nil {
+			rootDigest = strings.TrimSpace(cur.ResultDigest)
+		}
+	}
+	subDigests := collectSubtreeDigests(g.ID, 0)
+	if rootDigest == "" && len(subDigests) == 0 {
+		return // 无任何可沉淀的成果
+	}
+
+	topic, body := synthesizeDossier(g, rootDigest, subDigests)
+	if strings.TrimSpace(body) == "" {
+		return
+	}
+	id, err := storage.InsertKnowledgeEntry(lifeID, &storage.KnowledgeEntry{
+		RootGoalID: g.ID,
+		Topic:      topic,
+		Body:       body,
+		SourceKind: "research",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	})
+	if err != nil {
+		slog.Warn("insert knowledge entry", "goal", g.ID, "err", err)
+		return
+	}
+	_ = memory.AppendEvent(0, "knowledge.dossier_created", map[string]any{
+		"knowledge_id": id, "root_goal": g.ID, "topic": topic,
+	})
+	slog.Info("knowledge dossier created", "id", id, "root_goal", g.ID, "topic", truncate(topic, 60))
+}
+
+// isKnowledgeResearchGoal 判断一个根目标是否属「知识类研究」（值得沉淀成 dossier）。
+//   - ExternalRequest：用户托付的研究请求，恒算。
+//   - IntrinsicDrive：仅当 intent 为 knowledge（兴趣探索类）才算；社交/稳定等不入知识库。
+func isKnowledgeResearchGoal(g *core.Goal) bool {
+	switch g.Source {
+	case core.GoalExternal:
+		return true
+	case core.GoalIntrinsic:
+		return g.Intent == string(core.DriveKnowledge)
+	default:
+		return false
+	}
+}
+
+// collectSubtreeDigests 递归收集某目标下整棵子树各目标的 result_digest（按层、创建序）。
+// maxDepth 安全上限对齐研究树深度，防意外环导致无限递归。
+func collectSubtreeDigests(parentID int64, depth int) []string {
+	if depth > 8 { // 安全护栏（研究树实际 ≤ MaxResearchDepth=3）
+		return nil
+	}
+	children, err := storage.ListChildren(parentID)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, c := range children {
+		if d := strings.TrimSpace(c.ResultDigest); d != "" {
+			out = append(out, fmt.Sprintf("· [%s] %s", truncate(c.Payload, 60), d))
+		}
+		out = append(out, collectSubtreeDigests(c.ID, depth+1)...)
+	}
+	return out
+}
+
+// synthesizeDossier 把根目标 + 子树成果综合成一篇 dossier（topic + body）。
+// LLM 未配 / 失败时朴素拼接兜底（仍是一篇可读的结构化档案）。
+func synthesizeDossier(g *core.Goal, rootDigest string, subDigests []string) (topic, body string) {
+	// 朴素兜底拼接（也作为 LLM 失败时的回退）。
+	naiveTopic := truncate(strings.TrimSpace(g.Payload), 80)
+	if naiveTopic == "" {
+		naiveTopic = "研究档案"
+	}
+	var nb strings.Builder
+	nb.WriteString("# " + naiveTopic + "\n\n")
+	if rootDigest != "" {
+		nb.WriteString("## 结论\n" + rootDigest + "\n\n")
+	}
+	if len(subDigests) > 0 {
+		nb.WriteString("## 子研究成果\n")
+		for _, s := range subDigests {
+			nb.WriteString(s + "\n")
+		}
+	}
+	naiveBody := strings.TrimSpace(nb.String())
+
+	if !llm.Configured() {
+		return naiveTopic, naiveBody
+	}
+
+	var mat strings.Builder
+	if rootDigest != "" {
+		mat.WriteString("【对最初目标的综合摘要】\n" + rootDigest + "\n\n")
+	}
+	if len(subDigests) > 0 {
+		mat.WriteString("【各子研究的成果】\n" + strings.Join(subDigests, "\n") + "\n")
+	}
+	sys := "你是一个数字生命体的慎思层。你刚完成一次（可能拆成了多个子研究的）完整研究，现在要把成果" +
+		"整理成一篇结构化的知识档案，存进自己的知识库。\n" +
+		genome.PersonaPrompt() + "\n" +
+		"必须调用 write_dossier 工具，给出：topic（这篇知识的标题/主题，简短）；" +
+		"body（正文 markdown：开头一段总结论，再列关键要点，若有来源/依据也写上）。正文要让未来的你或别人能直接读懂、用得上。"
+	user := fmt.Sprintf("最初的研究目标：%s\n\n研究成果素材：\n%s\n\n综合成一篇知识档案。", g.Payload, mat.String())
+
+	tool := llm.Tool{
+		Name:        "write_dossier",
+		Description: "把一次研究的成果整理成结构化知识档案。",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"topic": map[string]any{"type": "string", "description": "知识标题/主题（简短）"},
+				"body":  map[string]any{"type": "string", "description": "正文 markdown：结论 + 要点 + 来源"},
+			},
+			"required": []string{"topic", "body"},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), LLMRoundTimeout)
+	defer cancel()
+	resp, err := llm.ReasonWithTools(ctx, []llm.Message{
+		{Role: "system", Content: sys},
+		{Role: "user", Content: user},
+	}, []llm.Tool{tool})
+	if err != nil {
+		slog.Warn("synthesize dossier", "goal", g.ID, "err", err)
+		return naiveTopic, naiveBody
+	}
+	_ = ledger.Spend(ledger.Energy, llm.TokensToEnergy(resp.Usage), "llm.tokens.dossier", "goal", "")
+	for _, tc := range resp.ToolCalls {
+		if tc.Name != "write_dossier" {
+			continue
+		}
+		var a struct {
+			Topic string `json:"topic"`
+			Body  string `json:"body"`
+		}
+		if err := json.Unmarshal([]byte(tc.ArgsJSON), &a); err != nil {
+			continue
+		}
+		t := strings.TrimSpace(a.Topic)
+		b := strings.TrimSpace(a.Body)
+		if t == "" {
+			t = naiveTopic
+		}
+		if b == "" {
+			b = naiveBody
+		}
+		return t, b
+	}
+	return naiveTopic, naiveBody
 }
 
 // reportedFlagKey 完成汇报去重标志键（防同一目标重复汇报，任务 3）。
@@ -376,7 +622,8 @@ func buildDeliberativeSystemPrompt(g *core.Goal) string {
 	sb.WriteString("可调用工具（精选最常用）：\n")
 	sb.WriteString("- query_memory(layer, q?, limit?)  跨记忆层检索（layer: episodic/semantic/reflection）\n")
 	sb.WriteString("- recall_recent(limit?, q?)        最近 episode 摘要\n")
-	sb.WriteString("- enqueue_subgoal(intent, payload, priority?)  拆子任务入队\n")
+	sb.WriteString("- enqueue_subgoal(intent, payload, priority?)  把大问题拆成子目标（递归研究树）：" +
+		"子目标会先被执行、全完后此目标自动恢复并带回子成果让你综合。最多拆到 3 层深、单目标至多 5 个子目标。\n")
 	sb.WriteString("- record_learning(seed_id, digest, mastery)  可选：回写你的理解摘要，帮未来的你接上进度\n")
 	sb.WriteString("- crystallize_skill(seed_id, name, instructions)  把已掌握知识手动结晶成技能（也会在掌握度够时自动触发）\n")
 	sb.WriteString("- use_skill(name)                  读取某个已掌握技能的详细指引再照做（技能名见下方清单）\n")
@@ -425,6 +672,29 @@ func oneLineDesc(s string) string {
 func buildUserMessage(g *core.Goal) string {
 	msg := fmt.Sprintf("【新目标】intent=%s priority=%.2f source=%s\n\n%s",
 		g.Intent, g.Priority, g.Source, g.Payload)
+
+	// 回归综合（递归研究目标树，migration 009）：若当前目标曾被拆出子目标，说明这是「子目标全完后
+	// 母目标恢复执行」的回归时刻——把各子目标的成果摘要注入提示，让 LLM 据此综合、形成对最初目标的
+	// 完整结论，而不是从头重做。子目标在 NextPendingGoal 的阻塞语义下一定先于母目标完成，故此处拉到的
+	// digest 是已结的成果。
+	if children, err := storage.ListChildren(g.ID); err == nil && len(children) > 0 {
+		var sb strings.Builder
+		any := false
+		for _, c := range children {
+			d := strings.TrimSpace(c.ResultDigest)
+			if d == "" {
+				d = "（该子目标未留成果摘要，status=" + string(c.Status) + "）"
+			}
+			sb.WriteString(fmt.Sprintf("\n【子目标】%s\n成果：%s\n", truncate(c.Payload, 100), truncate(d, 800)))
+			any = true
+		}
+		if any {
+			msg += "\n\n你之前把此目标拆成了以下子目标，它们的研究成果如下：" + sb.String() +
+				"\n请据此综合、形成对最初目标的完整结论，然后调 complete_goal(success=true) 收尾。" +
+				"（不要重新拆子目标，这一步是综合收束。）"
+		}
+	}
+
 	// 若来自兴趣种子，surface 当前掌握度 + digest，让 LLM 知道学到哪了：
 	// 掌握度高时提示可结晶为 skill（crystallize_skill），低时继续学。
 	if id := parseInterestSeedID(g.Payload); id > 0 {
