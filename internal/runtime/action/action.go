@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -265,6 +266,7 @@ func finalize(g *core.Goal, cycleID int64, startedAt int64, res Result, complete
 	})
 
 	// MarkGoal 兜底：LLM 调过 complete_goal 已 mark；否则引擎据 success 推断 mark。
+	completed := res.Success // LLM 调 complete_goal 即视为完成（与引擎推断一致）
 	if !completedByLLM {
 		status := core.GoalCompleted
 		if !res.Success {
@@ -274,7 +276,98 @@ func finalize(g *core.Goal, cycleID int64, startedAt int64, res Result, complete
 			return res, fmt.Errorf("mark goal: %w", err)
 		}
 	}
+
+	// 完成后主动汇报（拟人交互闭环任务 3）：若这是带请求者的 ExternalRequest 目标且已完成，
+	// 把成果压成一段简短自然的话，主动回送给当初托付的人。失败只 warn 不阻断收尾。
+	if completed {
+		maybeReportToRequester(g, res, finishedAt)
+	}
 	return res, nil
+}
+
+// reportedFlagKey 完成汇报去重标志键（防同一目标重复汇报，任务 3）。
+func reportedFlagKey(goalID int64) string {
+	return fmt.Sprintf("external_reported:%d", goalID)
+}
+
+// maybeReportToRequester 把一个完成的 ExternalRequest 目标的成果主动汇报给请求者。
+//
+// 触发条件：source=ExternalRequest 且 req_from 非空（带请求者）。
+// 防重复：schema_meta 标志位——已汇报过即不再发（goal 已 completed 也不会重跑，双保险）。
+// 零留存原则不变：这是对用户的正常回复，不是平台留存碎线。
+// 解耦：经 bus.ResearchReported 发布，由 io 层（main wireLark / sse）订阅推送——
+// action 不直接依赖 lark，便于测试（只断言事件被发布即可，绝不连真实飞书）。
+func maybeReportToRequester(g *core.Goal, res Result, now int64) {
+	if g.Source != core.GoalExternal || g.ReqFrom == "" {
+		return
+	}
+	// 防重复汇报。
+	if _, ok, _ := storage.GetMeta(reportedFlagKey(g.ID)); ok {
+		return
+	}
+
+	content := composeResearchReport(g, res)
+	if content == "" {
+		return
+	}
+	// 先落标志再发，避免发布订阅链路里万一二次触发。
+	_ = storage.SetMeta(reportedFlagKey(g.ID), strconv.FormatInt(now, 10))
+
+	bus.Publish(bus.ResearchReported{
+		LifeID:  lifeID,
+		GoalID:  g.ID,
+		Channel: g.ReqChannel,
+		To:      g.ReqFrom,
+		Content: content,
+	})
+	// 记一条对外言说，让面板/对话视图能看到这次主动汇报（与 reflex 同 kind）。
+	_ = storage.AppendActionLogKind(lifeID, g.ID, 0, storage.ActionKindReflex,
+		"proactive research report", "external.report", content, "", true, now, now)
+	_ = memory.AppendEvent(0, "action.research_reported", map[string]any{
+		"goal_id": g.ID, "channel": g.ReqChannel, "to": g.ReqFrom, "content": content,
+	})
+	slog.Info("research reported to requester", "goal", g.ID, "channel", g.ReqChannel, "to", g.ReqFrom)
+}
+
+// composeResearchReport 用 LLM 把这次研究产出压成一段简短自然的汇报（第一人称、像跟朋友说）。
+// 素材：目标 payload（当初的请求）+ 本次执行的 trace 产出（res.Output）+ 该目标近期 episode。
+// LLM 未配则退化为一句朴素模板，仍能让用户知道"做完了"。
+func composeResearchReport(g *core.Goal, res Result) string {
+	topic := truncate(g.Payload, 200)
+	if !llm.Configured() {
+		return fmt.Sprintf("你上次让我想的「%s」，我研究了一下，有结果了——回头细聊。", topic)
+	}
+	material := strings.TrimSpace(res.Output)
+	if material == "" || material == "(no llm content emitted)" {
+		// 退而求其次：拉该目标相关近期 episode 做素材。
+		if eps, err := storage.ListEpisodes(lifeID, g.Payload, 3, 0); err == nil && len(eps) > 0 {
+			var b strings.Builder
+			for _, e := range eps {
+				b.WriteString("- " + e.Summary + "\n")
+			}
+			material = b.String()
+		}
+	}
+	material = truncate(material, 3000)
+
+	sys := "你是一个数字生命体。你之前答应过对方要研究一件事，现在研究完了，要主动把成果用一段简短自然的话告诉ta。\n" +
+		genome.PersonaPrompt() + "\n" +
+		"要求：① 第一人称、口语、像跟朋友说，别写报告体、别分点罗列一长串；② 开头自然提一句这是ta之前托付的那件事；" +
+		"③ 给出你真正得出的关键结论/收获（2-5 句即可），别复述你做了哪些步骤；④ 只输出要发给ta的消息正文。"
+	user := fmt.Sprintf("ta当初的请求：%s\n\n你这次研究的产出/记录：\n%s\n\n把成果用一段话主动告诉ta：", g.Payload, material)
+	ctx, cancel := context.WithTimeout(context.Background(), LLMRoundTimeout)
+	defer cancel()
+	resp, err := llm.Reason(ctx, []llm.Message{
+		{Role: "system", Content: sys},
+		{Role: "user", Content: user},
+	})
+	if err != nil {
+		slog.Warn("compose research report", "goal", g.ID, "err", err)
+		// 兜底：LLM 调用失败也别让用户白等，给一句朴素汇报。
+		return fmt.Sprintf("你上次让我想的「%s」，我研究了一下，有些想法了——回头细聊。", topic)
+	}
+	_ = ledger.Spend(ledger.Energy, llm.TokensToEnergy(resp.Usage), "llm.tokens.report", "goal", g.ReqFrom)
+	return strings.TrimSpace(resp.Text)
 }
 
 func buildDeliberativeSystemPrompt(g *core.Goal) string {
