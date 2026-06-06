@@ -614,6 +614,22 @@
 > - **ShallowReflect insight 恒空**（硬编码文案）：低价值修复，候选有得 promote 时再考虑 LLM 合成 insight。暂缓。
 > **影响**：登记性条目，无代码改动；`R88`、`R86`、`R97`。
 
+### R105 · 僵尸 active 目标 → 认知主循环永久空转（已修 Phase 0.5）
+> 2026-06-06 观察：锁定生命 [[R96]] 连续 ~17h 零行动，只剩感知/反思后台跑，认知主循环（目标→行动→资源）完全停摆。
+> **根因（两步操作被崩溃打断）**：`NextPendingGoal` 选中目标即把它翻成 `active`，而落库收尾（`MarkGoal` 标记 done/failed）在 `action.Execute` 的**末尾**才发生。进程在二者之间被重启/崩溃/休眠打断 → 该目标永久卡 `active`：`NextPendingGoal` 只挑 `pending` 永远跳过它，goalgen 又按 payload 对 active 去重不再产同源新目标。队列里没有可执行的 pending、又生不出新目标 → 主循环空转。这是典型的“先翻状态后落库收尾”两步操作缺崩溃恢复。
+> **修复（commit b5ee693）**：启动时 `storage.ReclaimActiveGoals(lifeID)` 把上次运行遗留的僵尸 `active` 目标退回 `pending`，下个 cycle 重新可被挑选执行。放在 `state/ledger/scheduler` Init 之后、主循环启动之前。
+> **教训（可推广）**：任何“先翻内存/DB 状态、后在远端调用末尾才落最终态”的两步操作，都必须配崩溃恢复——要么单事务原子完成，要么启动时扫描并回收处于中间态的记录。本仓 active→done 这类 lease 式状态机尤其要有“启动回收孤儿 lease”的兜底。
+> **影响**：`cmd/runtime/main.go`、`internal/storage/goal.go`（`ReclaimActiveGoals`）、`R75`。
+
+### R106 · 能量经济双轨评估：日额度是休眠计量、真闸是会回血的 vitality（登记不修）
+> 2026-06-06 在修 [[R105]] 后观察到“单次 deliberate 耗 energy ≈ 1.91、而 genesis `EnergyDailyCap=1.0`”，疑似一次行动即耗尽日额度 → 长时间无法行动。**逐源核对模型后判定：非失调，不改代码**。
+> **模型实情——两个同名但互不相干的“能量”**：
+> - **`state.Energy`（vitality，0..1）= 真正的行动闸**：genesis 初值 1.0。`runCycle` 行动门是 `g != nil && frame.Life.Energy >= RestEnergyThreshold(0.20)`。单次慎思在 `action.finalize` 只扣**固定** `Energy -0.02`（非按 token 扣）；回血走 idle.Tick(+0.01)/rest 分支(+0.05)，并由 `scheduler.nextInterval` 在低能量时拉长节拍（<0.3 ×2、<0.1 ×4）。这是个自调节循环：做事 -0.02、歇着 +0.01~0.05，永远能回血，不会卡死。这正解释了为何 goals 6/7/8 能 40min 内连完——每次只掉 0.02，离 0.20 闸很远。
+> - **`ledger` 的 energy 余额 + `EnergyDailyCap`/`EnergyUsedToday` = 休眠的账面计量，不门控任何东西**：`ledger.Spend(Energy, TokensToEnergy(usage)≈1.91, …)` 只写 ledger 流水表（累计资源账，可为负），**既不动 `state.Energy` 也不动 `EnergyUsedToday`**。`EnergyUsedToday` 全仓**无任何自增点**（grep 确认：只在 genesis 与日重置时被设 0）；`EnergyDailyCap=1.0` 全仓**从未被当作闸读取**，`MaybeResetEnergyDailyCap` 只是每天把它重置回 1.0。即 cap/used_today 是占位字段，当前不参与任何门控。
+> **结论**：“cap=1.0 vs cost=1.91” 是表象冲突而非真失调——日额度是死字段，真闸是会回血的 vitality 循环，从未阻断行动。**故不调 `EnergyDailyCap` / `TokensToEnergy` 率 / 重置节奏中的任何一个**，避免给一个尚不发挥作用的字段做“修复”而引入虚假语义。
+> **未来留白（不在本次动）**：若 Phase 1+ 真要让“token 烧得多 → 累得快”，正确做法是把 deliberate 的固定 `-0.02` 改成与 `TokensToEnergy` 挂钩、或让 `ledger.Spend(Energy)` 联动扣 `EnergyUsedToday` 并令行动闸同时看 used_today——届时 cap 与 cost 才需校准（与平台层 [[R103]] token 翻译点/计量点协调一并考虑）。当前 Phase 0 保持简单。
+> **影响**：登记性条目，无代码改动；`R86`、`R105`、`R103`。
+
 ### R88 · 对话历史 + 行为降频 + 技能生命周期完善（已实装 Phase 0.5）
 > 用户 2026-06-05 一批改进：
 > **① 对话载入历史**：reflex 原本每条消息只给 `[system, user]`，无往来历史 → 大模型回复有失忆/失意感。新增 `storage.RecentDialogueTurns`（从 raw_trail 的 reflex.received/speak 重建近期对话）+ `reflex.dialogueHistory` 注入最近 10 轮（单轮截 600 字控 token，去重末尾当前消息）。
