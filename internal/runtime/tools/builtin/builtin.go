@@ -364,18 +364,28 @@ func toolCrystallizeSkill() tools.Tool {
 }
 
 // -----------------------------------------------------------------------------
-// deliberative · 目标管理
+// deliberative · 目标管理（递归研究目标树）
 // -----------------------------------------------------------------------------
+
+// 递归研究目标树护栏（防失控拆解 / token 燃尽）：
+const (
+	// MaxResearchDepth 子目标最大递归深度（根=0）。到顶不再允许拆子目标，逼 LLM 当层完成。
+	MaxResearchDepth = 3
+	// MaxSubgoalsPerParent 单个母目标可拥有的子目标数上限（一次拆解别开太多坑）。
+	MaxSubgoalsPerParent = 5
+)
 
 func toolEnqueueSubgoal() tools.Tool {
 	return tools.Tool{
-		Name:        "enqueue_subgoal",
-		Description: "入队一个子目标供后续 cycle 处理。intent 取 knowledge / social / creativity / stability / achievement。",
+		Name: "enqueue_subgoal",
+		Description: "把当前目标拆出一个子目标（递归研究树）。子目标会先于母目标被执行；它们全部完成后，" +
+			"母目标会自动恢复执行、综合子成果形成结论。用于「大问题先拆成几个可独立研究的小问题」。" +
+			"intent 取 knowledge / social / creativity / stability / achievement。",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"intent":   map[string]any{"type": "string"},
-				"payload":  map[string]any{"type": "string", "description": "目标描述 / 起因"},
+				"payload":  map[string]any{"type": "string", "description": "子目标描述 / 要研究的小问题"},
 				"priority": map[string]any{"type": "number", "description": "优先级 0-1（默认 0.6）"},
 			},
 			"required": []string{"intent", "payload"},
@@ -385,6 +395,14 @@ func toolEnqueueSubgoal() tools.Tool {
 	}
 }
 
+// handleEnqueueSubgoal 在当前执行中的目标（tctx.GoalID）下挂一个子目标。
+//
+// pending_children 计数不变量：本函数是该计数的唯一增点——成功入队子目标后母 +1。
+// 配对的减点是 storage.MarkGoal（子转终态时母 -1）。母 pending_children>0 即「被阻塞」。
+//
+// 护栏（任一不过则拒绝，返回提示让 LLM 当层自己完成而非继续拆）：
+//   - 深度：parent.Depth+1 不得超过 MaxResearchDepth。
+//   - 单母子目标数：母现有子目标数 < MaxSubgoalsPerParent。
 func handleEnqueueSubgoal(_ context.Context, tctx tools.Context, argsJSON string) (string, error) {
 	var a struct {
 		Intent   string  `json:"intent"`
@@ -400,6 +418,38 @@ func handleEnqueueSubgoal(_ context.Context, tctx tools.Context, argsJSON string
 	if a.Priority <= 0 || a.Priority > 1 {
 		a.Priority = 0.6
 	}
+	if tctx.GoalID == 0 {
+		return errJSON("no parent goal in context"), nil
+	}
+
+	parent, err := storage.GetGoalByID(tctx.GoalID)
+	if err != nil {
+		return errJSON("load parent failed"), err
+	}
+	if parent == nil {
+		return errJSON("parent goal not found"), nil
+	}
+
+	childDepth := parent.Depth + 1
+	if childDepth > MaxResearchDepth {
+		// 到深度顶：不再拆，逼 LLM 当层自己完成（返回明确提示而非报错，让 LLM 自适应）。
+		return mustJSON(map[string]any{
+			"ok": false, "rejected": "max_depth",
+			"hint": fmt.Sprintf("已到最大研究深度 %d，别再拆子目标了——请在本层直接把它研究完、调 complete_goal。", MaxResearchDepth),
+		}), nil
+	}
+
+	children, err := storage.ListChildren(tctx.GoalID)
+	if err != nil {
+		return errJSON("count children failed"), err
+	}
+	if len(children) >= MaxSubgoalsPerParent {
+		return mustJSON(map[string]any{
+			"ok": false, "rejected": "max_subgoals",
+			"hint": fmt.Sprintf("本目标已有 %d 个子目标（上限 %d），别再开新坑——先把已拆的做完。", len(children), MaxSubgoalsPerParent),
+		}), nil
+	}
+
 	g := &core.Goal{
 		Source:          core.GoalIntrinsic,
 		Intent:          a.Intent,
@@ -408,12 +458,18 @@ func handleEnqueueSubgoal(_ context.Context, tctx tools.Context, argsJSON string
 		Status:          core.GoalPending,
 		CreatedAt:       shared.SystemClock.UnixSec(),
 		ArbitrationNote: fmt.Sprintf("subgoal_of=%d", tctx.GoalID),
+		ParentID:        tctx.GoalID,
+		Depth:           childDepth,
 	}
 	id, err := storage.EnqueueGoal(tctx.LifeID, g)
 	if err != nil {
 		return errJSON("enqueue failed"), err
 	}
-	return mustJSON(map[string]any{"ok": true, "goal_id": id}), nil
+	// 母 pending_children +1 → 母目标进入「被阻塞」（pending 且 children>0）。
+	if err := storage.IncPendingChildren(tctx.GoalID); err != nil {
+		return errJSON("inc pending children failed"), err
+	}
+	return mustJSON(map[string]any{"ok": true, "goal_id": id, "depth": childDepth, "parent_id": tctx.GoalID}), nil
 }
 
 func toolCompleteGoal() tools.Tool {

@@ -110,6 +110,10 @@ func Start(ctx context.Context, addr string) *http.Server {
 	mux.HandleFunc("/api/stream", apiStream)
 	mux.HandleFunc("/api/external-request", apiExternalRequest)
 	mux.HandleFunc("/api/export", apiExport)
+	// 知识库（递归研究 dossier）：列表 + 单篇全文。
+	// 详情用 Go 1.22+ ServeMux 路径参数 {id}；列表用固定路径（精确匹配优先于 {id} 模式）。
+	mux.HandleFunc("/api/knowledge", apiKnowledgeList)
+	mux.HandleFunc("/api/knowledge/{id}", apiKnowledgeDetail)
 
 	accessToken = strings.TrimSpace(os.Getenv("MINDVERSE_ACCESS_TOKEN"))
 	if accessToken != "" {
@@ -311,6 +315,37 @@ func apiInterests(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, xs)
+}
+
+// apiKnowledgeList GET /api/knowledge → 分页列知识库 dossier（topic + 正文摘要 + 时间 + root_goal_id）。
+func apiKnowledgeList(w http.ResponseWriter, r *http.Request) {
+	limit := intParam(r, "limit", 30, 1, 200)
+	offset := intParam(r, "offset", 0, 0, 100000)
+	xs, err := storage.ListKnowledge(lifeID, limit, offset)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, xs)
+}
+
+// apiKnowledgeDetail GET /api/knowledge/{id} → 单篇 dossier 全文。
+func apiKnowledgeDetail(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	e, err := storage.GetKnowledge(lifeID, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if e == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, e)
 }
 
 func apiConfig(w http.ResponseWriter, r *http.Request) {

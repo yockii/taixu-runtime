@@ -39,4 +39,15 @@ type Goal struct {
 	// 完成后慎思层据此把成果主动回送给当初发起的人（飞书 ReqFrom=open_id）。内驱目标留空。
 	ReqChannel string `json:"req_channel,omitempty"`
 	ReqFrom    string `json:"req_from,omitempty"`
+
+	// 递归研究目标树（migration 009）。状态机不变量见 storage/goal.go：
+	//   - ParentID：子目标指向母目标 id；根目标为 0（DB 列 NULL）。
+	//   - Depth：根=0，每下一层 +1；MaxResearchDepth 护栏防无限拆解。
+	//   - ResultDigest：完成（或中间拆解）时的成果/进度摘要，供母目标综合 + 知识库。
+	//   - PendingChildren：未结子目标计数；>0 即「被阻塞」
+	//     （status='pending' 但 NextPendingGoal 不会选中，直到子目标全完减到 0）。
+	ParentID        int64  `json:"parent_id,omitempty"`
+	Depth           int    `json:"depth"`
+	ResultDigest    string `json:"result_digest,omitempty"`
+	PendingChildren int    `json:"pending_children"`
 }
