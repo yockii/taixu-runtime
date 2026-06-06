@@ -21,6 +21,7 @@ import (
 
 	"mindverse/internal/bus"
 	"mindverse/internal/core"
+	"mindverse/internal/io/egress"
 	"mindverse/internal/io/httpapi"
 	"mindverse/internal/io/lark"
 	"mindverse/internal/io/llm"
@@ -132,6 +133,11 @@ func main() {
 	httpAddr := envOr("MINDVERSE_HTTP", ":3000")
 	_ = httpapi.Start(ctx, httpAddr)
 	slog.Info("http listening", "addr", httpAddr)
+
+	// 出站渠道路由：注册 web 渠道 egress（网页请求者经 SSE 收回复），并启动中央分发器
+	// （订阅 ReplyEvent / ApprovalNeededEvent → 按 channel 路由到对应 egress，哪来回哪去）。
+	httpapi.RegisterEgress()
+	egress.StartDispatcher()
 
 	wireLark(ctx, lifeID)
 
@@ -406,6 +412,10 @@ func wireLark(ctx context.Context, lifeID string) {
 		slog.Error("lark init", "err", err)
 		return
 	}
+	// 注册飞书为 "feishu" 渠道的出站实现（Send/React/审批卡片）。出站事件由 egress 中央分发器
+	// 按来源 channel 路由到这里——不再在本函数内散落 `!="feishu"` 守卫（哪来回哪去）。
+	lark.RegisterEgress()
+
 	// 卡片按钮回调（走长连接）→ skill 批准/拒绝（单一真相，不复制安装逻辑）。
 	// 飞书卡片回调有 3s 响应硬截止：批准要装依赖（pip/npm，可达数十秒）必须异步，
 	// 否则同步阻塞会让飞书提示"回调超时未响应"。装的结果反映在面板/技能状态。
@@ -432,36 +442,10 @@ func wireLark(ctx context.Context, lifeID string) {
 		}
 		return "未知操作", false
 	})
-	// 技能待审批 → 推飞书审批卡片给用户（按钮即点即批）。收件人取最近发言者，否则取最近联系人。
-	bus.Subscribe(skill.ApprovalNeededEvent{}, func(e bus.Event) {
-		ev := e.(skill.ApprovalNeededEvent)
-		to := lark.LastSenderOpenID()
-		if to == "" {
-			if c, err := storage.MostRecentContact(lifeID); err == nil && c != nil {
-				to = c.PeerID
-			}
-		}
-		if to == "" {
-			slog.Warn("skill approval card: no recipient, fallback to panel", "skill", ev.SkillID)
-			return
-		}
-		if err := lark.SendApprovalCard(to, ev.SkillID, ev.SkillName, ev.Deps); err != nil {
-			slog.Error("send approval card", "skill", ev.SkillID, "err", err)
-		}
-	})
-	// 反射对话每一轮的 content → 单独发飞书消息（自然分段）
-	bus.Subscribe(reflex.ReplyEvent{}, func(e bus.Event) {
-		ev := e.(reflex.ReplyEvent)
-		if ev.Channel != "" && ev.Channel != "feishu" {
-			return
-		}
-		if ev.To == "" && lark.LastSenderOpenID() == "" {
-			return
-		}
-		if err := lark.Send(ev.To, ev.Content); err != nil {
-			slog.Error("feishu send", "err", err)
-		}
-	})
+	// 出站路由（审批卡片 / 对话回复 / 主动汇报）已统一交 egress 中央分发器按 channel 路由
+	// （见 egress.StartDispatcher，在 main 里 wire 一处）。这里不再内联订阅 ReplyEvent /
+	// ApprovalNeededEvent + `!="feishu"` 守卫——隐患①（审批卡误投飞书）与隐患②（全局
+	// LastSenderOpenID 跨渠道串台）随之消除。
 	go func() {
 		slog.Info("feishu ws starting", "app_id", appID)
 		if err := lark.Run(ctx); err != nil {

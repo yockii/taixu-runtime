@@ -33,13 +33,18 @@ import (
 )
 
 // ApprovalNeededEvent 一个技能进入待审批（缺非白名单依赖且未开 auto-approve）时发布。
-// main 订阅后把审批请求经飞书交互卡片推给用户（按钮即点即批，回调走长连接）。
-// 注：boot 期 ScanDir 也可能发布，但那时 main 尚未订阅 → 自然丢弃（boot 待批技能走面板审批）。
+// egress 分发器订阅后按 Channel 路由审批请求（飞书→交互卡片；其它渠道→文本提示）。
+// 注：boot 期 ScanDir 也可能发布，但那时分发器/渠道尚未就绪 → 自然丢弃（boot 待批技能走面板审批）。
+//
+// Channel/To = 触发该次安装的来源会话（隐患①修复：审批按来源渠道路由，不写死飞书）。
+// 拿不到来源上下文（如 boot ScanDir）时留空，由分发器按渠道兜底最近对端。
 type ApprovalNeededEvent struct {
 	LifeID    string
 	SkillID   string
 	SkillName string
 	Deps      string // 人类可读的待装依赖摘要
+	Channel   string // 来源渠道（"feishu" / "web" / ...）；空 → 分发器兜底
+	To        string // 来源对端标识；空 → 分发器兜底
 }
 
 const (
@@ -176,7 +181,7 @@ func ScanDir() (int, error) {
 			slog.Info("skill scan skip non-owned", "folder", filepath.Base(folder), "owner", owner, "current", lid)
 			continue
 		}
-		if _, err := loadFolder(folder, string(content)); err != nil {
+		if _, err := loadFolder(folder, string(content), Origin{}); err != nil {
 			slog.Warn("skill scan load", "folder", folder, "err", err)
 			continue
 		}
@@ -236,7 +241,7 @@ authored_from: "%s"
 %s
 `, sanitizeName(name), oneLine(description), atYaml, authoredFrom, instructions)
 
-	inst, err := Load(content)
+	inst, err := LoadFrom(content, Origin{}) // 自创技能无来源会话，审批走兜底/面板
 	if err != nil {
 		return nil, err
 	}
@@ -255,9 +260,20 @@ func oneLine(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// Load 装载一份 SKILL.md 文本（ad-hoc，如面板粘贴）。
+// Origin 一次装载的来源会话（审批按来源渠道路由用）。零值表示无来源上下文（如 boot 扫描）。
+type Origin struct {
+	Channel string // "feishu" / "web" / ...
+	To      string // 对端标识
+}
+
+// Load 装载一份 SKILL.md 文本（ad-hoc，如面板粘贴）。来源默认 web 面板。
 // 写到 <skillsRoot>/<name>/SKILL.md 后按文件夹模型装载，使其与扫描装载一致、宿主可见。
 func Load(content string) (*storage.SkillInstance, error) {
+	return LoadFrom(content, Origin{Channel: "web"})
+}
+
+// LoadFrom 同 Load，但显式带来源会话（审批请求据此按来源渠道路由）。
+func LoadFrom(content string, origin Origin) (*storage.SkillInstance, error) {
 	fm, _, err := ParseSkillMd(content)
 	if err != nil {
 		return nil, err
@@ -269,12 +285,12 @@ func Load(content string) (*storage.SkillInstance, error) {
 	if err := persistBody(folder, content); err != nil {
 		return nil, fmt.Errorf("skill: write folder: %w", err)
 	}
-	return loadFolder(folder, content)
+	return loadFolder(folder, content, origin)
 }
 
 // loadFolder 从一个 skill 文件夹（含 SKILL.md content）解析并 upsert 实例。
-// install_path = 文件夹本身（脚本 / ref / 依赖都在其中）。
-func loadFolder(folder, content string) (*storage.SkillInstance, error) {
+// install_path = 文件夹本身（脚本 / ref / 依赖都在其中）。origin 为审批路由的来源会话（可空）。
+func loadFolder(folder, content string, origin Origin) (*storage.SkillInstance, error) {
 	fm, _, err := ParseSkillMd(content)
 	if err != nil {
 		return nil, err
@@ -343,6 +359,8 @@ func loadFolder(folder, content string) (*storage.SkillInstance, error) {
 				SkillID:   id,
 				SkillName: fm.Name,
 				Deps:      depsHuman(missing),
+				Channel:   origin.Channel,
+				To:        origin.To,
 			})
 		}
 	}
