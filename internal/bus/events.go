@@ -63,6 +63,17 @@ type ActionDone struct {
 	StartedAt int64
 }
 
+// ResearchReported 一个带请求者的 ExternalRequest 目标完成后，慎思层生成的主动汇报
+//（拟人交互闭环任务 3）。由 action.finalize 发布，io 层（lark egress / SSE）订阅后
+// 主动推送给当初发起请求的人（飞书 To=open_id）。Content 已是可直接发送的自然语言。
+type ResearchReported struct {
+	LifeID  string
+	GoalID  int64
+	Channel string // 请求者渠道（feishu / web / cli ...）
+	To      string // 请求者标识（飞书 open_id 等）
+	Content string // 已压成简短自然的成果汇报正文
+}
+
 // ToolAudited 一次工具调用审计。
 type ToolAudited struct {
 	LifeID     string

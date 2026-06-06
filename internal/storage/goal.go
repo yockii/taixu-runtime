@@ -1,16 +1,52 @@
 package storage
 
-import "mindverse/internal/core"
+import (
+	"strings"
+
+	"mindverse/internal/core"
+)
 
 func EnqueueGoal(lifeID string, g *core.Goal) (int64, error) {
+	// req_channel / req_from（migration 008）：ExternalRequest 闭环目标带请求者，内驱目标留空。
 	r, err := db.Exec(`
-		INSERT INTO goal_queue (life_id, source, intent, payload, priority, status, created_at, arbitration_note)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		lifeID, string(g.Source), g.Intent, g.Payload, g.Priority, string(g.Status), g.CreatedAt, nullStr(g.ArbitrationNote))
+		INSERT INTO goal_queue (life_id, source, intent, payload, priority, status, created_at, arbitration_note, req_channel, req_from)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		lifeID, string(g.Source), g.Intent, g.Payload, g.Priority, string(g.Status), g.CreatedAt,
+		nullStr(g.ArbitrationNote), nullStr(g.ReqChannel), nullStr(g.ReqFrom))
 	if err != nil {
 		return 0, err
 	}
 	return r.LastInsertId()
+}
+
+// EnqueueExternalRequest 入队一个 source='ExternalRequest' 的延迟研究目标，并记住请求者
+//（reqChannel/reqFrom），供慎思层完成后主动回送成果（拟人交互闭环，任务 2）。
+//
+// dedup：同一请求者短时内重复同主题的请求会被去重（payload 子串 + 仍 pending/active）——
+// 避免用户连发或 LLM 抖动造成同一研究入队多次。已有则返回既有目标 id、created=false。
+func EnqueueExternalRequest(lifeID, topic, reqChannel, reqFrom string, priority float64, now int64) (id int64, created bool, err error) {
+	topic = strings.TrimSpace(topic)
+	if topic == "" {
+		return 0, false, nil
+	}
+	if open, derr := HasOpenGoalWithPayloadSubstring(lifeID, topic); derr == nil && open {
+		return 0, false, nil
+	}
+	g := &core.Goal{
+		Source:     core.GoalExternal,
+		Intent:     "研究用户托付的请求",
+		Payload:    topic,
+		Priority:   priority,
+		Status:     core.GoalPending,
+		CreatedAt:  now,
+		ReqChannel: reqChannel,
+		ReqFrom:    reqFrom,
+	}
+	newID, err := EnqueueGoal(lifeID, g)
+	if err != nil {
+		return 0, false, err
+	}
+	return newID, true, nil
 }
 
 func NextPendingGoal(lifeID string, startedAt int64) (*core.Goal, error) {
@@ -21,18 +57,24 @@ func NextPendingGoal(lifeID string, startedAt int64) (*core.Goal, error) {
 	defer func() { _ = tx.Rollback() }()
 
 	var g core.Goal
-	var note *string
+	var note, reqChannel, reqFrom *string
 	err = tx.QueryRow(`
-		SELECT id, source, intent, payload, priority, status, created_at, arbitration_note
+		SELECT id, source, intent, payload, priority, status, created_at, arbitration_note, req_channel, req_from
 		FROM goal_queue
 		WHERE life_id = ? AND status = 'pending'
 		ORDER BY priority DESC, id ASC LIMIT 1`, lifeID).
-		Scan(&g.ID, &g.Source, &g.Intent, &g.Payload, &g.Priority, &g.Status, &g.CreatedAt, &note)
+		Scan(&g.ID, &g.Source, &g.Intent, &g.Payload, &g.Priority, &g.Status, &g.CreatedAt, &note, &reqChannel, &reqFrom)
 	if err != nil {
 		return nil, err
 	}
 	if note != nil {
 		g.ArbitrationNote = *note
+	}
+	if reqChannel != nil {
+		g.ReqChannel = *reqChannel
+	}
+	if reqFrom != nil {
+		g.ReqFrom = *reqFrom
 	}
 	if _, err := tx.Exec(`UPDATE goal_queue SET status = 'active', started_at = ? WHERE id = ?`, startedAt, g.ID); err != nil {
 		return nil, err

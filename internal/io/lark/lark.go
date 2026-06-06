@@ -146,6 +146,43 @@ func SendImageKey(openID, imageKey string) error {
 	return sendRaw(openID, larkim.MsgTypeImage, string(b))
 }
 
+// AddReaction 给一条消息加一个表情回应（像 OpenClaw 的"已收到"手势，零 LLM 即时回执）。
+//
+// emojiType 用飞书 emoji 类型枚举（如 "OK" = ok-hand 手势、"SMILE" 等，
+// 见 https://open.feishu.cn/document/server-docs/im-v1/message-reaction/emojis-introduce）。
+// 走 client.Im.V1.MessageReaction.Create，与发消息同一 app token。
+//
+// 容错语义：这是锦上添花的回执，失败只 warn 不阻断主回复链路——故返回 error 仅供日志，
+// 调用方一般 go AddReaction(...) 异步触发、忽略返回。
+func AddReaction(messageID, emojiType string) error {
+	if messageID == "" {
+		return errors.New("lark: empty message id for reaction")
+	}
+	if emojiType == "" {
+		emojiType = "OK" // ok-hand：明确"已收到"
+	}
+	mu.Lock()
+	cli := appCli
+	mu.Unlock()
+	if cli == nil {
+		return errors.New("lark: not initialized")
+	}
+	req := larkim.NewCreateMessageReactionReqBuilder().
+		MessageId(messageID).
+		Body(larkim.NewCreateMessageReactionReqBodyBuilder().
+			ReactionType(larkim.NewEmojiBuilder().EmojiType(emojiType).Build()).
+			Build()).
+		Build()
+	resp, err := cli.Im.V1.MessageReaction.Create(context.Background(), req)
+	if err != nil {
+		return fmt.Errorf("lark add reaction: %w", err)
+	}
+	if !resp.Success() {
+		return fmt.Errorf("lark add reaction rsp: code=%d msg=%s", resp.Code, resp.Msg)
+	}
+	return nil
+}
+
 // SendApprovalCard 发一张技能依赖审批卡片（批准/拒绝按钮，value 带 action+skill_id）。
 func SendApprovalCard(openID, skillID, skillName, deps string) error {
 	return SendCard(openID, buildApprovalCard(skillID, skillName, deps))
@@ -264,6 +301,18 @@ func handleMessage(ctx context.Context, ev *larkim.P2MessageReceiveV1) error {
 	}
 	if text == "" {
 		return nil
+	}
+
+	// 即时回执（任务 1，像 OpenClaw）：消息一进来立刻在它下面加「ok 手势」表情，
+	// 明确告诉用户"已收到"，零 LLM、零延迟。异步 go 出去、不阻塞后续 reflex 回复；
+	// 失败只 warn（AddReaction 内部已容错）。仅对真实用户的 p2p 单聊消息加
+	//（本函数开头已过滤非 p2p；机器人自发的出站消息根本不走这条入站路径，故无需额外判定）。
+	if msgID != "" {
+		go func(id string) {
+			if err := AddReaction(id, "OK"); err != nil {
+				slog.Warn("lark add reaction", "msg", id, "err", err)
+			}
+		}(msgID)
 	}
 
 	openID := ""

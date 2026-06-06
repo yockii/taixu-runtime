@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"strconv"
 
+	"mindverse/internal/bus"
 	"mindverse/internal/runtime/memory"
 	"mindverse/internal/runtime/skill"
 	"mindverse/internal/runtime/state"
@@ -77,7 +78,89 @@ func registerCoreTools() error {
 	}); err != nil {
 		return err
 	}
+	if err := tools.Register(tools.Tool{
+		Name: "defer_research",
+		Description: "当对方抛来一个值得你之后认真深入、而非现在三言两语能答完的请求/想法/研究课题时调用" +
+			"（如『帮我研究下 X』『你觉得 Y 怎么实现』这类需要查资料/动手琢磨的慢工）。" +
+			"调用后：① 引擎会把这件事记成你的一个待办研究目标，你慎思时去做；② 引擎会替你回一句『收到，回头研究下』的确认。" +
+			"所以你**不必**自己再复述确认，调完这个工具即可（也可以再补一两句别的）。" +
+			"⚠ 仅用于真需要事后深入的请求；能当场答的闲聊别用。",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"topic": map[string]any{"type": "string", "description": "要研究/深入的事情（用你自己的话凝练成一句，作为待办目标内容）"},
+				"why":   map[string]any{"type": "string", "description": "可选：为什么值得深入（用于记忆）"},
+			},
+			"required": []string{"topic"},
+		},
+		Lanes:   []tools.Lane{tools.LaneReflex},
+		Handler: handlerDeferResearch,
+	}); err != nil {
+		return err
+	}
 	return nil
+}
+
+type deferResearchArgs struct {
+	Topic string `json:"topic"`
+	Why   string `json:"why"`
+}
+
+// deferResearchAcks 延迟研究的确认文案变体（任务 2）：拟人、随机挑一个，别每次一样。
+var deferResearchAcks = []string{
+	"收到，我有空时研究一下，有结果再告诉你 🌱",
+	"嗯，这个我记下了，回头认真琢磨琢磨，想清楚了来找你。",
+	"好，让我消化下，得花点时间——有眉目了第一时间同步你。",
+	"收到～这事儿值得好好想想，我慢慢研究，回头跟你说。",
+	"记下啦，这个不是一句两句能讲清的，我抽空深入下再回你 🌿",
+}
+
+func pickDeferAck() string {
+	mu.Lock()
+	defer mu.Unlock()
+	if rng == nil {
+		return deferResearchAcks[0]
+	}
+	return deferResearchAcks[rng.IntN(len(deferResearchAcks))]
+}
+
+// handlerDeferResearch 把"需事后深入的请求"落成一个带请求者的 ExternalRequest 目标（任务 2），
+// 并由引擎替生命体回一句拟人确认（经 bus → lark egress / SSE，与正常 reflex 回复同路）。
+//
+// 设计取舍：判定"是否值得研究"交给 reflex LLM（它最懂当下语境，闲聊 vs 慢工一眼可辨），
+// 引擎只负责"入队 + 回执"两件确定性的事——既保证有请求者追踪、又保证用户必得到一句确认，
+// 不依赖 LLM 自己记得复述。dedup 在 storage.EnqueueExternalRequest 里（同主题在飞不重复入队）。
+func handlerDeferResearch(_ context.Context, tctx tools.Context, argsJSON string) (string, error) {
+	var a deferResearchArgs
+	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+		return `{"ok":false,"err":"invalid args"}`, err
+	}
+	now := shared.SystemClock.UnixSec()
+	// 外部托付的请求优先级略高于一般内驱探索（用户在等），但不抢占式插队。
+	id, created, err := storage.EnqueueExternalRequest(tctx.LifeID, a.Topic, tctx.Channel, tctx.From, 0.7, now)
+	if err != nil {
+		return `{"ok":false,"err":"enqueue failed"}`, err
+	}
+	_ = memory.AppendEvent(0, "reflex.defer_research", map[string]any{
+		"topic": a.Topic, "why": a.Why, "channel": tctx.Channel, "from": tctx.From,
+		"goal_id": id, "created": created,
+	})
+	// 引擎替它回一句拟人确认（与 emitReply 同走 bus → 飞书/网页）。
+	ack := pickDeferAck()
+	bus.Publish(ReplyEvent{
+		LifeID:    lifeID,
+		Channel:   tctx.Channel,
+		To:        tctx.From,
+		Round:     0,
+		Content:   ack,
+		CreatedAt: now,
+	})
+	_ = storage.AppendActionLogKind(lifeID, 0, 0, storage.ActionKindReflex,
+		"defer research ack", "defer_research.ack", ack, "", true, now, now)
+	if !created {
+		return `{"ok":true,"queued":false,"note":"已有相同主题的待办研究在进行中，未重复入队；已回确认"}`, nil
+	}
+	return `{"ok":true,"queued":true,"goal_id":` + strconv.FormatInt(id, 10) + `,"note":"已入队并已替你回一句确认"}`, nil
 }
 
 type quietArgs struct {

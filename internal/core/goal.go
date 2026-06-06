@@ -4,8 +4,8 @@ package core
 type GoalSource string
 
 const (
-	GoalIntrinsic GoalSource = "IntrinsicDrive"
-	GoalExternal  GoalSource = "ExternalRequest"
+	GoalIntrinsic  GoalSource = "IntrinsicDrive"
+	GoalExternal   GoalSource = "ExternalRequest"
 	GoalReflection GoalSource = "ReflectionGoal" // Phase 2+
 )
 
@@ -34,4 +34,9 @@ type Goal struct {
 	StartedAt       int64      `json:"started_at,omitempty"`
 	FinishedAt      int64      `json:"finished_at,omitempty"`
 	ArbitrationNote string     `json:"arbitration_note,omitempty"`
+
+	// 请求者追踪（migration 008）：仅 ExternalRequest 闭环目标填，记下"这活儿是谁托付的"。
+	// 完成后慎思层据此把成果主动回送给当初发起的人（飞书 ReqFrom=open_id）。内驱目标留空。
+	ReqChannel string `json:"req_channel,omitempty"`
+	ReqFrom    string `json:"req_from,omitempty"`
 }

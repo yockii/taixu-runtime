@@ -26,7 +26,6 @@ import (
 	"mindverse/internal/io/llm"
 	"mindverse/internal/lifepack"
 	"mindverse/internal/runtime/action"
-	"mindverse/internal/runtime/reflex"
 	"mindverse/internal/runtime/drives"
 	"mindverse/internal/runtime/genesis"
 	"mindverse/internal/runtime/goal"
@@ -36,6 +35,7 @@ import (
 	"mindverse/internal/runtime/memory"
 	"mindverse/internal/runtime/perception"
 	"mindverse/internal/runtime/reflect"
+	"mindverse/internal/runtime/reflex"
 	"mindverse/internal/runtime/scheduler"
 	"mindverse/internal/runtime/skill"
 	"mindverse/internal/runtime/state"
@@ -447,6 +447,22 @@ func wireLark(ctx context.Context, lifeID string) {
 		}
 		if err := lark.SendApprovalCard(to, ev.SkillID, ev.SkillName, ev.Deps); err != nil {
 			slog.Error("send approval card", "skill", ev.SkillID, "err", err)
+		}
+	})
+	// 完成后主动汇报（拟人交互闭环任务 3）：带请求者的 ExternalRequest 目标做完 →
+	// 慎思层 action.finalize 发 ResearchReported → 这里主动把成果推给当初托付的人（飞书）。
+	// 仅处理飞书渠道（req_from = open_id）；其他渠道（web/cli）由各自 io 层订阅（SSE 已广播 reflex 系事件）。
+	bus.Subscribe(bus.ResearchReported{}, func(e bus.Event) {
+		ev := e.(bus.ResearchReported)
+		if ev.Channel != "" && ev.Channel != "feishu" {
+			return // 非飞书渠道不经此路（避免把 web 请求误发飞书）
+		}
+		if ev.To == "" {
+			slog.Warn("research report: empty requester, skip", "goal", ev.GoalID)
+			return
+		}
+		if err := lark.Send(ev.To, ev.Content); err != nil {
+			slog.Warn("feishu research report send", "goal", ev.GoalID, "err", err)
 		}
 	})
 	// 反射对话每一轮的 content → 单独发飞书消息（自然分段）
