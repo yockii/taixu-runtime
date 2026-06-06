@@ -89,24 +89,50 @@
 
 ## 5. Embedding（向量化）
 
-### 5.1 选定：bge-m3 内置 Docker 镜像
+### 5.1 选定：Qwen3-Embedding-0.6B（独立 llama.cpp embedding server）
 
-**模型**：BAAI/bge-m3（多语言 / 1024 维 / 强 retrieval / Phase 0 必须中文+英文）
-
-**部署方式**：模型权重直接打入 Docker 镜像，无需首次启动下载。
+**模型**：Qwen/Qwen3-Embedding-0.6B（Apache-2.0 / **1024 维** / 中英 retrieval 强 / 官方 GGUF）
 
 | 选项 | 说明 |
 |---|---|
-| 推理后端 | `llama.cpp` 嵌入式 server（容器内启动）或 `ggml-rs` |
-| 模型量化 | INT8（约 700MB，质量损失可接受）|
-| Go 接入 | HTTP 调用本地 `http://localhost:11435/embed`（容器内） |
+| 许可 | **Apache-2.0**，可商用（bge-m3 同为开放许可，但 Qwen3 更新更小更准）|
+| 维度 | **1024**（与原 bge-m3 同维 → **零迁移**，schema embedding 列不变）|
+| 量化 | Q8_0 ≈ 639MB（推荐，质量近无损）或 Q4_K_M ≈ 397MB（更省内存）|
+| 推理后端 | `llama.cpp` server `--embedding`，暴露 **OpenAI 兼容 `/v1/embeddings`** |
+| 部署 | **独立 compose 服务**（非内置进 runtime 镜像）；GGUF 经卷挂载或首启下载 |
+| Go 接入 | `internal/io/embed` 经 HTTP 调 `MINDVERSE_EMBED_URL`（默认 `http://embed:11435`） |
 
-容器启动时 llama.cpp embedding server 自动起，监听本地端口；Go Runtime 通过 HTTP 调用。
+**Qwen3 用法（关键）**：
+- **query 端**加 instruct 前缀：`Instruct: <task>\nQuery: <text>`（task 用通用检索指令），由 `embed.Embed(ctx, texts, isQuery=true)` 自动加。
+- **doc 端**（被检索的语料：episode summary / 语义知识 / 反思）**不加前缀**，原文嵌入。
 
-### 5.2 备选方案（未来）
+**换因（bge-m3 → Qwen3-0.6B）**：
+1. **同 1024 维 → 零迁移**：schema 的 `embedding BLOB` 列与暴力 cosine 逻辑全部不动。
+2. **中英 retrieval 硬数字更优**：Qwen3-Embedding 系列在 C-MTEB / MTEB retrieval 上领先同级 bge。
+3. **更小**：Q8 ≈ 639MB（vs bge-m3 INT8 ~700MB），Q4 更可压到 ~397MB。
+4. **可商用**：Apache-2.0，无附加限制。
 
-- Phase 1+ 用户可可选切到 OpenAI 兼容 embeddings endpoint（云端）
-- Phase 3+ 多模型路由
+### 5.2 向量检索实现：Go 暴力 cosine（非 sqlite-vec）
+
+modernc.org/sqlite 是**纯 Go** driver，无法稳载 `sqlite-vec` C 扩展（且本仓库禁 CGO）。
+Phase 0 单生命规模（数千条以内）用 **Go 暴力 cosine** 足够：
+取候选行的 `embedding BLOB` → 小端 decode 成 `[]float32` → 与 query 向量算 cosine → top-k。
+实现见 `internal/io/embed`（`Encode/Decode/Cosine/TopK`）+ `internal/storage/vector.go`。
+`sqlite-vec` 留作未来 scale（万级以上 / 多生命）时再评估（届时需换 driver 或独立向量库）。
+
+### 5.3 优雅降级（首要原则）
+
+所有嵌入调用 **best-effort**：embedding server 未配 / 不可达 / 超时 / 出错 →
+跳过（记 warn），向量留空，检索回退到关键词 / 时间召回。
+**生命体绝不因嵌入失败而阻塞或崩溃**。写入侧（episode seal / 语义固化 / 反思落库）
+向量留空写 NULL；`query_memory` query 向量算不出时回退现有非向量召回。
+历史空向量经启动有界回填任务或 `POST /api/embed/backfill` 补齐（可重入、限量、不阻塞主循环）。
+
+### 5.4 备选方案（曾选 / 未来）
+
+- **bge-m3**（BAAI，曾选）：1024 维多语言 retrieval，开放许可；现降为备选（Qwen3 同维更小更准更新）。
+- Phase 1+ 用户可可选切到 OpenAI 兼容 embeddings endpoint（云端）。
+- Phase 3+ 多模型路由。
 
 ---
 
@@ -285,7 +311,13 @@ EXPOSE 3000
 CMD ["mindverse"]
 ```
 
-**最终镜像约 1-1.5GB**（含 bge-m3 INT8 ~700MB + Python/Node 工具链 + Go 二进制）。
+> **更新（§5 修订后）**：嵌入模型**不再打入 runtime 镜像**。Qwen3-Embedding-0.6B GGUF
+> 由**独立 compose 服务 `embed`**（llama.cpp server）承载，GGUF 经卷挂载（`./models/`）提供。
+> 故上面 builder 阶段的 `curl ... bge-m3-q8.gguf` 与 runtime 阶段的 `COPY ... gguf` 已废弃，
+> runtime 镜像不含模型权重，体积显著减小。详见 `docker-compose.yml` 的 `embed` 服务与 §5。
+
+**runtime 镜像约 0.5-0.8GB**（仅 Python/Node 工具链 + Go 二进制，不含嵌入权重）；
+嵌入权重在 `embed` 服务侧（Q8 ≈ 639MB / Q4_K_M ≈ 397MB）。
 
 ### 11.2 docker-compose.yml
 

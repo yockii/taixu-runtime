@@ -16,6 +16,7 @@ import (
 
 	"mindverse/internal/bus"
 	"mindverse/internal/core"
+	"mindverse/internal/io/embed"
 	"mindverse/internal/shared"
 	"mindverse/internal/storage"
 )
@@ -23,8 +24,8 @@ import (
 // noiseEvents 纯内部节拍事件——对"经历"无叙事价值，episode 摘要只计数不列正文。
 // 不过滤这些，episode 摘要会被 cycle.start/idle.daydream 淹没成无意义直方图（修：episode 噪声洪泛）。
 var noiseEvents = map[string]bool{
-	"cycle.start":   true,
-	"idle.daydream": true,
+	"cycle.start":    true,
+	"idle.daydream":  true,
 	"episode.sealed": true,
 }
 
@@ -111,6 +112,8 @@ func ConsiderSealEpisode() (*core.Episode, error) {
 		CreatedAt:  now,
 		SealedAt:   now,
 	}
+	// best-effort doc 向量：嵌入服务挂了则 nil（向量留空，检索回退关键词召回），绝不阻塞封段。
+	ep.Embedding = embed.DocBlobBestEffort(ep.Summary)
 	id, err := storage.InsertEpisode(lifeID, ep)
 	if err != nil {
 		return nil, err

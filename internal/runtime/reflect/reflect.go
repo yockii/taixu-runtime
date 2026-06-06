@@ -20,6 +20,7 @@ import (
 
 	"mindverse/internal/bus"
 	"mindverse/internal/core"
+	"mindverse/internal/io/embed"
 	"mindverse/internal/shared"
 	"mindverse/internal/storage"
 )
@@ -68,7 +69,9 @@ func Run(triggeredBy string) (promoted int, reflectionID int64, err error) {
 	}
 	now := shared.SystemClock.UnixSec()
 	for _, c := range candidates {
-		if perr := storage.PromoteToConfirmed(lifeID, c.ID, c.Content, c.Confidence, now); perr != nil {
+		// best-effort doc 向量：固化的语义知识带向量，供 query_memory 语义召回。
+		blob := embed.DocBlobBestEffort(c.Content)
+		if perr := storage.PromoteToConfirmedWithEmbedding(lifeID, c.ID, c.Content, c.Confidence, now, blob); perr != nil {
 			slog.Warn("reflect: promote failed", "candidate_id", c.ID, "err", perr)
 		} else {
 			promoted++
@@ -81,11 +84,17 @@ func Run(triggeredBy string) (promoted int, reflectionID int64, err error) {
 		insight = "consolidated repeated experiences into long-term knowledge"
 	}
 
+	// best-effort doc 向量（嵌入服务挂了则 nil，检索回退关键词召回）。反思文本 = summary + insight。
+	embText := summary
+	if insight != "" {
+		embText = summary + "。" + insight
+	}
 	id, err := storage.InsertReflection(lifeID, &core.ReflectionMemory{
 		Kind:        core.ReflectShallow,
 		Summary:     summary,
 		Insight:     insight,
 		TriggeredBy: triggeredBy,
+		Embedding:   embed.DocBlobBestEffort(embText),
 		CreatedAt:   now,
 	})
 	if err != nil {
