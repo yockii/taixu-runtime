@@ -119,6 +119,15 @@ func main() {
 		}
 	}
 
+	// 回收上次运行被打断（重启/崩溃/休眠）留下的僵尸 active 目标 → 退回 pending。
+	// 否则该目标永久卡 active：NextPendingGoal 只挑 pending、goalgen 又按 payload 对 active 去重，
+	// 认知主循环（目标→行动→资源）永久空转，只剩感知/反思后台跑（observed: 17h 零行动）。
+	if n, err := storage.ReclaimActiveGoals(lifeID); err != nil {
+		slog.Warn("reclaim active goals", "err", err)
+	} else if n > 0 {
+		slog.Info("reclaimed stuck active goals", "count", n)
+	}
+
 	if err := buildLLM(); err != nil {
 		slog.Warn("llm not configured; respond_to_user falls back to dummy", "err", err)
 	} else {

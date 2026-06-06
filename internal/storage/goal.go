@@ -51,6 +51,21 @@ func MarkGoal(goalID int64, status core.GoalStatus, finishedAt int64) error {
 	return err
 }
 
+// ReclaimActiveGoals 启动时回收「僵尸 active 目标」：上次运行把目标 NextPendingGoal 翻成 active
+// 后、action.Execute 的 finalize/MarkGoal 之前进程被打断（重启/崩溃/休眠），目标永久卡 active。
+// NextPendingGoal 只挑 pending、goalgen 又按 payload 对 active 去重 → 认知主循环永久空转。
+// 启动时把残留 active 退回 pending（清 started_at），下个 cycle 重新执行。返回回收条数。
+func ReclaimActiveGoals(lifeID string) (int64, error) {
+	res, err := db.Exec(
+		`UPDATE goal_queue SET status = 'pending', started_at = NULL WHERE life_id = ? AND status = 'active'`,
+		lifeID)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 func CountPendingGoals(lifeID string) (int, error) {
 	var n int
 	err := db.QueryRow(`SELECT COUNT(*) FROM goal_queue WHERE life_id = ? AND status = 'pending'`, lifeID).Scan(&n)
