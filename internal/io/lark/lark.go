@@ -6,8 +6,9 @@
 //   - 慎思感知：perception.Inject 让 scheduler 看到"用户在场"，影响节拍因子
 //
 // 入站卡片回调（OnP2CardActionTrigger，走长连接，无需公网 webhook）：用户点交互卡片按钮
-//   → handleCardAction 解析 action+value → 交注册的 cardActionHandler（main 接 skill 批准/拒绝）
-//   → 返回 Toast 即时反馈。
+//
+//	→ handleCardAction 解析 action+value → 交注册的 cardActionHandler（main 接 skill 批准/拒绝）
+//	→ 返回 Toast 即时反馈。
 //
 // 出站：SpeechEvent → Send（文本）；SendCard/SendApprovalCard（交互卡片）；SendPost/SendImageKey。
 package lark
@@ -115,6 +116,40 @@ func Send(openID, content string) error {
 	return sendRaw(openID, larkim.MsgTypeText, string(contentJSON))
 }
 
+// AddReaction 给一条消息加一个表情回应（像 OpenClaw 的"已收到"手势，零 LLM 即时回执）。
+//
+// emojiType 为飞书表情枚举（如 "OK" = ok-hand）；空则默认 "OK"。
+// 见 https://open.feishu.cn/document/server-docs/im-v1/message-reaction/emojis-introduce）。
+// 这是 egress.Egress.React 在飞书渠道的实现；调用方一般 go AddReaction(...) 异步触发、忽略返回。
+func AddReaction(messageID, emojiType string) error {
+	if messageID == "" {
+		return errors.New("lark: empty message id for reaction")
+	}
+	if emojiType == "" {
+		emojiType = "OK" // ok-hand：明确"已收到"
+	}
+	mu.Lock()
+	cli := appCli
+	mu.Unlock()
+	if cli == nil {
+		return errors.New("lark: not initialized")
+	}
+	req := larkim.NewCreateMessageReactionReqBuilder().
+		MessageId(messageID).
+		Body(larkim.NewCreateMessageReactionReqBodyBuilder().
+			ReactionType(larkim.NewEmojiBuilder().EmojiType(emojiType).Build()).
+			Build()).
+		Build()
+	resp, err := cli.Im.V1.MessageReaction.Create(context.Background(), req)
+	if err != nil {
+		return fmt.Errorf("lark add reaction: %w", err)
+	}
+	if !resp.Success() {
+		return fmt.Errorf("lark add reaction rsp: code=%d msg=%s", resp.Code, resp.Msg)
+	}
+	return nil
+}
+
 // SendCard 发送一张交互卡片（cardJSON 为飞书卡片 schema 的 JSON 串）。openID 空则用 lastOpenID。
 func SendCard(openID, cardJSON string) error {
 	return sendRaw(openID, larkim.MsgTypeInteractive, cardJSON)
@@ -144,43 +179,6 @@ func SendImageKey(openID, imageKey string) error {
 		return fmt.Errorf("marshal image: %w", err)
 	}
 	return sendRaw(openID, larkim.MsgTypeImage, string(b))
-}
-
-// AddReaction 给一条消息加一个表情回应（像 OpenClaw 的"已收到"手势，零 LLM 即时回执）。
-//
-// emojiType 用飞书 emoji 类型枚举（如 "OK" = ok-hand 手势、"SMILE" 等，
-// 见 https://open.feishu.cn/document/server-docs/im-v1/message-reaction/emojis-introduce）。
-// 走 client.Im.V1.MessageReaction.Create，与发消息同一 app token。
-//
-// 容错语义：这是锦上添花的回执，失败只 warn 不阻断主回复链路——故返回 error 仅供日志，
-// 调用方一般 go AddReaction(...) 异步触发、忽略返回。
-func AddReaction(messageID, emojiType string) error {
-	if messageID == "" {
-		return errors.New("lark: empty message id for reaction")
-	}
-	if emojiType == "" {
-		emojiType = "OK" // ok-hand：明确"已收到"
-	}
-	mu.Lock()
-	cli := appCli
-	mu.Unlock()
-	if cli == nil {
-		return errors.New("lark: not initialized")
-	}
-	req := larkim.NewCreateMessageReactionReqBuilder().
-		MessageId(messageID).
-		Body(larkim.NewCreateMessageReactionReqBodyBuilder().
-			ReactionType(larkim.NewEmojiBuilder().EmojiType(emojiType).Build()).
-			Build()).
-		Build()
-	resp, err := cli.Im.V1.MessageReaction.Create(context.Background(), req)
-	if err != nil {
-		return fmt.Errorf("lark add reaction: %w", err)
-	}
-	if !resp.Success() {
-		return fmt.Errorf("lark add reaction rsp: code=%d msg=%s", resp.Code, resp.Msg)
-	}
-	return nil
 }
 
 // SendApprovalCard 发一张技能依赖审批卡片（批准/拒绝按钮，value 带 action+skill_id）。
@@ -303,10 +301,10 @@ func handleMessage(ctx context.Context, ev *larkim.P2MessageReceiveV1) error {
 		return nil
 	}
 
-	// 即时回执（任务 1，像 OpenClaw）：消息一进来立刻在它下面加「ok 手势」表情，
-	// 明确告诉用户"已收到"，零 LLM、零延迟。异步 go 出去、不阻塞后续 reflex 回复；
-	// 失败只 warn（AddReaction 内部已容错）。仅对真实用户的 p2p 单聊消息加
-	//（本函数开头已过滤非 p2p；机器人自发的出站消息根本不走这条入站路径，故无需额外判定）。
+	// 即时回执（任务 7 入站 ack）：消息一进来立刻在它下面加「ok 手势」表情，明确"已收到"，
+	// 零 LLM、零延迟。这是 Egress.React 在飞书渠道的入站调用——本渠道在 handleMessage 拿 msgID
+	// 直接调本渠道 React（未来渠道各自在入站调自己的 React）。异步、不阻塞 reflex 回复；
+	// 失败只 warn（AddReaction 内部已容错）。仅对真实用户 p2p 单聊（开头已过滤非 p2p）。
 	if msgID != "" {
 		go func(id string) {
 			if err := AddReaction(id, "OK"); err != nil {

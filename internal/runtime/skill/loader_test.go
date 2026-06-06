@@ -114,7 +114,7 @@ func TestLoadFolderStampsOwner(t *testing.T) {
 	mkSkillFolder(t, root, "fresh", "")
 	folder := filepath.Join(root, "fresh")
 	content, _ := os.ReadFile(filepath.Join(folder, "SKILL.md"))
-	if _, err := loadFolder(folder, string(content)); err != nil {
+	if _, err := loadFolder(folder, string(content), Origin{}); err != nil {
 		t.Fatalf("loadFolder: %v", err)
 	}
 	if got := folderOwner(folder); got != life {
