@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"mindverse/internal/core"
+	"mindverse/internal/io/embed"
 	"mindverse/internal/runtime/memory"
 	"mindverse/internal/runtime/skill"
 	"mindverse/internal/runtime/tools"
@@ -178,7 +179,7 @@ func toolQueryMemory() tools.Tool {
 	}
 }
 
-func handleQueryMemory(_ context.Context, tctx tools.Context, argsJSON string) (string, error) {
+func handleQueryMemory(ctx context.Context, tctx tools.Context, argsJSON string) (string, error) {
 	var a struct {
 		Layer string `json:"layer"`
 		Q     string `json:"q"`
@@ -189,6 +190,13 @@ func handleQueryMemory(_ context.Context, tctx tools.Context, argsJSON string) (
 	}
 	if a.Limit <= 0 || a.Limit > 20 {
 		a.Limit = 5
+	}
+	// 优先真向量检索：embed(query, isQuery=true) → 取该层带向量候选 → 暴力 cosine top-k。
+	// query 向量算不出（嵌入服务挂 / 未配 / q 为空）→ 回退下方关键词 / 时间召回，绝不阻塞。
+	if a.Q != "" && embed.Configured() {
+		if out, ok := vectorQueryMemory(ctx, tctx.LifeID, a.Layer, a.Q, a.Limit); ok {
+			return out, nil
+		}
 	}
 	switch a.Layer {
 	case "episodic":
@@ -221,6 +229,43 @@ func handleQueryMemory(_ context.Context, tctx tools.Context, argsJSON string) (
 	default:
 		return errJSON("unknown layer"), nil
 	}
+}
+
+// vectorQueryMemory 真向量检索：embed(query) → 取该层带向量候选 → 暴力 cosine top-k。
+// 返回 (resultJSON, true) 表示向量检索成功（含 0 命中）；(_, false) 表示应回退非向量召回
+// （query 向量算不出 / 该层无任何带向量行）。每条结果带 score 相似度分。
+func vectorQueryMemory(ctx context.Context, lifeID, layer, q string, limit int) (string, bool) {
+	qv, err := embed.EmbedOne(ctx, q, true)
+	if err != nil {
+		return "", false // 嵌入服务挂了 → 回退关键词召回
+	}
+	// 候选集：取该层带非空向量的最近若干行（不按 q 预筛，纯语义召回；上限防暴力扫描过大）。
+	const candCap = 500
+	rows, err := storage.ListEmbeddedRows(lifeID, layer, "", candCap)
+	if err != nil || len(rows) == 0 {
+		return "", false // 该层尚无任何向量（如历史未回填）→ 回退
+	}
+	cands := make([]struct {
+		ID   int64
+		Blob []byte
+	}, len(rows))
+	textByID := make(map[int64]string, len(rows))
+	for i, r := range rows {
+		cands[i].ID = r.ID
+		cands[i].Blob = r.Blob
+		textByID[r.ID] = r.Text
+	}
+	top := embed.TopK(qv, cands, limit)
+	type hit struct {
+		ID    int64   `json:"id"`
+		Text  string  `json:"text"`
+		Score float64 `json:"score"`
+	}
+	items := make([]hit, 0, len(top))
+	for _, s := range top {
+		items = append(items, hit{ID: s.ID, Text: textByID[s.ID], Score: s.Score})
+	}
+	return mustJSON(map[string]any{"ok": true, "layer": layer, "mode": "vector", "items": items}), true
 }
 
 func toolSealEpisode() tools.Tool {

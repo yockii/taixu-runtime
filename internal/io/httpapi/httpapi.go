@@ -35,7 +35,9 @@ import (
 	"sync"
 	"time"
 
+	"mindverse/internal/io/embed"
 	"mindverse/internal/lifepack"
+	"mindverse/internal/runtime/memory"
 	"mindverse/internal/runtime/perception"
 	"mindverse/internal/runtime/reflex"
 	"mindverse/internal/runtime/skill"
@@ -109,6 +111,7 @@ func Start(ctx context.Context, addr string) *http.Server {
 	mux.HandleFunc("/api/dialogue", apiDialogue)
 	mux.HandleFunc("/api/stream", apiStream)
 	mux.HandleFunc("/api/external-request", apiExternalRequest)
+	mux.HandleFunc("/api/embed/backfill", apiEmbedBackfill)
 	mux.HandleFunc("/api/export", apiExport)
 
 	accessToken = strings.TrimSpace(os.Getenv("MINDVERSE_ACCESS_TOKEN"))
@@ -533,6 +536,28 @@ func skillIDParam(r *http.Request) string {
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	return body.ID
+}
+
+// apiEmbedBackfill 手动触发历史记忆向量回填（给锁定生命的旧记忆补向量）。
+// 有界 + best-effort + 可重入：嵌入服务不可用 → 跳过返回 0；?max= 控每层上限（默认 256）。
+// 写操作，token 已设时需带 X-Mindverse-Token（withAuth 拦截）。
+func apiEmbedBackfill(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if !embed.Configured() {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "filled": 0, "note": "embed not configured; skipped"})
+		return
+	}
+	maxPerLayer := 256
+	if v := r.URL.Query().Get("max"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxPerLayer = n
+		}
+	}
+	n := memory.BackfillEmbeddings(r.Context(), maxPerLayer)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "filled": n})
 }
 
 func apiExternalRequest(w http.ResponseWriter, r *http.Request) {

@@ -290,14 +290,20 @@ func PruneWorkingMemoryKeepRecent(lifeID string, keep int) (int64, error) {
 }
 
 func PromoteToConfirmed(lifeID string, candidateID int64, content string, confidence float64, ts int64) error {
+	return PromoteToConfirmedWithEmbedding(lifeID, candidateID, content, confidence, ts, nil)
+}
+
+// PromoteToConfirmedWithEmbedding 同上，但携带 content 的 doc 向量写入 embedding 列。
+// embedding 为 nil（嵌入服务挂了 / 未配）时写 NULL，检索回退关键词召回——绝不阻塞固化。
+func PromoteToConfirmedWithEmbedding(lifeID string, candidateID int64, content string, confidence float64, ts int64, embedding []byte) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.Exec(`
-		INSERT INTO semantic_confirmed (life_id, content, confidence, promoted_from, confirmed_at)
-		VALUES (?, ?, ?, ?, ?)`, lifeID, content, confidence, candidateID, ts); err != nil {
+		INSERT INTO semantic_confirmed (life_id, content, confidence, promoted_from, embedding, confirmed_at)
+		VALUES (?, ?, ?, ?, ?, ?)`, lifeID, content, confidence, candidateID, embedding, ts); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM semantic_candidate WHERE id = ?`, candidateID); err != nil {

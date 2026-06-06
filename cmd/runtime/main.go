@@ -21,12 +21,12 @@ import (
 
 	"mindverse/internal/bus"
 	"mindverse/internal/core"
+	"mindverse/internal/io/embed"
 	"mindverse/internal/io/httpapi"
 	"mindverse/internal/io/lark"
 	"mindverse/internal/io/llm"
 	"mindverse/internal/lifepack"
 	"mindverse/internal/runtime/action"
-	"mindverse/internal/runtime/reflex"
 	"mindverse/internal/runtime/drives"
 	"mindverse/internal/runtime/genesis"
 	"mindverse/internal/runtime/goal"
@@ -36,6 +36,7 @@ import (
 	"mindverse/internal/runtime/memory"
 	"mindverse/internal/runtime/perception"
 	"mindverse/internal/runtime/reflect"
+	"mindverse/internal/runtime/reflex"
 	"mindverse/internal/runtime/scheduler"
 	"mindverse/internal/runtime/skill"
 	"mindverse/internal/runtime/state"
@@ -125,6 +126,19 @@ func main() {
 		slog.Info("llm wired", "model", os.Getenv("LLM_MODEL"))
 	}
 
+	// 嵌入服务（Qwen3-Embedding-0.6B，docs/TECH-STACK §5）。未配 / 不可达全程优雅降级：
+	// 写入侧向量留空、检索回退关键词召回——生命体绝不因嵌入失败而阻塞或崩溃。
+	embed.Init(embed.Config{
+		BaseURL: os.Getenv("MINDVERSE_EMBED_URL"),
+		Model:   os.Getenv("MINDVERSE_EMBED_MODEL"),
+		Timeout: 30 * time.Second,
+	})
+	if embed.Configured() {
+		slog.Info("embed wired", "url", os.Getenv("MINDVERSE_EMBED_URL"))
+	} else {
+		slog.Info("embed not configured; vector retrieval falls back to keyword recall")
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -134,6 +148,18 @@ func main() {
 	slog.Info("http listening", "addr", httpAddr)
 
 	wireLark(ctx, lifeID)
+
+	// 历史回填（有界 best-effort，不阻塞主循环）：给空向量的历史记忆补 doc 向量。
+	// 嵌入服务不可用就跳过；每层限量、可重入，多次启动逐步补齐。也可经
+	// POST /api/embed/backfill 手动触发（见 httpapi）。
+	if embed.Configured() {
+		go func() {
+			n := memory.BackfillEmbeddings(ctx, 256)
+			if n > 0 {
+				slog.Info("startup embedding backfill done", "rows", n)
+			}
+		}()
+	}
 
 	if err := scheduler.Run(ctx, func(cycleID int64) {
 		runCycle(cycleID, lifeID, genome)
