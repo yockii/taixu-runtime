@@ -188,17 +188,21 @@ func shouldSkipDup(c Candidate) (bool, error) {
 
 func score(c Candidate, values *core.Values) float64 {
 	base := 0.5
+	// 价值观对齐取「最匹配的那一个」而非求和（B 多样性修：原求和让知识同时匹配
+	// Growth+Exploration 拿双倍 buff，碾压只匹配单 value 的 social/creativity → 知识永远独大、
+	// 社交/创作永远赢不了单槽 → C 通道形同虚设）。取 max 后各类型公平按「最强价值匹配」竞争。
 	alignment := 0.0
 	if values != nil {
 		for _, name := range c.MatchedValues {
-			if w, ok := values.Weights[name]; ok {
-				alignment += w * 0.4
+			if w, ok := values.Weights[name]; ok && w*0.4 > alignment {
+				alignment = w * 0.4
 			}
 		}
 	}
 	// 内驱压力纳入打分（B 多样性）：压力大的驱动类型更可能在「单槽」竞争中胜出，
 	// 让胜出类型随 state 演化而轮转（创作后满足↑→创作压力↓→下次别的类型赢），而非永远知识独大。
-	strengthWeight := c.Strength * 0.3
+	// 权重 0.45：足以让高压力的 social（social_need 满时 ≈0.67）翻盘知识，触发真社交行为。
+	strengthWeight := c.Strength * 0.45
 	srcWeight := 0.0
 	switch c.Source {
 	case core.GoalExternal:
