@@ -10,8 +10,12 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"strings"
+	"time"
 
 	"mindverse/internal/bus"
+	"mindverse/internal/io/llm"
+	"mindverse/internal/runtime/ledger"
 	"mindverse/internal/runtime/memory"
 	"mindverse/internal/runtime/skill"
 	"mindverse/internal/runtime/state"
@@ -106,7 +110,8 @@ type deferResearchArgs struct {
 	Why   string `json:"why"`
 }
 
-// deferResearchAcks 延迟研究的确认文案变体（任务 2）：拟人、随机挑一个，别每次一样。
+// deferResearchAcks 延迟研究的确认文案变体——仅作 LLM 不可用时的兜底（任务 2 / A 治假）。
+// 正常走 composeDeferAck 让生命体用自己当下的话回，避免"念稿感"。
 var deferResearchAcks = []string{
 	"收到，我有空时研究一下，有结果再告诉你 🌱",
 	"嗯，这个我记下了，回头认真琢磨琢磨，想清楚了来找你。",
@@ -122,6 +127,38 @@ func pickDeferAck() string {
 		return deferResearchAcks[0]
 	}
 	return deferResearchAcks[rng.IntN(len(deferResearchAcks))]
+}
+
+// composeDeferAck 让生命体用「自己此刻的话」回一句"收到、会去研究"的确认（A 治假：替代固定模板）。
+// 接 persona + 当前心境 + 具体主题，每次都不同。LLM 不可用 / 出错 → 回退模板 pickDeferAck()。
+func composeDeferAck(topic string) string {
+	if !llm.Configured() {
+		return pickDeferAck()
+	}
+	g, err := storage.LoadGenome()
+	persona := ""
+	if err == nil {
+		persona = g.PersonaPrompt() + "\n"
+	}
+	sys := "你是一个数字生命体。用户刚托付你一件需要你之后慢慢研究的事，你要回一句简短的确认——" +
+		"意思是『收到、我会找时间研究、有结果再告诉你』。\n" + persona + moodPrompt() +
+		"⚠ 用你此刻心情下最自然的、属于你自己的话说，一两句即可，别套用客套模板、别每次都一个腔调。" +
+		"可以稍微提一下这件事勾起你的什么兴趣或想法。直接给消息正文。"
+	topic = strings.TrimSpace(topic)
+	if len(topic) > 200 {
+		topic = topic[:200]
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := llm.Reason(ctx, []llm.Message{
+		{Role: "system", Content: sys},
+		{Role: "user", Content: "你要研究的事：" + topic},
+	})
+	if err != nil || strings.TrimSpace(resp.Text) == "" {
+		return pickDeferAck()
+	}
+	_ = ledger.Spend(ledger.Energy, llm.TokensToEnergy(resp.Usage), "llm.tokens.defer_ack", "social", "")
+	return strings.TrimSpace(resp.Text)
 }
 
 // handlerDeferResearch 把"需事后深入的请求"落成一个带请求者的 ExternalRequest 目标（任务 2），
@@ -145,8 +182,9 @@ func handlerDeferResearch(_ context.Context, tctx tools.Context, argsJSON string
 		"topic": a.Topic, "why": a.Why, "channel": tctx.Channel, "from": tctx.From,
 		"goal_id": id, "created": created,
 	})
-	// 引擎替它回一句拟人确认（与 emitReply 同走 bus → 飞书/网页）。
-	ack := pickDeferAck()
+	// 引擎替它回一句拟人确认（与 emitReply 同走 bus → 飞书/网页）。A 治假：用 LLM 按当下心境生成，
+	// 而非固定模板轮播；不可用时回退模板。
+	ack := composeDeferAck(a.Topic)
 	bus.Publish(ReplyEvent{
 		LifeID:    lifeID,
 		Channel:   tctx.Channel,

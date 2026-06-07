@@ -53,6 +53,7 @@ type Candidate struct {
 	Intent        string
 	Payload       string
 	MatchedValues []string
+	Strength      float64 // 来自 Drive.Strength：内驱压力强度，纳入打分让"压力大的类型"胜出（B 多样性）
 }
 
 // CollectCandidates 收集本轮所有候选。
@@ -63,7 +64,7 @@ func CollectCandidates(frame perception.Frame, drives []core.Drive) []Candidate 
 	var out []Candidate
 	_ = frame // externals 仅留作未来"用户在场"语义；不入候选池
 	for _, d := range drives {
-		c := Candidate{Source: core.GoalIntrinsic, Intent: string(d.Kind), Payload: d.Reason}
+		c := Candidate{Source: core.GoalIntrinsic, Intent: string(d.Kind), Payload: d.Reason, Strength: d.Strength}
 		switch d.Kind {
 		case core.DriveKnowledge:
 			c.MatchedValues = []string{core.ValueGrowth, core.ValueExploration}
@@ -195,6 +196,9 @@ func score(c Candidate, values *core.Values) float64 {
 			}
 		}
 	}
+	// 内驱压力纳入打分（B 多样性）：压力大的驱动类型更可能在「单槽」竞争中胜出，
+	// 让胜出类型随 state 演化而轮转（创作后满足↑→创作压力↓→下次别的类型赢），而非永远知识独大。
+	strengthWeight := c.Strength * 0.3
 	srcWeight := 0.0
 	switch c.Source {
 	case core.GoalExternal:
@@ -202,5 +206,5 @@ func score(c Candidate, values *core.Values) float64 {
 	case core.GoalReflection:
 		srcWeight = 0.10
 	}
-	return base + alignment + srcWeight
+	return base + alignment + strengthWeight + srcWeight
 }

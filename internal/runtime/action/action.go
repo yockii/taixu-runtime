@@ -238,9 +238,24 @@ func finalize(g *core.Goal, cycleID int64, startedAt int64, res Result, complete
 		d.Confidence = &conf
 		// 学习/行动成功提升能力（R79）：competence 上升 → competence_gap 收缩，
 		// 通用 "好奇且无能" 知识驱动随之减弱，避免空目标无限再生。
-		if g.Intent == string(core.DriveKnowledge) {
+		// B 多样性：按目标类型让对应「压力」做完回落，使下一个空槽自然轮到别的类型（自调节轮转）。
+		switch g.Intent {
+		case string(core.DriveKnowledge):
 			comp := 0.03
 			d.Competence = &comp
+		case string(core.DriveCreativity):
+			// 创作即表达 → 满足感更足（盖过基线），创作压力随 satisfaction 升而回落。
+			s2 := 0.10
+			d.Satisfaction = &s2
+		case string(core.DriveSocial):
+			// 酝酿分享纾解社交需求（虽未真发，但"整理出想说的"已部分缓解）。
+			sn := -0.10
+			d.SocialNeed = &sn
+		case string(core.DriveAchievement):
+			// 精进做出成果 → 能力 + 信心更实。
+			comp, c2 := 0.04, 0.04
+			d.Competence = &comp
+			d.Confidence = &c2
 		}
 	} else {
 		anx := 0.04
@@ -645,6 +660,20 @@ func buildDeliberativeSystemPrompt(g *core.Goal) string {
 	sb.WriteString("- 若 payload 含 interest_seed#N：踏实地去探索（查资料 / 跑脚本 / 记笔记）。" +
 		"引擎会按你这轮的探索深度自动累积掌握度，学透后自动把它结晶成你的技能——\n")
 	sb.WriteString("  所以**重在真去做、做扎实**，而非走流程。想给未来的自己留个进度摘要可调 record_learning。\n")
+
+	// 按目标类型给出该类的「期望产出」（B 多样性）：让创作/精进/分享类目标产出各自对味的东西，
+	// 而非都跑成"研究"。知识类沿用上面的探索准则。
+	switch g.Intent {
+	case string(core.DriveCreativity):
+		sb.WriteString("\n【本次是创作目标】别只做研究——要真的**做出一个具体作品**" +
+			"（短文/诗/设想/小程序/小实验任选其一），用 fs.write 存到 sandbox 下留存，再 complete_goal。\n")
+	case string(core.DriveAchievement):
+		sb.WriteString("\n【本次是精进目标】聚焦把某项能力/知识**推进到能交付**：做出一个具体成果，" +
+			"或在掌握度够时 crystallize_skill 把它结晶成你的技能，再 complete_goal。\n")
+	case string(core.DriveSocial):
+		sb.WriteString("\n【本次是酝酿分享目标】把你最近想分享的，**写成一段自然、像你自己说的话的内容草稿**，" +
+			"用 fs.write 存到 sandbox/drafts/ 下（文件名带主题）。这是为将来经社交通道发布做准备，先成稿即可，再 complete_goal。\n")
+	}
 
 	// 渐进式披露（Anthropic skills 规范）：只列技能名 + 一句话描述，正文按需用 use_skill 读，省 token。
 	if skills, err := skill.ListReady(); err == nil && len(skills) > 0 {

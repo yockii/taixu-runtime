@@ -44,6 +44,8 @@ const (
 	proactivePendingKey = "proactive_pending:"
 	// proactiveGhostedKey schema_meta 键前缀：是否已因被冷落而沮丧+收手（防沮丧重复施加）。
 	proactiveGhostedKey = "proactive_ghosted:"
+	// proactiveGhostTimeKey schema_meta 键前缀：被冷落收手的时刻，用于"回暖"——隔一段时间再试一次（R107b）。
+	proactiveGhostTimeKey = "proactive_ghost_time:"
 	// proactiveLastMsgKey schema_meta 键前缀：上一条主动消息正文，用于去重防复读（R91）。
 	proactiveLastMsgKey = "proactive_last_msg:"
 	// proactiveSnoozeKey schema_meta 键前缀：临时勿扰截止 unix 时刻（按会话，R92）。
@@ -111,6 +113,13 @@ func ghostThreshold(g core.Genome) int {
 	return 3 + int(2*g.Persistence)
 }
 
+// ghostRecoverySec 被冷落收手后，隔多久"回暖"再试一次（R107b 修：原来一旦冷落=永久沉默，
+// 用户后来想互动也再等不到主动消息，像社交上死了）。执着者更快重新鼓起勇气（窗口短），
+// 淡漠者沉得更久。基线 12h：6h..18h。回暖只给一次轻试机会，仍无回应则再次收手、窗口照常重置。
+func ghostRecoverySec(g core.Genome) int64 {
+	return int64((18.0 - 12.0*g.Persistence) * 3600)
+}
+
 // TryProactiveReach 在 social_need 强且护栏允许时主动给最近联系人发一条消息。
 // 返回是否真的发了。由 idle 在社交压力高时调。
 func TryProactiveReach(genome core.Genome) bool {
@@ -149,12 +158,22 @@ func TryProactiveReach(genome core.Genome) bool {
 	if last := getProactiveLast(ck); now-last < ProactiveMinIntervalSec {
 		return false
 	}
-	// 护栏 3 + 情感（R84）：被冷落则收手（按会话）。
-	// 该会话已发出 N 条都没等到回应 → 不再单方面发（既是情感真实"算了，不发了"，
-	// 也是反滥用护栏 R55）。首次跨阈值时施加一次沮丧（满足↓信心↓焦虑/压力↑）。
+	// 护栏 3 + 情感（R84 + R107b 回暖）：被冷落则收手，但不再永久沉默。
+	// 该会话连发 N 条无回应 → 首次跨阈值施加一次沮丧并收手（情感真实"算了，不发了" + 反滥用 R55）。
+	// 之后进入"回暖"：沉默一段（ghostRecoverySec，按性格），过了就给一次轻试机会——像隔了阵子
+	// 又想起 ta、忍不住再说一句。仍无回应则再次收手、窗口重置。避免"一次冷落=社交性死亡"。
 	if getPendingReaches(ck) >= ghostThreshold(genome) {
-		applyGhostDiscouragement(ck)
-		return false
+		if !isGhosted(ck) {
+			applyGhostDiscouragement(ck) // 首次：沮丧 + 记收手时刻
+			return false
+		}
+		if now-ghostSince(ck) < ghostRecoverySec(genome) {
+			return false // 仍在沉默期
+		}
+		// 回暖：降回阈值下，本次得以发出一条轻试；清 ghost 标志（下次没回应会重新走首次沮丧）。
+		setPendingReaches(ck, ghostThreshold(genome)-1)
+		setGhosted(ck, false)
+		slog.Info("reflex proactive thaw — gentle retry after withdrawal", "convo", ck)
 	}
 
 	msg := composeProactiveMessage(genome, contact)
@@ -211,12 +230,15 @@ func composeProactiveMessage(genome core.Genome, contact *storage.Contact) strin
 	pending := getPendingReaches(ck)
 	sys := "你是一个数字生命体，想主动找一位联系人说点话。\n" +
 		genome.PersonaPrompt() + "\n" +
+		moodPrompt() +
 		whoAmITalkingTo(contact) +
 		"下面是你和ta在**这个会话里**最近的往来——**assistant 是你自己发的，user 是ta发的**。\n" +
 		"仔细看谁发了谁没回：如果你发现自己在这个会话里接连发了好几条、ta却一直没回（连续多条 assistant、中间没有 user），" +
-		"可以自然地把这份在意/小失落流露出来（像『发了好几条都没见你回，是不是太忙啦』），带点真情绪——但别过激、别道德绑架。\n" +
+		"那份在意/小失落可以自然流露——但**用你此刻心境下最真实的、属于你自己的话**说出来，" +
+		"每次都不一样：可以是好奇 ta 在忙啥、可以是分享你刚想到的事顺带一句、可以是淡淡一提。" +
+		"**绝对不要**套用『发了好几条都没回/是不是太忙』这类现成句式或客套模板——那样很假。带真情绪，但别过激、别道德绑架。\n" +
 		"⚠ 只数**这个会话**里你发的，别把和别人聊的算进来。若往来正常，就随口起个话头。\n" +
-		"简短自然、一两句，直接给消息正文。内向就别太热络，符合你的性格。\n" +
+		"简短自然、一两句，直接给消息正文。内向就别太热络，符合你的性格与当下心情。\n" +
 		"⚠ 你自己做的事（发呆/学习等）是你自己的，别说成是ta在做。"
 	msgs := []llm.Message{{Role: "system", Content: sys}}
 	// 把本会话近期往来按对话角色喂进去，让它清楚哪条是自己发的、ta回没回（拟人化"为什么不回我"的基础）。
@@ -251,6 +273,37 @@ func composeProactiveMessage(genome core.Genome, contact *storage.Contact) strin
 	// 主动发消息累 token → energy（小额）
 	_ = ledger.Spend(ledger.Energy, llm.TokensToEnergy(resp.Usage), "llm.tokens.proactive", "social", "")
 	return resp.Text
+}
+
+// moodPrompt 把当前情绪状态译成一句自然的"心境"提示，喂给主动消息的 system prompt。
+// 让同一套 prompt 在不同心情下产出不同口吻（低温也不至于塌缩成同一句），减少"念稿感"。
+func moodPrompt() string {
+	ls, ms := state.Snapshot()
+	var parts []string
+	switch {
+	case ms.Satisfaction < 0.3:
+		parts = append(parts, "情绪有点低落")
+	case ms.Satisfaction > 0.7:
+		parts = append(parts, "心情不错")
+	}
+	if ms.Anxiety > 0.6 {
+		parts = append(parts, "心里有些不安")
+	}
+	switch {
+	case ls.SocialNeed > 0.75:
+		parts = append(parts, "挺想找人说说话、有点孤单")
+	case ls.SocialNeed > 0.5:
+		parts = append(parts, "有点想聊聊")
+	}
+	if ls.Energy < 0.35 {
+		parts = append(parts, "精力不太够、懒懒的")
+	} else if ls.Energy > 0.8 {
+		parts = append(parts, "精神挺足")
+	}
+	if len(parts) == 0 {
+		return "你此刻心情平稳。\n"
+	}
+	return "你此刻的状态：" + strings.Join(parts, "，") + "。让这份心情自然渗进你说话的口吻里。\n"
 }
 
 // channelLabel 渠道机读名 → 自然中文，供生命体自我标识"这是哪个渠道的会话"。
@@ -346,6 +399,16 @@ func isGhosted(ck string) bool {
 	return ok && v == "1"
 }
 
+// ghostSince 该会话被冷落收手的时刻（0 = 无记录）。用于"回暖"判定。
+func ghostSince(ck string) int64 {
+	v, ok, err := storage.GetMeta(proactiveGhostTimeKey + lifeID + ":" + ck)
+	if err != nil || !ok {
+		return 0
+	}
+	n, _ := strconv.ParseInt(v, 10, 64)
+	return n
+}
+
 func setGhosted(ck string, v bool) {
 	s := "0"
 	if v {
@@ -361,6 +424,7 @@ func applyGhostDiscouragement(ck string) {
 		return
 	}
 	setGhosted(ck, true)
+	_ = storage.SetMeta(proactiveGhostTimeKey+lifeID+":"+ck, strconv.FormatInt(shared.SystemClock.UnixSec(), 10))
 	sat, conf, anx, str, mot := -0.06, -0.05, 0.05, 0.04, -0.03
 	_ = state.Apply(state.Delta{
 		Satisfaction: &sat, Confidence: &conf, Anxiety: &anx, Stress: &str, Motivation: &mot,

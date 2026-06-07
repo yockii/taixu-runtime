@@ -637,6 +637,16 @@
 > **教训**：lease 式状态机（pending→active→done）里，「获取 lease（翻 active）」必须与「真正使用 lease（执行）」在同一不可跳过的路径上；任何「先获取、再有可能提前 return」的结构都会漏掉 lease 释放。
 > **影响**：`cmd/runtime/main.go`（runCycle 体力门重排）、`internal/storage/goal.go`（`NextPendingGoal` 捡即翻 active 的语义）、`R105`、`R86`、`R106`。
 
+### R108 · 拟人化与行为多样性强化：治"活着但有点假" + 复活多类驱动（Phase 0.5）
+> 2026-06-07 用户反馈：生命体「活着但有点假」——(1) 主动消息几次没回就再不发；(2) 总用「发了两条没回音/忙坏了」同一套话；(3) 自我行为只会研究求知，缺乏多样性与"锚定目标多手段推进"。
+> **A 治假（reflex）**：
+> - 永久放弃 → **回暖衰减**：被冷落收手后沉默一段（`ghostRecoverySec`，6~18h 按 Persistence），过了给一次轻试机会，仍无回应再收手、窗口重置。修「一次冷落=社交性死亡」。
+> - 主动消息 **去掉 prompt 里被照抄的范例话**（"发了好几条没回"），改"用你此刻心境的话说、每次不同、禁套模板" + 注入真实情绪（`moodPrompt` 读 state→心境提示，低温也不塌缩成同一句）。
+> - `defer_research` 确认从 **5 模板轮播 → LLM 按 persona+心境+主题生成**（不可用回退模板）。
+> **B 行为多样化（drives/goal/action）**：重新引入 creativity/achievement/social 驱动（R79 曾删，因 payload 空泛）。**吸取 R79 教训**：每条带「具体可执行 payload」（锚定真实素材 + 明确产出形态：创作→fs.write 作品、精进→成果/结晶、社交→分享稿存 drafts），绝不产空目标；`score()` 纳入 `Drive.Strength`（×0.3）让压力大的类型在单槽竞争中胜出；`finalize` 按 intent 让对应压力做完回落（创作→满足↑、社交→social_need↓、精进→competence/confidence↑）→ 自调节轮转，多样性体现在"不同时刻不同类型胜出"而非并发刷屏（MaxOpenGoals=1 不变）；`buildDeliberativeSystemPrompt` 按 intent 给"期望产出"引导，非知识目标不再跑成研究。
+> **未做（留给后续）**：C 社交通道阶梯（MCP/skill→换平台→D 浏览器）让 social 稿真发出去；D 浏览器拟人 + 外部自注册（需审批）。
+> **影响**：`internal/runtime/reflex/proactive.go`、`reflex/tools.go`、`internal/runtime/drives/drives.go`、`internal/runtime/goal/goal.go`、`internal/runtime/action/action.go`、`R79`、`R84`、`R89`、`R55`。
+
 ### R88 · 对话历史 + 行为降频 + 技能生命周期完善（已实装 Phase 0.5）
 > 用户 2026-06-05 一批改进：
 > **① 对话载入历史**：reflex 原本每条消息只给 `[system, user]`，无往来历史 → 大模型回复有失忆/失意感。新增 `storage.RecentDialogueTurns`（从 raw_trail 的 reflex.received/speak 重建近期对话）+ `reflex.dialogueHistory` 注入最近 10 轮（单轮截 600 字控 token，去重末尾当前消息）。
