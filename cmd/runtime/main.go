@@ -33,6 +33,7 @@ import (
 	"mindverse/internal/io/socialnet"
 	"mindverse/internal/lifepack"
 	"mindverse/internal/runtime/action"
+	"mindverse/internal/runtime/browser"
 	"mindverse/internal/runtime/drives"
 	"mindverse/internal/runtime/embedsvc"
 	"mindverse/internal/runtime/genesis"
@@ -175,6 +176,11 @@ func main() {
 	if socialnet.Ready() {
 		slog.Info("social channel wired (platform Life Network)", "did", socialnet.DID())
 	}
+
+	// 浏览器 agent 层（C 阶梯④兜底 / D 拟人浏览器操作）。默认关（config browser_enabled=false）：
+	// 能力强、风险高，用户显式开启才注册工具；危险动作（注册/提交/发布）走审批闸。
+	mustInit("browser", browser.Init(lifeID))
+	defer browser.Shutdown()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
