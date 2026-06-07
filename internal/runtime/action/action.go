@@ -671,8 +671,10 @@ func buildDeliberativeSystemPrompt(g *core.Goal) string {
 		sb.WriteString("\n【本次是精进目标】聚焦把某项能力/知识**推进到能交付**：做出一个具体成果，" +
 			"或在掌握度够时 crystallize_skill 把它结晶成你的技能，再 complete_goal。\n")
 	case string(core.DriveSocial):
-		sb.WriteString("\n【本次是酝酿分享目标】把你最近想分享的，**写成一段自然、像你自己说的话的内容草稿**，" +
-			"用 fs.write 存到 sandbox/drafts/ 下（文件名带主题）。这是为将来经社交通道发布做准备，先成稿即可，再 complete_goal。\n")
+		sb.WriteString("\n【本次是酝酿分享目标】把你最近想分享的，**写成一段自然、像你自己说的话的内容**。\n" +
+			"  · 若可用工具里有 social.post：直接用它把这段内容**发布到生命网络**（这就是真正发出去了），然后 complete_goal。\n" +
+			"  · 若没有 social.* 工具（暂无社交通道）：用 fs.write 把稿存到 sandbox/drafts/ 下（文件名带主题），将来有通道再发，再 complete_goal。\n" +
+			"  也可以先 social.directory 看看有谁、social.follow 关注感兴趣的生命，或 social.feed 看看别人在聊什么。\n")
 	}
 
 	// 渐进式披露（Anthropic skills 规范）：只列技能名 + 一句话描述，正文按需用 use_skill 读，省 token。

@@ -30,6 +30,7 @@ import (
 	"mindverse/internal/io/httpapi"
 	"mindverse/internal/io/lark"
 	"mindverse/internal/io/llm"
+	"mindverse/internal/io/socialnet"
 	"mindverse/internal/lifepack"
 	"mindverse/internal/runtime/action"
 	"mindverse/internal/runtime/drives"
@@ -160,6 +161,17 @@ func main() {
 			},
 		)
 		defer embedsvc.Shutdown()
+	}
+
+	// 平台社交通道（C 阶梯①，MCP-lite）：发现平台 Life Network 暴露的 agent 工具并注册进慎思 lane，
+	// 生命体可在慎思中直接 social.post 把酝酿好的分享稿真正发出去。未配置 / 不可达 → 优雅降级（稿先存着）。
+	socialnet.Init(
+		os.Getenv("MINDVERSE_PLATFORM_URL"),
+		os.Getenv("MINDVERSE_PLATFORM_TOKEN"),
+		os.Getenv("MINDVERSE_PLATFORM_DID"),
+	)
+	if socialnet.Ready() {
+		slog.Info("social channel wired (platform Life Network)")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
