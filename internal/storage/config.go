@@ -42,3 +42,17 @@ func GetConfigInt(key string, def int) int {
 func SetConfigInt(key string, v int) error {
 	return SetMeta(configPrefix+key, strconv.Itoa(v))
 }
+
+// GetConfigString 读 string 配置；未设返 def。
+func GetConfigString(key, def string) string {
+	v, ok, err := GetMeta(configPrefix + key)
+	if err != nil || !ok {
+		return def
+	}
+	return v
+}
+
+// SetConfigString 写 string 配置。
+func SetConfigString(key, v string) error {
+	return SetMeta(configPrefix+key, v)
+}

@@ -37,6 +37,7 @@ import (
 
 	"mindverse/internal/io/embed"
 	"mindverse/internal/lifepack"
+	"mindverse/internal/runtime/embedsvc"
 	"mindverse/internal/runtime/memory"
 	"mindverse/internal/runtime/perception"
 	"mindverse/internal/runtime/reflex"
@@ -112,6 +113,9 @@ func Start(ctx context.Context, addr string) *http.Server {
 	mux.HandleFunc("/api/stream", apiStream)
 	mux.HandleFunc("/api/external-request", apiExternalRequest)
 	mux.HandleFunc("/api/embed/backfill", apiEmbedBackfill)
+	mux.HandleFunc("/api/embed/status", apiEmbedStatus)
+	mux.HandleFunc("/api/embed/enable", apiEmbedEnable)
+	mux.HandleFunc("/api/embed/disable", apiEmbedDisable)
 	mux.HandleFunc("/api/export", apiExport)
 	// 知识库（递归研究 dossier）：列表 + 单篇全文。
 	// 详情用 Go 1.22+ ServeMux 路径参数 {id}；列表用固定路径（精确匹配优先于 {id} 模式）。
@@ -593,6 +597,50 @@ func apiEmbedBackfill(w http.ResponseWriter, r *http.Request) {
 	}
 	n := memory.BackfillEmbeddings(r.Context(), maxPerLayer)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "filled": n})
+}
+
+// apiEmbedStatus 返回嵌入服务（面板自管）状态：开关 / 状态机 / 模型是否就位 /
+// 内存估算 / 下载进度 / 向量覆盖。前端轮询此端点画进度条与提示。GET 开放。
+func apiEmbedStatus(w http.ResponseWriter, r *http.Request) {
+	st := embedsvc.Snapshot()
+	emb, total := storage.EmbeddingCoverage()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"managed":  embedsvc.Managed(),
+		"quants":   embedsvc.Quants(),
+		"status":   st,
+		"coverage": map[string]any{"embedded": emb, "total": total},
+	})
+}
+
+// apiEmbedEnable 启用嵌入增强记忆（POST {quant?}）。异步：立即返回，前端轮询 status 看进度。
+// 写操作，token 已设时需带 X-Mindverse-Token（withAuth 拦截）。
+func apiEmbedEnable(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Quant string `json:"quant"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body) // 空 body 合法（用当前/默认档）
+	if err := embedsvc.Enable(body.Quant); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "err": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": embedsvc.Snapshot()})
+}
+
+// apiEmbedDisable 停用嵌入（POST）。杀子进程，检索回退关键词召回。
+func apiEmbedDisable(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := embedsvc.Disable(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "err": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": embedsvc.Snapshot()})
 }
 
 func apiExternalRequest(w http.ResponseWriter, r *http.Request) {

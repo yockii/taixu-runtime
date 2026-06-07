@@ -123,6 +123,33 @@ export interface Config {
 	auth_required?: boolean;
 }
 
+// --- 嵌入增强记忆（面板自管 llama-server）---
+export interface EmbedQuant {
+	Name: string;
+	File: string;
+	SizeMB: number;
+	MemMB: number;
+}
+export interface EmbedStatusInner {
+	enabled: boolean;
+	state: 'disabled' | 'downloading' | 'starting' | 'ready' | 'error';
+	quant: string;
+	model_present: boolean;
+	mem_estimate_mb: number;
+	size_mb: number;
+	dim: number;
+	err?: string;
+	download_done: number;
+	download_total: number;
+	download_pct: number;
+}
+export interface EmbedStatus {
+	managed: boolean;
+	quants: EmbedQuant[];
+	status: EmbedStatusInner;
+	coverage: { embedded: number; total: number };
+}
+
 async function getJSON<T>(path: string): Promise<T> {
 	const r = await fetch(path);
 	if (!r.ok) throw new Error(`${path} → ${r.status}`);
@@ -194,6 +221,13 @@ export const api = {
 	/** 设置主动消息静默时段（勿扰）。 */
 	setQuiet: (q: { enabled: boolean; start: number; end: number; tz_offset_min: number }) =>
 		apiPost<{ enabled: boolean; start: number; end: number; tz_offset_min: number }>('/api/config/quiet', q),
+	/** 嵌入增强记忆状态（开关 / 下载进度 / 向量覆盖）。GET 开放，前端轮询。 */
+	embedStatus: () => getJSON<EmbedStatus>('/api/embed/status'),
+	/** 启用嵌入增强记忆（按需下载模型 + 拉起子进程）。异步，轮询 embedStatus 看进度。 */
+	embedEnable: (quant?: string) =>
+		apiPost<{ ok: boolean; status: EmbedStatusInner }>('/api/embed/enable', quant ? { quant } : {}),
+	/** 停用嵌入增强记忆（检索回退关键词召回）。 */
+	embedDisable: () => apiPost<{ ok: boolean; status: EmbedStatusInner }>('/api/embed/disable', {}),
 	/** 导出加密生命包（.mvlife）并触发浏览器下载。口令是唯一钥匙，丢失不可恢复。 */
 	exportLife: async (passphrase: string): Promise<void> => {
 		const r = await fetch('/api/export', {

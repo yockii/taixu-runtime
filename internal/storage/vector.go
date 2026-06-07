@@ -96,6 +96,25 @@ func ListRowsMissingEmbedding(lifeID, layer string, afterID int64, limit int) ([
 	return out, rows.Err()
 }
 
+// EmbeddingCoverage 统计三记忆层「已嵌入 / 可嵌入」行数（面板进度提示）。
+// 可嵌入 = 文本列非空的行；已嵌入 = 其中 embedding 非空。跨全部生命（Phase 0 单生命）。
+func EmbeddingCoverage() (embedded, total int64) {
+	for _, layer := range []string{"episodic", "semantic", "reflection"} {
+		table, textCol, ok := embeddedLayer(layer)
+		if !ok {
+			continue
+		}
+		var e, t int64
+		_ = db.QueryRow(`SELECT
+			COUNT(*) FILTER (WHERE embedding IS NOT NULL),
+			COUNT(*)
+			FROM `+table+` WHERE `+textCol+` IS NOT NULL AND `+textCol+` <> ''`).Scan(&e, &t)
+		embedded += e
+		total += t
+	}
+	return embedded, total
+}
+
 // UpdateEmbedding 回写某层某行的 embedding（回填用）。blob 为 nil 时不写（避免把已有向量清空）。
 func UpdateEmbedding(layer string, id int64, blob []byte) error {
 	table, _, ok := embeddedLayer(layer)

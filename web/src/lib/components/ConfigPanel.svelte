@@ -1,11 +1,50 @@
 <script lang="ts">
-	import { api, type Config, getToken } from '$lib/api';
+	import { api, type Config, type EmbedStatus, getToken } from '$lib/api';
 	import { saveToken as persistToken, token as tokenStore } from '$lib/auth';
 	import { t } from '$lib/i18n';
 
 	let cfg = $state<Config | null>(null);
 	let token = $state(getToken());
 	let saved = $state(false);
+
+	// 嵌入增强记忆（面板自管 llama-server）
+	let embed = $state<EmbedStatus | null>(null);
+	let embedBusy = $state(false);
+	let selQuant = $state('Q8_0');
+
+	async function loadEmbed() {
+		try {
+			embed = await api.embedStatus();
+			if (embed && !embedBusy) selQuant = embed.status.quant || selQuant;
+		} catch {
+			/* 忽略：嵌入状态非关键，轮询失败下次再来 */
+		}
+	}
+	$effect(() => {
+		loadEmbed();
+		const id = setInterval(loadEmbed, 2000);
+		return () => clearInterval(id);
+	});
+
+	async function toggleEmbed(on: boolean) {
+		embedBusy = true;
+		try {
+			if (on) await api.embedEnable(selQuant);
+			else await api.embedDisable();
+			await loadEmbed();
+		} catch (e) {
+			console.error('embed toggle', e);
+		} finally {
+			embedBusy = false;
+		}
+	}
+
+	function fmtMB(mb: number): string {
+		return mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : mb + ' MB';
+	}
+	function embedStateLabel(s: string): string {
+		return $t('embed_state_' + s) || s;
+	}
 
 	let passphrase = $state('');
 	let exporting = $state(false);
@@ -150,6 +189,96 @@
 							>{qSaved ? $t('saved') : $t('save')}</button
 						>
 					</div>
+				</div>
+			{/if}
+
+			{#if embed?.managed}
+				{@const s = embed.status}
+				<div class="rounded-lg border border-cyan-500/30 bg-cyan-500/5 p-3">
+					<label class="flex items-center gap-2 font-semibold text-cyan-200">
+						<input
+							type="checkbox"
+							checked={s.enabled}
+							disabled={embedBusy || s.state === 'downloading' || s.state === 'starting'}
+							onchange={(e) => toggleEmbed(e.currentTarget.checked)}
+							class="accent-cyan-500"
+						/>
+						🧠 {$t('embed_enable')}
+					</label>
+					<p class="mt-1 mb-2 text-zinc-400">{$t('embed_hint')}</p>
+					<p class="mb-2 text-amber-300/80">
+						⚠ {$t('embed_mem_warn')
+							.replace('{mem}', fmtMB(s.mem_estimate_mb))
+							.replace('{size}', fmtMB(s.size_mb))}
+					</p>
+
+					<!-- 量化档选择（仅未启用时可改） -->
+					{#if !s.enabled}
+						<div class="mb-2 flex items-center gap-2 text-zinc-300">
+							<span class="text-zinc-500">{$t('embed_quant_label')}</span>
+							<select
+								bind:value={selQuant}
+								class="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 font-mono text-zinc-200 outline-none focus:border-cyan-500"
+							>
+								{#each embed.quants as q}
+									<option value={q.Name}>{q.Name} · {fmtMB(q.SizeMB)} · ~{fmtMB(q.MemMB)} RAM</option>
+								{/each}
+							</select>
+							<span class="text-xs text-zinc-600">
+								{s.model_present ? '✓ ' + $t('embed_model_present') : $t('embed_model_absent')}
+							</span>
+						</div>
+					{/if}
+
+					<!-- 状态行 -->
+					<div class="flex items-center gap-2">
+						<span
+							class="inline-block h-2 w-2 shrink-0 rounded-full"
+							class:bg-emerald-400={s.state === 'ready'}
+							class:bg-amber-400={s.state === 'downloading' || s.state === 'starting'}
+							class:bg-rose-500={s.state === 'error'}
+							class:bg-zinc-600={s.state === 'disabled'}
+						></span>
+						<span class="text-zinc-300">
+							{embedBusy
+								? s.enabled
+									? $t('embed_disabling')
+									: $t('embed_enabling')
+								: embedStateLabel(s.state)}
+						</span>
+						{#if s.quant && s.state !== 'disabled'}
+							<span class="font-mono text-xs text-zinc-500">{s.quant}</span>
+						{/if}
+					</div>
+
+					<!-- 下载进度条 -->
+					{#if s.state === 'downloading' && s.download_total > 0}
+						<div class="mt-2">
+							<div class="h-2 w-full overflow-hidden rounded-full bg-zinc-800">
+								<div
+									class="h-full bg-cyan-500 transition-all"
+									style="width: {s.download_pct.toFixed(1)}%"
+								></div>
+							</div>
+							<div class="mt-1 text-right font-mono text-[10px] text-zinc-500">
+								{fmtMB(Math.round(s.download_done / 1048576))} / {fmtMB(
+									Math.round(s.download_total / 1048576)
+								)} · {s.download_pct.toFixed(1)}%
+							</div>
+						</div>
+					{/if}
+
+					<!-- 向量覆盖 + 错误 -->
+					{#if s.state === 'ready' || embed.coverage.embedded > 0}
+						<div class="mt-2 text-xs text-zinc-500">
+							{$t('embed_coverage')}: <span class="font-mono text-zinc-400"
+								>{embed.coverage.embedded} / {embed.coverage.total}</span
+							>
+						</div>
+					{/if}
+					{#if s.err}
+						<p class="mt-1 text-xs text-rose-400">{s.err}</p>
+					{/if}
 				</div>
 			{/if}
 

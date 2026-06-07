@@ -99,8 +99,8 @@
 | 维度 | **1024**（与原 bge-m3 同维 → **零迁移**，schema embedding 列不变）|
 | 量化 | Q8_0 ≈ 639MB（推荐，质量近无损）或 Q4_K_M ≈ 397MB（更省内存）|
 | 推理后端 | `llama.cpp` server `--embedding`，暴露 **OpenAI 兼容 `/v1/embeddings`** |
-| 部署 | **独立 compose 服务**（非内置进 runtime 镜像）；GGUF 经卷挂载或首启下载 |
-| Go 接入 | `internal/io/embed` 经 HTTP 调 `MINDVERSE_EMBED_URL`（默认 `http://embed:11435`） |
+| 部署 | **面板自管子进程**：`llama-server` 随 runtime 镜像分发，由 runtime 拉起为子进程（见 §5.5） |
+| Go 接入 | `internal/io/embed`（HTTP client）+ `internal/runtime/embedsvc`（子进程 / 下载 / 开关生命周期） |
 
 **Qwen3 用法（关键）**：
 - **query 端**加 instruct 前缀：`Instruct: <task>\nQuery: <text>`（task 用通用检索指令），由 `embed.Embed(ctx, texts, isQuery=true)` 自动加。
@@ -132,6 +132,26 @@ Phase 0 单生命规模（数千条以内）用 **Go 暴力 cosine** 足够：
 
 - **bge-m3**（BAAI，曾选）：1024 维多语言 retrieval，开放许可；现降为备选（Qwen3 同维更小更准更新）。
 - Phase 1+ 用户可可选切到 OpenAI 兼容 embeddings endpoint（云端）。
+
+### 5.5 嵌入服务部署：面板自管子进程（`internal/runtime/embedsvc`）
+
+嵌入能力做成生命体控制面（`:3000`）上的一个开关「嵌入增强记忆」，对用户零运维：
+
+- **勾选即用**：本地已有 GGUF → 直接拉起 `llama-server` 子进程；没有 → 按网络自动下载
+  （**hf-mirror.com 优先、huggingface.co 兜底**），面板实时进度条；就绪后自动 `embed.Init` 指本机
+  `127.0.0.1:11435` 并触发一次历史回填。
+- **内存提醒**：面板显示该量化档常驻内存估算（Q8≈1.5GB / Q4≈1GB），供用户在
+  「轻量关键词召回」与「嵌入语义增强」间权衡。
+- **生命周期**：runtime 以子进程拉起 / 杀掉 `llama-server`（无需 docker 权限、单容器）。
+  开关状态持久化（config KV `embed_enabled` / `embed_quant`），**重启自恢复**。
+- **镜像 / ABI**：runtime final 基底为 **debian:trixie-slim**（glibc 2.41），直接跑 llama.cpp
+  预编译二进制（alpine/musl 缺 `__isoc23_*` 等符号跑不了）；且 debian 有真 chromium `.deb`
+  （ubuntu 的 chromium 是 snap，容器内不可用）。`llama-server` 二进制 + `libggml*.so` 从
+  `ghcr.io/ggml-org/llama.cpp:server` 镜像 `COPY` 进 `/usr/local/lib/llama`，`libgomp1` 提供 OpenMP 运行时。
+- **模型存放**：GGUF 下到**数据卷** `/app/data/models/`（随生命体持久 / 可迁移），不打进镜像。
+- **API**：`GET /api/embed/status`（开关 / 状态机 / 下载进度 / 向量覆盖）、
+  `POST /api/embed/enable {quant?}`、`POST /api/embed/disable`、`POST /api/embed/backfill`。
+- **高级 / 兼容**：设环境 `MINDVERSE_EMBED_URL` 指向外部 embed 容器时，面板开关让位给外部覆盖。
 - Phase 3+ 多模型路由。
 
 ---
@@ -277,39 +297,43 @@ timestamp / tool_name / args_summary / result_summary / duration / success
 
 ## 11. Docker 部署
 
-### 11.1 多阶段构建
+### 11.1 多阶段构建（实际，见仓库 `Dockerfile`）
+
+四阶段：
 
 ```dockerfile
-# 阶段 1：前端构建
+# 阶段 1：前端构建（SvelteKit → static SPA）
 FROM node:22-alpine AS frontend
-WORKDIR /web
-COPY web/package*.json ./
-RUN npm install
-COPY web/ ./
-RUN npm run build
+# pnpm install --frozen-lockfile && pnpm run build
 
-# 阶段 2：Go 编译（含前端 embed + bge-m3 权重）
-FROM golang:1.26-alpine AS builder
-RUN apk add --no-cache gcc musl-dev sqlite-dev curl
-WORKDIR /src
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-COPY --from=frontend /web/build ./web/build
-RUN curl -L -o /assets/bge-m3-q8.gguf <bge-m3 INT8 模型下载链接>
-RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o /bin/mindverse ./cmd/runtime
+# 阶段 2：Go 编译（CGO_ENABLED=0 纯 Go，embed SPA 进二进制；GOPROXY=goproxy.cn）
+FROM golang:1.25-alpine AS builder
+# go build -o /out/mindverse ./cmd/runtime  +  ./cmd/setup
 
-# 阶段 3：运行
-FROM alpine:3.20
-RUN apk add --no-cache python3 py3-pip nodejs npm sqlite ca-certificates \
-    curl jq ripgrep fd git ffmpeg llama-cpp
-RUN pip install --break-system-packages requests beautifulsoup4 pandas numpy
-COPY --from=builder /bin/mindverse /usr/local/bin/mindverse
-COPY --from=builder /assets/bge-m3-q8.gguf /assets/bge-m3-q8.gguf
-WORKDIR /app
-EXPOSE 3000
-CMD ["mindverse"]
+# 阶段 3：llama.cpp server 二进制来源（嵌入子进程，面板自管，见 §5.5）
+FROM ghcr.io/ggml-org/llama.cpp:server AS llamacpp
+
+# 阶段 4：运行（debian:trixie-slim，glibc 2.41 → 跑 llama.cpp 预编译二进制 + 真 chromium .deb）
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates tzdata sqlite3 python3 python3-pip python3-venv \
+    nodejs npm chromium libgomp1
+# L0 Python/Node 白名单（pip --break-system-packages；npm -g）
+COPY --from=llamacpp /app/ /usr/local/lib/llama/          # llama-server + libggml*.so
+RUN ln -sf /usr/local/lib/llama/llama-server /usr/local/bin/llama-server
+ENV LD_LIBRARY_PATH=/usr/local/lib/llama \
+    MINDVERSE_LLAMA_BIN=/usr/local/bin/llama-server \
+    ROD_BROWSER_BIN=/usr/bin/chromium
+COPY --from=builder /out/mindverse /usr/local/bin/mindverse
+ENTRYPOINT ["/usr/local/bin/mindverse"]
 ```
+
+要点：
+- **纯 Go**（`CGO_ENABLED=0`，modernc.org/sqlite），无 bge-m3 权重打包——嵌入模型由
+  runtime 按面板开关下到数据卷（§5.5）。
+- **基底 alpine→debian:trixie-slim**：glibc 2.41 跑 llama.cpp 二进制；debian 有真 chromium。
+- **CN 构建**：`ghcr.io` 拉不动时 `docker pull ghcr.nju.edu.cn/ggml-org/llama.cpp:server` 再
+  `docker tag` 回 `ghcr.io/ggml-org/llama.cpp:server`；base 镜像走 `docker.m.daocloud.io` 镜像。
 
 > **更新（§5 修订后）**：嵌入模型**不再打入 runtime 镜像**。Qwen3-Embedding-0.6B GGUF
 > 由**独立 compose 服务 `embed`**（llama.cpp server）承载，GGUF 经卷挂载（`./models/`）提供。

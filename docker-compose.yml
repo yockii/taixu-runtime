@@ -21,49 +21,21 @@ services:
       MINDVERSE_DATA: /app/data
       MINDVERSE_SANDBOX: /workspace/sandbox
       MINDVERSE_SKILLS: /workspace/skills
-      # 嵌入服务（Qwen3-Embedding-0.6B，docs/TECH-STACK §5）的容器内地址。
-      # 关键：runtime 不 depends_on embed 健康——embed 不可达时 runtime 优雅降级
-      # （向量留空 / 检索回退关键词召回），生命体绝不因嵌入失败而阻塞或崩溃。
-      MINDVERSE_EMBED_URL: http://embed:11435
-      MINDVERSE_EMBED_MODEL: qwen3-embedding-0.6b
+      # 嵌入服务（Qwen3-Embedding-0.6B，docs/TECH-STACK §5）现为「面板自管」：
+      # llama-server 随 runtime 镜像分发，由 runtime 以子进程拉起（见 internal/runtime/embedsvc）。
+      # 用户在 :3000 控制面勾选「嵌入增强记忆」即按需下载模型 + 启动，全程优雅降级、开关持久化。
+      # 模型下到数据卷 /app/data/models/，无需独立容器。
+      #
+      # 高级 / 兼容：若要指向「外部 embed 容器」，设 MINDVERSE_EMBED_URL（设了则面板开关让位给外部）。
+      # MINDVERSE_EMBED_URL: http://embed:11435
     volumes:
       - mindverse-data:/app/data
       - ./workspace:/workspace
     ports:
       - "3000:3000"
-    mem_limit: 6g
-    cpus: 3
-    # 故意不写 depends_on: embed —— 强耦合会让 embed 拉不起时拖垮 runtime。
-    # embed 是可后补的旁路服务，runtime 先起来照常活着。
-
-  # ----------------------------------------------------------------------------
-  # 嵌入服务：llama.cpp server 跑 Qwen3-Embedding-0.6B GGUF，暴露 OpenAI 兼容
-  # /v1/embeddings。独立服务、可后补、可单独重启，不影响 runtime（见上注释）。
-  #
-  # GGUF 放置（二选一）：
-  #   A) 卷挂载（推荐 / CN 网络友好）：手动把 GGUF 下到宿主 ./models/，挂进容器。
-  #      下载（任选其一镜像源）：
-  #        huggingface-cli download Qwen/Qwen3-Embedding-0.6B-GGUF \
-  #          Qwen3-Embedding-0.6B-Q8_0.gguf --local-dir ./models
-  #        # CN 加速：HF_ENDPOINT=https://hf-mirror.com 前缀，或 modelscope 下同名 GGUF。
-  #      然后把下方 command 里的文件名对齐（Q8_0 ≈ 639MB / Q4_K_M ≈ 397MB）。
-  #   B) 首启容器内下载：换一个带下载脚本的入口（需容器能联网 / 配代理），不在此默认。
-  #
-  # 无 GGUF / 服务起不来都没关系：runtime 会降级，等 GGUF 备齐再 `docker compose up -d embed`。
-  embed:
-    image: ghcr.io/ggml-org/llama.cpp:server
-    container_name: mindverse-embed
-    restart: unless-stopped
-    volumes:
-      - ./models:/models:ro
-    command: >
-      --host 0.0.0.0 --port 11435
-      --embedding --pooling last
-      -m /models/Qwen3-Embedding-0.6B-Q8_0.gguf
-      --ctx-size 8192 --batch-size 8192
-    # 仅容器内 runtime 调用，无需对宿主开端口；如需本机调试再加 ports: ["11435:11435"]。
-    mem_limit: 2g
-    cpus: 2
+    # 内含 llama-server 嵌入子进程（启用时约 +1.5GB 常驻）→ 比纯 runtime 上调到 8g。
+    mem_limit: 8g
+    cpus: 4
 
 volumes:
   mindverse-data:

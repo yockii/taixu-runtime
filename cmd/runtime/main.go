@@ -33,6 +33,7 @@ import (
 	"mindverse/internal/lifepack"
 	"mindverse/internal/runtime/action"
 	"mindverse/internal/runtime/drives"
+	"mindverse/internal/runtime/embedsvc"
 	"mindverse/internal/runtime/genesis"
 	"mindverse/internal/runtime/goal"
 	"mindverse/internal/runtime/idle"
@@ -140,17 +141,25 @@ func main() {
 		slog.Info("llm wired", "model", os.Getenv("LLM_MODEL"))
 	}
 
-	// 嵌入服务（Qwen3-Embedding-0.6B，docs/TECH-STACK §5）。未配 / 不可达全程优雅降级：
-	// 写入侧向量留空、检索回退关键词召回——生命体绝不因嵌入失败而阻塞或崩溃。
-	embed.Init(embed.Config{
-		BaseURL: os.Getenv("MINDVERSE_EMBED_URL"),
-		Model:   os.Getenv("MINDVERSE_EMBED_MODEL"),
-		Timeout: 30 * time.Second,
-	})
-	if embed.Configured() {
-		slog.Info("embed wired", "url", os.Getenv("MINDVERSE_EMBED_URL"))
+	// 嵌入服务（Qwen3-Embedding-0.6B，docs/TECH-STACK §5）。两种接线，全程优雅降级
+	// （未配 / 不可达 → 写入侧向量留空、检索回退关键词召回，生命体绝不因嵌入失败而阻塞）：
+	//   1) 外部覆盖：设了 MINDVERSE_EMBED_URL → 直接指向外部 embed 容器（高级 / 兼容）。
+	//   2) 面板自管（默认）：embedsvc 把 llama-server 做成 :3000 控制面上的开关——
+	//      用户勾选「嵌入增强记忆」即按需下载模型 + 拉起子进程；开关持久化、重启自恢复。
+	if u := os.Getenv("MINDVERSE_EMBED_URL"); u != "" {
+		embed.Init(embed.Config{BaseURL: u, Model: os.Getenv("MINDVERSE_EMBED_MODEL"), Timeout: 30 * time.Second})
+		slog.Info("embed wired (external override)", "url", u)
 	} else {
-		slog.Info("embed not configured; vector retrieval falls back to keyword recall")
+		embedsvc.Init(
+			filepath.Join(dataDir(), "models"),
+			envOr("MINDVERSE_LLAMA_BIN", "/usr/local/bin/llama-server"),
+			func() {
+				if n := memory.BackfillEmbeddings(context.Background(), 4000); n > 0 {
+					slog.Info("embedding backfill after ready", "rows", n)
+				}
+			},
+		)
+		defer embedsvc.Shutdown()
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -306,43 +315,46 @@ func runCycle(cycleID int64, lifeID string, genome core.Genome) {
 	}
 
 	// 7-8-9. Plan / Act / Feedback
-	now := shared.SystemClock.UnixSec()
-	g, err := storage.NextPendingGoal(lifeID, now)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		slog.Warn("next pending goal", "err", err)
-	}
+	//
+	// ⚠️ 体力判定必须在 NextPendingGoal 之前（R107 死锁修复）：NextPendingGoal 捡到目标即把它
+	// 翻成 active。若先捡再判体力，太累而 rest 时目标已 active 却不回滚 → 僵死 active；NextPendingGoal
+	// 只挑 pending，僵尸永不再被捡，叠加递归父目标等待其完成 → 整树调度死锁（observed 2h 停摆）。
+	// 故：太累就直接歇，根本不去捡目标（不触发 active 翻转）；体力够才捡 + 执行。
 	switch {
-	case g != nil && frame.Life.Energy >= RestEnergyThreshold:
-		// 有目标且体力够 → 慎思执行。
-		res, err := action.Execute(g, cycleID)
-		if err != nil {
-			slog.Warn("execute", "err", err, "goal", g.ID)
-		}
-		_ = memory.AppendEvent(cycleID, "action.done", map[string]any{
-			"goal_id": g.ID,
-			"success": res.Success,
-			"action":  res.Action,
-		})
-		if res.Success {
-			_ = memory.AppendEvent(cycleID, "tool.success", res.Action)
-			_ = ledger.Earn(ledger.Knowledge, 0.01, "action.success", "goal", "")
-		}
-		_ = ledger.Spend(ledger.Energy, 0.02, "action.cost", "goal", "")
-		idle.Reset() // 真的在做事 → 清零无聊
-	case g != nil:
-		// 有目标但太累 → 休息回血，目标留到能量恢复再做（R86）。
-		// 关键：慎思烧 LLM=烧能量，低能量还硬磕会油尽灯枯。累了就该歇，让能量自然恢复，
-		// 而非靠"放缓目标产生"治标。目标仍 pending，不消耗，醒来接着干。
+	case frame.Life.Energy < RestEnergyThreshold:
+		// 太累 → 休息回血，绝不捡目标（R86 + R107）。pending 目标原样留着，醒来再干。
 		en, str := 0.05, -0.03
 		_ = state.Apply(state.Delta{Energy: &en, Stress: &str, Reason: "cycle.rest"})
-		_ = memory.AppendEvent(cycleID, "cycle.rest", map[string]any{
-			"energy": frame.Life.Energy, "pending_goal": g.ID,
-		})
-		slog.Info("resting (too tired to deliberate)", "energy", frame.Life.Energy, "pending_goal", g.ID)
+		_ = memory.AppendEvent(cycleID, "cycle.rest", map[string]any{"energy": frame.Life.Energy})
+		slog.Info("resting (too tired to deliberate)", "energy", frame.Life.Energy)
 	default:
-		// 无具体目标 → 发呆（state 演化 + boredom 累积 + 阈值自发兴趣）（R79）
-		if spawned := idle.Tick(genome); spawned {
-			_ = memory.AppendEvent(cycleID, "idle.spontaneous_interest", nil)
+		now := shared.SystemClock.UnixSec()
+		g, err := storage.NextPendingGoal(lifeID, now)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			slog.Warn("next pending goal", "err", err)
+		}
+		if g != nil {
+			// 体力够且有可调度目标 → 慎思执行。
+			res, err := action.Execute(g, cycleID)
+			if err != nil {
+				slog.Warn("execute", "err", err, "goal", g.ID)
+			}
+			_ = memory.AppendEvent(cycleID, "action.done", map[string]any{
+				"goal_id": g.ID,
+				"success": res.Success,
+				"action":  res.Action,
+			})
+			if res.Success {
+				_ = memory.AppendEvent(cycleID, "tool.success", res.Action)
+				_ = ledger.Earn(ledger.Knowledge, 0.01, "action.success", "goal", "")
+			}
+			_ = ledger.Spend(ledger.Energy, 0.02, "action.cost", "goal", "")
+			idle.Reset() // 真的在做事 → 清零无聊
+		} else {
+			// 无可调度目标 → 发呆（state 演化 + boredom 累积 + 阈值自发兴趣）（R79）
+			if spawned := idle.Tick(genome); spawned {
+				_ = memory.AppendEvent(cycleID, "idle.spontaneous_interest", nil)
+			}
 		}
 	}
 

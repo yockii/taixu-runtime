@@ -630,6 +630,13 @@
 > **未来留白（不在本次动）**：若 Phase 1+ 真要让“token 烧得多 → 累得快”，正确做法是把 deliberate 的固定 `-0.02` 改成与 `TokensToEnergy` 挂钩、或让 `ledger.Spend(Energy)` 联动扣 `EnergyUsedToday` 并令行动闸同时看 used_today——届时 cap 与 cost 才需校准（与平台层 [[R103]] token 翻译点/计量点协调一并考虑）。当前 Phase 0 保持简单。
 > **影响**：登记性条目，无代码改动；`R86`、`R105`、`R103`。
 
+### R107 · 僵尸 active 目标新路径：太累在「翻 active 之后」才判体力 → 运行期调度死锁（已修 Phase 0.5）
+> 2026-06-07 观察：锁定生命 [[R96]] deliberate 停摆 ~2h（只剩 reflex/reflect），但 energy 已回满 1.0、队列有 pending+active。查目标树发现死锁：3 个叶子目标（pending_children=0，本应执行）卡在 `active`，其递归父目标 `pending` 且 `pending_children>0` 永远等这些卡死的叶子完成 → `NextPendingGoal`（只挑 `pending AND pending_children=0`）返回 0，主循环 deliberate 无事可调。
+> **根因（与 [[R105]] 同病、不同路径）**：`runCycle` 旧序是「先 `NextPendingGoal`（捡到即翻 `active`）→ 再判 `Energy >= RestEnergyThreshold`」。当体力不足走 rest 分支时，目标**已被翻成 `active` 却不回滚** → 僵死。R105 修的是「重启打断两步」的僵尸（boot 时 `ReclaimActiveGoals` 兜底），但这条是**正常运行期**每次「太累」都会新制造一个僵尸，boot 兜底够不着；叠加递归目标树（009）后，僵尸叶子会把整棵树锁死。
+> **修复**：把体力判定**提到 `NextPendingGoal` 之前**——太累就直接 rest，根本不捡目标（不触发 `active` 翻转）；体力够才捡+执行。从根上消除「翻了 active 又不干」的中间态。当前卡死的 77/80/107 经重新部署时 boot `ReclaimActiveGoals` 退回 pending，死锁自愈。
+> **教训**：lease 式状态机（pending→active→done）里，「获取 lease（翻 active）」必须与「真正使用 lease（执行）」在同一不可跳过的路径上；任何「先获取、再有可能提前 return」的结构都会漏掉 lease 释放。
+> **影响**：`cmd/runtime/main.go`（runCycle 体力门重排）、`internal/storage/goal.go`（`NextPendingGoal` 捡即翻 active 的语义）、`R105`、`R86`、`R106`。
+
 ### R88 · 对话历史 + 行为降频 + 技能生命周期完善（已实装 Phase 0.5）
 > 用户 2026-06-05 一批改进：
 > **① 对话载入历史**：reflex 原本每条消息只给 `[system, user]`，无往来历史 → 大模型回复有失忆/失意感。新增 `storage.RecentDialogueTurns`（从 raw_trail 的 reflex.received/speak 重建近期对话）+ `reflex.dialogueHistory` 注入最近 10 轮（单轮截 600 字控 token，去重末尾当前消息）。
