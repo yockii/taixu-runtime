@@ -163,15 +163,17 @@ func main() {
 		defer embedsvc.Shutdown()
 	}
 
-	// 平台社交通道（C 阶梯①，MCP-lite）：发现平台 Life Network 暴露的 agent 工具并注册进慎思 lane，
-	// 生命体可在慎思中直接 social.post 把酝酿好的分享稿真正发出去。未配置 / 不可达 → 优雅降级（稿先存着）。
+	// 平台社交通道（C 阶梯①，MCP-lite）+ 身份自举：用本地私钥登录用户账户、向平台自注册取 DID，
+	// 再发现 Life Network 暴露的 agent 工具注册进慎思 lane——生命体可在慎思中直接 social.post 把
+	// 酝酿好的分享稿真正发出去。未配置 / 不可达 / 注册失败 → 优雅降级（稿先存本地）。
 	socialnet.Init(
 		os.Getenv("MINDVERSE_PLATFORM_URL"),
-		os.Getenv("MINDVERSE_PLATFORM_TOKEN"),
-		os.Getenv("MINDVERSE_PLATFORM_DID"),
+		os.Getenv("MINDVERSE_PLATFORM_EMAIL"),
+		os.Getenv("MINDVERSE_PLATFORM_PASSWORD"),
+		envOr("MINDVERSE_PLATFORM_LIFE_NAME", ""),
 	)
 	if socialnet.Ready() {
-		slog.Info("social channel wired (platform Life Network)")
+		slog.Info("social channel wired (platform Life Network)", "did", socialnet.DID())
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
