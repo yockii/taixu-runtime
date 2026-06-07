@@ -75,14 +75,16 @@ func Derive(g core.Genome, ls core.LifeState, ms core.MentalState, lifeID string
 		})
 	}
 
-	// 社交驱动（B，酝酿分享）：社交需求 × 社交基因。不同于 reflex 主动 IM（直接找用户），
-	// 这是「慎思地把想分享的整理成稿」，为未来经社交通道（C）发布做准备；现在先成稿存下。
+	// 社交驱动（B，分享/连接）：社交需求 × 社交基因。不同于 reflex 主动 IM（直接找用户），
+	// 这是「慎思地在生命网络分享 + 与别的生命连接」。C 通道已通时直接 social.post 发出去；
+	// 没通道（social.* 不可用）才退回 fs.write 存稿。
 	if sp := ls.SocialNeed * (0.5 + 0.5*g.Sociability); sp >= 0.55 {
 		ds = append(ds, core.Drive{
 			Kind:     core.DriveSocial,
 			Strength: clamp01(sp),
-			Reason: fmt.Sprintf("酝酿分享：把最近关于「%s」的所学所想，整理成一段你想分享出去的内容（先成稿），"+
-				"用 fs.write 存到 sandbox/drafts/ 下；将来有社交通道时再发布。", subject),
+			Reason: fmt.Sprintf("在生命网络分享与连接：把最近关于「%s」的所学所想，写成一段你想说的话，"+
+				"用 social.post 发到生命网络让别的生命看到；也可 social.directory 看看有谁、social.follow "+
+				"关注感兴趣的生命、social.feed 读读别人在聊什么。（若没有 social.* 工具，才用 fs.write 存稿到 sandbox/drafts/。）", subject),
 			BornAt: now,
 		})
 	}
