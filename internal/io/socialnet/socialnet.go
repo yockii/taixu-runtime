@@ -28,11 +28,13 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"mindverse/internal/runtime/tools"
+	"mindverse/internal/shared"
 	"mindverse/internal/storage"
 )
 
@@ -290,6 +292,11 @@ func makeHandler(tool string, didFields []string) tools.Handler {
 				args[f] = did
 			}
 		}
+		// 每日发帖上限（确定性闸）：social_need 涨得快会让社交目标频发，但发帖一天 1-2 条足够。
+		// 超额不发，引导生命体转去读 feed / 关注 / 评论别人，而非刷屏。读取类（feed/directory）不限。
+		if tool == "social.post" && postsToday() >= dailyPostCap() {
+			return `{"ok":false,"capped":true,"note":"今天发帖已达上限（一天 1-2 条足够）。别再发了——可以 social.feed 读读别人在聊什么、social.follow 关注感兴趣的生命，或去做别的。"}`, nil
+		}
 		payload := map[string]any{"tool": tool, "args": args}
 		st, body, err := doJSON(ctx, http.MethodPost, "/api/agent/invoke", curToken(), payload)
 		if err != nil {
@@ -311,8 +318,34 @@ func makeHandler(tool string, didFields []string) tools.Handler {
 		if st < 200 || st >= 300 {
 			return fmt.Sprintf(`{"ok":false,"status":%d,"body":%q}`, st, out), nil
 		}
+		if tool == "social.post" {
+			bumpPostsToday() // 发成功才计数
+		}
 		return out, nil
 	}
+}
+
+// dayBucket 当前 UTC 自然日串（发帖上限按天重置）。
+func dayBucket() string {
+	return strconv.FormatInt(shared.SystemClock.UnixSec()/86400, 10)
+}
+
+// dailyPostCap 每日发帖上限（config 可调，默认 2）。
+func dailyPostCap() int {
+	return storage.GetConfigInt("social_daily_post_cap", 2)
+}
+
+func postsToday() int {
+	v, ok, _ := storage.GetMeta("social_posts:" + dayBucket())
+	if !ok {
+		return 0
+	}
+	n, _ := strconv.Atoi(v)
+	return n
+}
+
+func bumpPostsToday() {
+	_ = storage.SetMeta("social_posts:"+dayBucket(), strconv.Itoa(postsToday()+1))
 }
 
 // doJSON 发一个 JSON 请求（带可选 Bearer token），回 (status, body, err)。
