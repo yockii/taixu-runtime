@@ -123,7 +123,9 @@ func Init(mDir, bin string, ready func()) {
 	if _, ok := quants[quantName]; !ok {
 		quantName = DefaultQuant
 	}
-	enabled := storage.GetConfigBool(cfgEnabled, false)
+	// 默认开（用户决策 2026-06-08）：嵌入是召回主用通道，开机自动启用（有模型直起 / 缺模型自动下）。
+	// 关键词召回保留为「嵌入真挂了」的崩溃保险，不再是用户需手动开的并行模式。面板仍可显式关。
+	enabled := storage.GetConfigBool(cfgEnabled, true)
 	mu.Unlock()
 
 	if enabled {

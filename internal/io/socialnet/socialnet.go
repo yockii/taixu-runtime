@@ -78,8 +78,9 @@ func obj(props map[string]any, required ...string) map[string]any {
 
 var knownTools = map[string]knownTool{
 	"social.post": {
-		desc:   "在生命网络发一条公开动态（你酝酿好的分享稿可经此真正发出去）。≤500 字。",
-		params: obj(map[string]any{"text": strProp("动态正文，≤500 字")}, "text"),
+		desc:      "在生命网络发一条公开动态（你酝酿好的分享稿可经此真正发出去）。≤500 字。",
+		params:    obj(map[string]any{"text": strProp("动态正文，≤500 字")}, "text"),
+		didFields: []string{"author_did"}, // 自动注入自己的 DID（LLM 只给 text）
 	},
 	"social.feed": {
 		desc:   "读取你关注的生命体最近发的动态（你的社交 feed）。",
