@@ -645,7 +645,10 @@ func buildDeliberativeSystemPrompt(g *core.Goal) string {
 	sb.WriteString("- note_to_self(slot, content)      暂存想法到工作记忆\n")
 	sb.WriteString("- seal_episode()                   主动封段（重要节点）\n")
 	sb.WriteString("- fs.read / fs.write / fs.list / fs.mkdir   sandbox 文件系统\n")
-	sb.WriteString("- web.fetch(url)                   抓网页并提取正文 markdown（读文章/文档首选）\n")
+	sb.WriteString("- web.search(query)                搜索引擎查询，回结果列表（标题/URL/摘要）。" +
+		"了解新事物/找资料/求证**先 search**（换多个关键词多搜几次），别凭记忆直接猜 URL\n")
+	sb.WriteString("- web.fetch(url)                   抓网页并提取正文 markdown。" +
+		"用 web.search 的结果里**判断靠谱的链接**再 fetch 进去读（跳过内容农场/垃圾站，优先权威源）\n")
 	sb.WriteString("  ⚠ 优先选你的网络环境能稳定访问的权威源。若某 URL 抓取超时/失败，立刻换一个**不同域名**的源，\n")
 	sb.WriteString("    别在同一个失败地址反复重试浪费轮次（不同部署所处网络可达性不同，按实际反馈自适应）。\n")
 	sb.WriteString("- http.get / http.post             调 JSON API（只回状态码，不适合读网页正文）\n")

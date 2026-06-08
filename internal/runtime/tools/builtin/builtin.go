@@ -64,6 +64,7 @@ func allTools() []tools.Tool {
 		toolHTTPPost(),
 		toolTimeNow(),
 		// --- deliberative · 网页抓取（Tier 分层；正文提取）---
+		toolWebSearch(),
 		toolWebFetch(),
 		toolWebRender(),
 		// --- deliberative · 脚本沙箱（容器内白名单包）---
@@ -686,6 +687,36 @@ func toolTimeNow() tools.Tool {
 		Lanes:       []tools.Lane{tools.LaneDeliberative},
 		Handler: func(_ context.Context, tctx tools.Context, _ string) (string, error) {
 			r, err := toolrunner.TimeNow(tctx.CycleID)
+			return wrapRunnerResult(r, err)
+		},
+	}
+}
+
+func toolWebSearch() tools.Tool {
+	return tools.Tool{
+		Name: "web.search",
+		Description: "搜索引擎查询（真浏览器跑，无需 key），返回结果列表（标题/URL/摘要）。" +
+			"了解新事物 / 找资料 / 求证时**先用它搜**（可换多个关键词多搜几次），" +
+			"再据标题摘要判断哪些来源靠谱、用 web.fetch 进去读——别凭记忆直接猜 URL。",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"query": map[string]any{"type": "string", "description": "搜索关键词"},
+			},
+			"required": []string{"query"},
+		},
+		Lanes: []tools.Lane{tools.LaneDeliberative},
+		Handler: func(_ context.Context, tctx tools.Context, argsJSON string) (string, error) {
+			var a struct {
+				Query string `json:"query"`
+			}
+			if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+				return errJSON("invalid args"), err
+			}
+			if a.Query == "" {
+				return errJSON("empty query"), nil
+			}
+			r, err := toolrunner.WebSearch(tctx.CycleID, a.Query)
 			return wrapRunnerResult(r, err)
 		},
 	}
