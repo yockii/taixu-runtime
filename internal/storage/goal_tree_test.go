@@ -214,7 +214,12 @@ func TestMigration009IdempotentOnExistingData(t *testing.T) {
 		VALUES ('locked-life', 'IntrinsicDrive', 'knowledge', '历史老目标', 0.7, 'completed', 12345)`); err != nil {
 		t.Fatalf("insert legacy row: %v", err)
 	}
-	// 把 001..008 标记为已应用，让后续 migrate() 只跑 009/010（绝不重建旧表）。
+	// 模拟「004 已应用」需建出后续迁移会 ALTER 的表（011 给 skill_instance 加 embedding 列）。
+	// 真实锁定生命里 004 真跑过、skill_instance 存在；测试这里补最小表以保真。
+	if _, err := raw.Exec(`CREATE TABLE skill_instance (id TEXT PRIMARY KEY)`); err != nil {
+		t.Fatalf("create skill_instance stub: %v", err)
+	}
+	// 把 001..008 标记为已应用，让后续 migrate() 只跑 009/010/011（绝不重建旧表）。
 	if _, err := raw.Exec(`CREATE TABLE schema_migrations (filename TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)`); err != nil {
 		t.Fatalf("create schema_migrations: %v", err)
 	}

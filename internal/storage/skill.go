@@ -90,6 +90,58 @@ func ListSkillInstances(lifeID string, limit int) ([]SkillInstance, error) {
 	return out, rows.Err()
 }
 
+// UpdateSkillEmbedding 回写技能描述向量（best-effort 用，blob 空则不写）。
+func UpdateSkillEmbedding(id string, blob []byte) error {
+	if len(blob) == 0 {
+		return nil
+	}
+	_, err := db.Exec(`UPDATE skill_instance SET embedding = ? WHERE id = ?`, blob, id)
+	return err
+}
+
+// ReadySkillVectors 取本生命体所有 ready 且有 embedding 的技能向量（id → blob），供按目标语义检索。
+func ReadySkillVectors(lifeID string) (map[string][]byte, error) {
+	rows, err := db.Query(`SELECT id, embedding FROM skill_instance
+		WHERE life_id = ? AND status = 'ready' AND embedding IS NOT NULL`, lifeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]byte{}
+	for rows.Next() {
+		var id string
+		var blob []byte
+		if err := rows.Scan(&id, &blob); err != nil {
+			return nil, err
+		}
+		out[id] = blob
+	}
+	return out, rows.Err()
+}
+
+// ReadySkillsMissingEmbedding 取 ready 但没向量的技能（回填用）。
+func ReadySkillsMissingEmbedding(lifeID string) ([]SkillInstance, error) {
+	rows, err := db.Query(`
+		SELECT id, life_id, name, seed_ref, COALESCE(seed_version,''), COALESCE(description,''),
+		       COALESCE(lanes,''), COALESCE(allowed_tools,''), status, COALESCE(pending_deps,''),
+		       mastery, used_count, COALESCE(last_used_at,0), COALESCE(install_path,''),
+		       COALESCE(authored_from,''), created_at
+		FROM skill_instance WHERE life_id = ? AND status = 'ready' AND embedding IS NULL`, lifeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SkillInstance{}
+	for rows.Next() {
+		s, err := scanSkillRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *s)
+	}
+	return out, rows.Err()
+}
+
 // UpdateSkillStatus 改状态（可选清 pending_deps）。
 func UpdateSkillStatus(id, status string, clearPending bool) error {
 	if clearPending {

@@ -678,7 +678,9 @@ func buildDeliberativeSystemPrompt(g *core.Goal) string {
 	}
 
 	// 渐进式披露（Anthropic skills 规范）：只列技能名 + 一句话描述，正文按需用 use_skill 读，省 token。
-	if skills, err := skill.ListReady(); err == nil && len(skills) > 0 {
+	// 真正按需装载：技能多时按当前目标语义检索 top-k 相关技能（RelevantReady），而非每 cycle 全列
+	// （技能一多 token 线性膨胀、多数与目标无关）。技能少 / 无嵌入 / 检索失败自动降级为全列。
+	if skills, err := skill.RelevantReady(g.Payload); err == nil && len(skills) > 0 {
 		sb.WriteString("\n你已掌握、可调用的技能（需要时先 use_skill(name) 读详细步骤再照做，别凭记忆臆造）：\n")
 		for _, s := range skills {
 			sb.WriteString(fmt.Sprintf("- %s：%s\n", s.Name, oneLineDesc(s.Description)))
