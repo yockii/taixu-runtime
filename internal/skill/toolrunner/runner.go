@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"mindverse/internal/bus"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/bus"
+	"taixu.icu/runtime/internal/storage"
 )
 
 const (
@@ -202,11 +202,11 @@ func runScript(cycleID int64, toolName, args string, name string, scriptArgs ...
 // scriptEnv 构造脚本运行环境：在现有 env 基础上，把各 skill 私有依赖目录
 // 加进 PYTHONPATH（python）/ NODE_PATH（node），让 skill 装的依赖可被 import（R81）。
 //
-// skills 根目录取 MINDVERSE_SKILLS（默认 /workspace/skills）；遍历每个 skill 子文件夹的
+// skills 根目录取 TAIXU_SKILLS（默认 /workspace/skills）；遍历每个 skill 子文件夹的
 // site-packages（py）/ node_modules（node）拼进路径。baseline 包仍走系统全局。
 func scriptEnv(bin string) []string {
 	env := os.Environ()
-	root := os.Getenv("MINDVERSE_SKILLS")
+	root := os.Getenv("TAIXU_SKILLS")
 	if root == "" {
 		root = "/workspace/skills"
 	}

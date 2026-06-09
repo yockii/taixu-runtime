@@ -18,11 +18,11 @@ import (
 	mrand "math/rand/v2"
 	"sync"
 
-	"mindverse/internal/bus"
-	"mindverse/internal/core"
-	"mindverse/internal/io/embed"
-	"mindverse/internal/shared"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/bus"
+	"taixu.icu/runtime/internal/core"
+	"taixu.icu/runtime/internal/io/embed"
+	"taixu.icu/runtime/internal/shared"
+	"taixu.icu/runtime/internal/storage"
 )
 
 var (

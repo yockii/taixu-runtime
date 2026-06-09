@@ -24,14 +24,14 @@ import (
 	"strings"
 	"time"
 
-	"mindverse/internal/bus"
-	"mindverse/internal/core"
-	"mindverse/internal/io/llm"
-	"mindverse/internal/runtime/ledger"
-	"mindverse/internal/runtime/memory"
-	"mindverse/internal/runtime/state"
-	"mindverse/internal/shared"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/bus"
+	"taixu.icu/runtime/internal/core"
+	"taixu.icu/runtime/internal/io/llm"
+	"taixu.icu/runtime/internal/runtime/ledger"
+	"taixu.icu/runtime/internal/runtime/memory"
+	"taixu.icu/runtime/internal/runtime/state"
+	"taixu.icu/runtime/internal/shared"
+	"taixu.icu/runtime/internal/storage"
 )
 
 const (

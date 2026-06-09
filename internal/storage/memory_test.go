@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"mindverse/internal/core"
+	"taixu.icu/runtime/internal/core"
 )
 
 // TestSemanticCandidateConfidence 验证语义固化链修复：

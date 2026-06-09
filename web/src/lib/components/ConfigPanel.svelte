@@ -1,11 +1,13 @@
 <script lang="ts">
-	import { api, type Config, type EmbedStatus, getToken } from '$lib/api';
+	import { api, type Config, type EmbedStatus, getToken, verifyToken } from '$lib/api';
 	import { saveToken as persistToken, token as tokenStore } from '$lib/auth';
 	import { t } from '$lib/i18n';
 
 	let cfg = $state<Config | null>(null);
 	let token = $state(getToken());
 	let saved = $state(false);
+	let tokenChecking = $state(false);
+	let tokenBad = $state(false);
 
 	// 嵌入增强记忆（面板自管 llama-server）
 	let embed = $state<EmbedStatus | null>(null);
@@ -76,10 +78,52 @@
 		setTimeout(() => (qSaved = false), 1500);
 	}
 
-	function saveToken() {
-		persistToken(token.trim()); // 经 auth store → 响应式解锁所有受控区块
+	async function saveToken() {
+		const v = token.trim();
+		if (!v || tokenChecking) return;
+		tokenChecking = true;
+		tokenBad = false;
+		// 先验真伪再解锁：错令牌不保存（开放读会 200，不能据此判定）。
+		const ok = await verifyToken(v);
+		tokenChecking = false;
+		if (!ok) {
+			tokenBad = true;
+			return;
+		}
+		persistToken(v); // 经 auth store → 响应式解锁所有受控区块
 		saved = true;
 		setTimeout(() => (saved = false), 1500);
+	}
+
+	// 平台社交通道 + 认领码
+	let platform = $state<{ ready: boolean; did: string } | null>(null);
+	let claimCode = $state('');
+	let claimMsg = $state('');
+	let claiming = $state(false);
+	async function loadPlatform() {
+		try {
+			platform = await api.platformStatus();
+		} catch {
+			/* 通道未通时非关键 */
+		}
+	}
+	$effect(() => {
+		loadPlatform();
+	});
+	async function doClaim() {
+		claimMsg = '';
+		const code = claimCode.trim();
+		if (!code) return;
+		claiming = true;
+		try {
+			await api.platformClaim(code);
+			claimMsg = '认领成功，已改绑到你的账户';
+			claimCode = '';
+		} catch (e) {
+			claimMsg = '认领失败：' + (e as Error).message;
+		} finally {
+			claiming = false;
+		}
 	}
 
 	async function doExport() {
@@ -114,15 +158,19 @@
 						<input
 							type="password"
 							bind:value={token}
+							disabled={tokenChecking}
 							placeholder={$t('access_token_ph')}
-							class="min-w-0 flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 font-mono text-zinc-200 outline-none focus:border-amber-500"
+							oninput={() => (tokenBad = false)}
+							class="min-w-0 flex-1 rounded border bg-zinc-900 px-2 py-1 font-mono text-zinc-200 outline-none focus:border-amber-500 {tokenBad ? 'border-red-600' : 'border-zinc-700'}"
 						/>
 						<button
 							onclick={saveToken}
-							class="shrink-0 rounded bg-amber-600/80 px-3 py-1 font-medium text-white transition hover:bg-amber-600"
-							>{saved ? $t('saved') : $t('save')}</button
+							disabled={tokenChecking}
+							class="shrink-0 rounded bg-amber-600/80 px-3 py-1 font-medium text-white transition hover:bg-amber-600 disabled:opacity-50"
+							>{tokenChecking ? '…' : saved ? $t('saved') : $t('save')}</button
 						>
 					</div>
+					{#if tokenBad}<p class="mt-1.5 text-red-400">{$t('access_token_bad')}</p>{/if}
 				</div>
 			{/if}
 			{#if cfg.llm}
@@ -281,6 +329,39 @@
 					{/if}
 				</div>
 			{/if}
+
+			<div class="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3">
+				<div class="mb-1 flex items-center gap-1.5 font-semibold text-emerald-300">
+					🌐 平台认领
+					{#if platform}
+						<span class="text-[10px] font-normal text-zinc-500">
+							{platform.ready ? '通道已接通' : '通道未接通'}{platform.did
+								? ` · DID ${platform.did.slice(0, 12)}`
+								: ''}
+						</span>
+					{/if}
+				</div>
+				<p class="mb-2 text-zinc-400">
+					在平台领一个临时认领码（30 分钟有效），填到这里，把本生命改绑到你的用户账户。
+				</p>
+				<div class="flex gap-2">
+					<input
+						type="text"
+						bind:value={claimCode}
+						placeholder="粘贴认领码"
+						class="flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 font-mono text-xs outline-none focus:border-emerald-500"
+					/>
+					<button
+						onclick={doClaim}
+						disabled={claiming || !claimCode.trim()}
+						class="rounded bg-emerald-600 px-3 py-1 text-xs font-medium text-white transition hover:bg-emerald-500 disabled:opacity-40"
+						>{claiming ? '认领中…' : '认领'}</button
+					>
+				</div>
+				{#if claimMsg}
+					<p class="mt-2 text-xs text-zinc-400">{claimMsg}</p>
+				{/if}
+			</div>
 
 			{#if !cfg.auth_required || cfg.llm}
 				<div class="rounded-lg border border-violet-500/30 bg-violet-500/5 p-3">

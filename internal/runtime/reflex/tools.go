@@ -13,15 +13,15 @@ import (
 	"strings"
 	"time"
 
-	"mindverse/internal/bus"
-	"mindverse/internal/io/llm"
-	"mindverse/internal/runtime/ledger"
-	"mindverse/internal/runtime/memory"
-	"mindverse/internal/runtime/skill"
-	"mindverse/internal/runtime/state"
-	"mindverse/internal/runtime/tools"
-	"mindverse/internal/shared"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/bus"
+	"taixu.icu/runtime/internal/io/llm"
+	"taixu.icu/runtime/internal/runtime/ledger"
+	"taixu.icu/runtime/internal/runtime/memory"
+	"taixu.icu/runtime/internal/runtime/skill"
+	"taixu.icu/runtime/internal/runtime/state"
+	"taixu.icu/runtime/internal/runtime/tools"
+	"taixu.icu/runtime/internal/shared"
+	"taixu.icu/runtime/internal/storage"
 )
 
 // registerCoreTools 在 reflex.Init 中调，把内置反射 tool 注册到 tools.LaneReflex。

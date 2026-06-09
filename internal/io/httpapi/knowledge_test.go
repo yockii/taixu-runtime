@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"testing"
 
-	"mindverse/internal/core"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/core"
+	"taixu.icu/runtime/internal/storage"
 )
 
 // TestKnowledgeAPI 验证 /api/knowledge 列表 + /api/knowledge/{id} 详情端点。

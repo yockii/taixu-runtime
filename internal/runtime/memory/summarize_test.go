@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"mindverse/internal/core"
+	"taixu.icu/runtime/internal/core"
 )
 
 // TestSummarizeFiltersNoise 验证 episode 摘要过滤纯内部节拍噪声、浮出有内容事件的正文。

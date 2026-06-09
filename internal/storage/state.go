@@ -1,6 +1,6 @@
 package storage
 
-import "mindverse/internal/core"
+import "taixu.icu/runtime/internal/core"
 
 func LoadLifeState(lifeID string) (*core.LifeState, error) {
 	row := db.QueryRow(`

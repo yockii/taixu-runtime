@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"mindverse/internal/core"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/core"
+	"taixu.icu/runtime/internal/storage"
 )
 
 const testSkillMd = `---

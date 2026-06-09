@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"mindverse/internal/core"
+	"taixu.icu/runtime/internal/core"
 )
 
 // mustGenome 插入一条出生记录，满足各记忆表 life_id REFERENCES genome 的 FK。

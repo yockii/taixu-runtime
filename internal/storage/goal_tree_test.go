@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"mindverse/internal/core"
+	"taixu.icu/runtime/internal/core"
 
 	_ "modernc.org/sqlite"
 )

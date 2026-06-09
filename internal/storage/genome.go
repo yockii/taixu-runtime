@@ -3,7 +3,7 @@ package storage
 import (
 	"errors"
 
-	"mindverse/internal/core"
+	"taixu.icu/runtime/internal/core"
 )
 
 // LoadGenome 读取（首个）生命体 Genome。Phase 0 单生命；返回 (nil, ErrNoRows) 表示尚未出生。

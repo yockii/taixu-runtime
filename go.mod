@@ -1,4 +1,4 @@
-module mindverse
+module taixu.icu/runtime
 
 go 1.25.6
 

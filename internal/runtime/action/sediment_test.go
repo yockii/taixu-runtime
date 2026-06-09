@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"mindverse/internal/core"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/core"
+	"taixu.icu/runtime/internal/storage"
 )
 
 // TestSedimentToSemantic 验证引擎权威把学透的知识沉淀进语义候选（digest 已有路径，不触发 LLM）。

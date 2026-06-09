@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"mindverse/internal/core"
-	"mindverse/internal/runtime/tools"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/core"
+	"taixu.icu/runtime/internal/runtime/tools"
+	"taixu.icu/runtime/internal/storage"
 )
 
 func initStore(t *testing.T, life string) {

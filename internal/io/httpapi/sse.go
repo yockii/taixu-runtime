@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"mindverse/internal/bus"
-	"mindverse/internal/runtime/reflex"
-	"mindverse/internal/runtime/state"
+	"taixu.icu/runtime/internal/bus"
+	"taixu.icu/runtime/internal/runtime/reflex"
+	"taixu.icu/runtime/internal/runtime/state"
 )
 
 // SSE 客户端：每连接一个 channel。

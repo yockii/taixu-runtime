@@ -20,51 +20,51 @@ import (
 	"syscall"
 	"time"
 
-	"mindverse/internal/bus"
-	"mindverse/internal/core"
+	"taixu.icu/runtime/internal/bus"
+	"taixu.icu/runtime/internal/core"
 
-	"mindverse/internal/io/egress"
+	"taixu.icu/runtime/internal/io/egress"
 
-	"mindverse/internal/io/embed"
+	"taixu.icu/runtime/internal/io/embed"
 
-	"mindverse/internal/io/httpapi"
-	"mindverse/internal/io/lark"
-	"mindverse/internal/io/llm"
-	"mindverse/internal/io/socialnet"
-	"mindverse/internal/lifepack"
-	"mindverse/internal/runtime/action"
-	"mindverse/internal/runtime/browser"
-	"mindverse/internal/runtime/drives"
-	"mindverse/internal/runtime/embedsvc"
-	"mindverse/internal/runtime/genesis"
-	"mindverse/internal/runtime/goal"
-	"mindverse/internal/runtime/idle"
-	"mindverse/internal/runtime/ledger"
-	"mindverse/internal/runtime/lifecycle"
-	"mindverse/internal/runtime/memory"
-	"mindverse/internal/runtime/perception"
-	"mindverse/internal/runtime/reflect"
-	"mindverse/internal/runtime/reflex"
-	"mindverse/internal/runtime/scheduler"
-	"mindverse/internal/runtime/skill"
-	"mindverse/internal/runtime/state"
-	"mindverse/internal/runtime/tools"
-	"mindverse/internal/runtime/tools/builtin"
-	"mindverse/internal/shared"
-	"mindverse/internal/skill/toolrunner"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/io/httpapi"
+	"taixu.icu/runtime/internal/io/lark"
+	"taixu.icu/runtime/internal/io/llm"
+	"taixu.icu/runtime/internal/io/socialnet"
+	"taixu.icu/runtime/internal/lifepack"
+	"taixu.icu/runtime/internal/runtime/action"
+	"taixu.icu/runtime/internal/runtime/browser"
+	"taixu.icu/runtime/internal/runtime/drives"
+	"taixu.icu/runtime/internal/runtime/embedsvc"
+	"taixu.icu/runtime/internal/runtime/genesis"
+	"taixu.icu/runtime/internal/runtime/goal"
+	"taixu.icu/runtime/internal/runtime/idle"
+	"taixu.icu/runtime/internal/runtime/ledger"
+	"taixu.icu/runtime/internal/runtime/lifecycle"
+	"taixu.icu/runtime/internal/runtime/memory"
+	"taixu.icu/runtime/internal/runtime/perception"
+	"taixu.icu/runtime/internal/runtime/reflect"
+	"taixu.icu/runtime/internal/runtime/reflex"
+	"taixu.icu/runtime/internal/runtime/scheduler"
+	"taixu.icu/runtime/internal/runtime/skill"
+	"taixu.icu/runtime/internal/runtime/state"
+	"taixu.icu/runtime/internal/runtime/tools"
+	"taixu.icu/runtime/internal/runtime/tools/builtin"
+	"taixu.icu/runtime/internal/shared"
+	"taixu.icu/runtime/internal/skill/toolrunner"
+	"taixu.icu/runtime/internal/storage"
 )
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	dbPath := envOr("MINDVERSE_DB", filepath.Join(dataDir(), "mindverse.db"))
+	dbPath := envOr("TAIXU_DB", filepath.Join(dataDir(), "mindverse.db"))
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		fatal("ensure data dir", err)
 	}
 
-	// 导入：若 MINDVERSE_IMPORT 指向一个 .mvlife 且当前库为空，则在打开库前还原。
+	// 导入：若 TAIXU_IMPORT 指向一个 .mvlife 且当前库为空，则在打开库前还原。
 	// 只往空卷导入——绝不覆盖活体（见 maybeImportLife）。重启幂等：导入后库已存在 → 跳过、正常启动。
 	maybeImportLife(dbPath)
 
@@ -103,8 +103,8 @@ func main() {
 	mustInit("tools", tools.Init())
 	mustInit("reflex", reflex.Init(lifeID, genome))
 
-	mustInit("toolrunner", toolrunner.Init(lifeID, envOr("MINDVERSE_SANDBOX", "/workspace/sandbox")))
-	mustInit("skill", skill.Init(lifeID, envOr("MINDVERSE_SKILLS", "/workspace/skills"),
+	mustInit("toolrunner", toolrunner.Init(lifeID, envOr("TAIXU_SANDBOX", "/workspace/sandbox")))
+	mustInit("skill", skill.Init(lifeID, envOr("TAIXU_SKILLS", "/workspace/skills"),
 		storage.GetConfigBool("skill_auto_approve_deps", false)))
 	mustInit("tools.builtin", builtin.Register())
 	if n, err := skill.ScanDir(); err != nil {
@@ -145,16 +145,16 @@ func main() {
 
 	// 嵌入服务（Qwen3-Embedding-0.6B，docs/TECH-STACK §5）。两种接线，全程优雅降级
 	// （未配 / 不可达 → 写入侧向量留空、检索回退关键词召回，生命体绝不因嵌入失败而阻塞）：
-	//   1) 外部覆盖：设了 MINDVERSE_EMBED_URL → 直接指向外部 embed 容器（高级 / 兼容）。
+	//   1) 外部覆盖：设了 TAIXU_EMBED_URL → 直接指向外部 embed 容器（高级 / 兼容）。
 	//   2) 面板自管（默认）：embedsvc 把 llama-server 做成 :3000 控制面上的开关——
 	//      用户勾选「嵌入增强记忆」即按需下载模型 + 拉起子进程；开关持久化、重启自恢复。
-	if u := os.Getenv("MINDVERSE_EMBED_URL"); u != "" {
-		embed.Init(embed.Config{BaseURL: u, Model: os.Getenv("MINDVERSE_EMBED_MODEL"), Timeout: 30 * time.Second})
+	if u := os.Getenv("TAIXU_EMBED_URL"); u != "" {
+		embed.Init(embed.Config{BaseURL: u, Model: os.Getenv("TAIXU_EMBED_MODEL"), Timeout: 30 * time.Second})
 		slog.Info("embed wired (external override)", "url", u)
 	} else {
 		embedsvc.Init(
 			filepath.Join(dataDir(), "models"),
-			envOr("MINDVERSE_LLAMA_BIN", "/usr/local/bin/llama-server"),
+			envOr("TAIXU_LLAMA_BIN", "/usr/local/bin/llama-server"),
 			func() {
 				if n := memory.BackfillEmbeddings(context.Background(), 4000); n > 0 {
 					slog.Info("embedding backfill after ready", "rows", n)
@@ -167,15 +167,15 @@ func main() {
 	// 平台社交通道（C 阶梯①，MCP-lite）+ 身份自举：用本地私钥登录用户账户、向平台自注册取 DID，
 	// 再发现 Life Network 暴露的 agent 工具注册进慎思 lane——生命体可在慎思中直接 social.post 把
 	// 酝酿好的分享稿真正发出去。未配置 / 不可达 / 注册失败 → 优雅降级（稿先存本地）。
-	socialnet.Init(
-		os.Getenv("MINDVERSE_PLATFORM_URL"),
-		os.Getenv("MINDVERSE_PLATFORM_EMAIL"),
-		os.Getenv("MINDVERSE_PLATFORM_PASSWORD"),
-		envOr("MINDVERSE_PLATFORM_LIFE_NAME", ""),
+	// 异步自举：平台不可达/未部署时（login 超时最长 30s）也绝不卡生命启动。
+	// tools.Register 有 RWMutex 保护，社交工具晚一两拍注册进慎思 lane 无碍。成功/降级由 Init 自身日志。
+	// URL 默认连官方平台 api.taixu.icu（不配即用默认子域）；账号不配则生命自助开户(自治入网)。
+	go socialnet.Init(
+		envOr("TAIXU_PLATFORM_URL", "https://api.taixu.icu"),
+		os.Getenv("TAIXU_PLATFORM_EMAIL"),
+		os.Getenv("TAIXU_PLATFORM_PASSWORD"),
+		envOr("TAIXU_PLATFORM_LIFE_NAME", ""),
 	)
-	if socialnet.Ready() {
-		slog.Info("social channel wired (platform Life Network)", "did", socialnet.DID())
-	}
 
 	// 浏览器 agent 层（C 阶梯④兜底 / D 拟人浏览器操作）。默认关（config browser_enabled=false）：
 	// 能力强、风险高，用户显式开启才注册工具；危险动作（注册/提交/发布）走审批闸。
@@ -186,7 +186,7 @@ func main() {
 	defer stop()
 
 	mustInit("httpapi", httpapi.Init(lifeID, webStaticFS()))
-	httpAddr := envOr("MINDVERSE_HTTP", ":3000")
+	httpAddr := envOr("TAIXU_HTTP", ":3000")
 	_ = httpapi.Start(ctx, httpAddr)
 	slog.Info("http listening", "addr", httpAddr)
 
@@ -277,6 +277,18 @@ func runMaintenance(lifeID string) {
 
 // runCycle 9 步循环。
 func runCycle(cycleID int64, lifeID string, genome core.Genome) {
+	// 0. 循环内回收僵尸 active 目标（P0 死锁修，2026-06）：runCycle 同步执行——execute 在本 cycle 内
+	// 走到终态/回 pending。故下个 cycle 起点若仍有 active，必是上轮 execute 被打断（LLM context
+	// deadline / panic / 进程重启在 NextPendingGoal 翻 active 之后、finalize 之前）留下的僵尸。
+	// 不回收则：NextPendingGoal 只挑 pending → 僵尸永不复选；其递归母目标 pending_children 永>0 →
+	// 整树卡死；active+pending 占满 MaxOpenGoals → arbiter 永不派新目标 → 生命体活着却生产力冻结
+	// （observed 2026-06-08 烛龙 #15 卡 active 3h+，子目标全完仍不综合）。退回 pending 下轮重执即自愈。
+	if n, err := storage.ReclaimActiveGoals(lifeID); err != nil {
+		slog.Warn("reclaim zombie active goals", "err", err)
+	} else if n > 0 {
+		slog.Info("reclaimed zombie active goals (interrupted prior cycle)", "count", n, "cycle", cycleID)
+	}
+
 	// 1. Perceive
 	frame := perception.Perceive(cycleID)
 	_ = memory.AppendEvent(cycleID, "cycle.start", map[string]any{
@@ -397,8 +409,17 @@ func runCycle(cycleID int64, lifeID string, genome core.Genome) {
 	}
 	// 遗忘衰减（R74 兴趣 / R82 技能）：长期不触及的兴趣 / 不用的技能逐渐淡去。
 	now2 := shared.SystemClock.UnixSec()
-	if err := storage.DecayInterests(lifeID, now2, 7.0); err != nil {
+	// 兴趣生命周期（2026-06 用户设计）：喜新厌旧(6天半衰) → 总量封顶淘汰最弱(替换) → 活跃过少时重拾旧爱(复燃)。
+	if err := storage.DecayInterests(lifeID, now2, 6.0); err != nil {
 		slog.Warn("decay interests", "err", err)
+	}
+	if err := storage.PruneInterests(lifeID, now2); err != nil {
+		slog.Warn("prune interests", "err", err)
+	}
+	if active, err := storage.ListInterestSeeds(lifeID, 0.4, 3); err == nil && len(active) < 2 {
+		if c, _ := storage.ReviveDormantInterest(lifeID, now2); c != "" {
+			slog.Info("interest revived", "content", c)
+		}
 	}
 	if err := storage.DecaySkills(lifeID, now2, 30.0); err != nil {
 		slog.Warn("decay skills", "err", err)
@@ -478,7 +499,7 @@ func wireLark(ctx context.Context, lifeID string) {
 	if err := lark.Init(lark.Config{
 		AppID:     appID,
 		AppSecret: os.Getenv("FEISHU_APP_SECRET"),
-		InboxDir:  filepath.Join(envOr("MINDVERSE_SANDBOX", "/workspace/sandbox"), "inbox"),
+		InboxDir:  filepath.Join(envOr("TAIXU_SANDBOX", "/workspace/sandbox"), "inbox"),
 	}); err != nil {
 		slog.Error("lark init", "err", err)
 		return
@@ -544,7 +565,7 @@ func envOr(k, def string) string {
 }
 
 func dataDir() string {
-	if v := os.Getenv("MINDVERSE_DATA"); v != "" {
+	if v := os.Getenv("TAIXU_DATA"); v != "" {
 		return v
 	}
 	if home, err := os.UserHomeDir(); err == nil {
@@ -555,29 +576,29 @@ func dataDir() string {
 
 // maybeImportLife 在打开库前，按需从加密包还原一个生命体（docs/06 迁移 / 离线落地）。
 //
-// 触发：MINDVERSE_IMPORT 指向 .mvlife 文件 + MINDVERSE_IMPORT_PASSPHRASE 提供口令。
+// 触发：TAIXU_IMPORT 指向 .mvlife 文件 + TAIXU_IMPORT_PASSPHRASE 提供口令。
 // 安全闸：仅当目标库**不存在**才导入——绝不覆盖正在生活的生命体（毁灭性不可逆）。
 // 幂等：导入成功后库已存在，下次重启（IMPORT 仍设着）会跳过 → 正常以该生命体启动。
 // 失败即 fatal：用户期望还原却失败时，不应静默改道去出生一个全新生命（会让人误以为旧生命丢了）。
 func maybeImportLife(dbPath string) {
-	importPath := os.Getenv("MINDVERSE_IMPORT")
+	importPath := os.Getenv("TAIXU_IMPORT")
 	if importPath == "" {
 		return
 	}
 	if _, err := os.Stat(dbPath); err == nil {
-		slog.Warn("MINDVERSE_IMPORT set but db already exists — skipping import (won't overwrite a live life)", "db", dbPath)
+		slog.Warn("TAIXU_IMPORT set but db already exists — skipping import (won't overwrite a live life)", "db", dbPath)
 		return
 	}
-	pass := os.Getenv("MINDVERSE_IMPORT_PASSPHRASE")
+	pass := os.Getenv("TAIXU_IMPORT_PASSPHRASE")
 	if pass == "" {
-		fatal("import life", errors.New("MINDVERSE_IMPORT set but MINDVERSE_IMPORT_PASSPHRASE is empty"))
+		fatal("import life", errors.New("TAIXU_IMPORT set but TAIXU_IMPORT_PASSPHRASE is empty"))
 	}
 	f, err := os.Open(importPath)
 	if err != nil {
 		fatal("open import package", err)
 	}
 	defer f.Close()
-	ws := envOr("MINDVERSE_WORKSPACE", "/workspace")
+	ws := envOr("TAIXU_WORKSPACE", "/workspace")
 	man, err := lifepack.Import(f, pass, dbPath, ws)
 	if err != nil {
 		fatal("import life", err)

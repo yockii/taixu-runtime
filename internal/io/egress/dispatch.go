@@ -4,10 +4,10 @@ import (
 	"log/slog"
 	"sync"
 
-	"mindverse/internal/bus"
-	"mindverse/internal/runtime/reflex"
-	"mindverse/internal/runtime/skill"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/bus"
+	"taixu.icu/runtime/internal/runtime/reflex"
+	"taixu.icu/runtime/internal/runtime/skill"
+	"taixu.icu/runtime/internal/storage"
 )
 
 // peerResolver 兜底：当出站事件 channel/to 缺失时，按渠道找最近对端。

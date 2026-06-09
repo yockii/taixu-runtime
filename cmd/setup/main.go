@@ -1,10 +1,10 @@
 // Mindverse Setup CLI · Phase 0.1 脚手架。
 //
 // 子命令：
-//   mindverse-setup help
-//   mindverse-setup feishu   # Phase 0.3 完整接入；当前仅打印步骤
-//   mindverse-setup llm      # Phase 0.3 完整接入；当前仅打印步骤
-//   mindverse-setup env      # 写 .env 文件（交互式）
+//   taixu-setup help
+//   taixu-setup feishu   # Phase 0.3 完整接入；当前仅打印步骤
+//   taixu-setup llm      # Phase 0.3 完整接入；当前仅打印步骤
+//   taixu-setup env      # 写 .env 文件（交互式）
 //
 // 完整向导逻辑在 Phase 0.3 实施。
 package main
@@ -41,7 +41,7 @@ func usage() {
 	fmt.Println(`Mindverse Setup CLI (Phase 0.1 stub)
 
 Usage:
-  mindverse-setup <command>
+  taixu-setup <command>
 
 Commands:
   help    Show this message

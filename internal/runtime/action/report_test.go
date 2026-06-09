@@ -4,10 +4,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"mindverse/internal/bus"
-	"mindverse/internal/core"
-	"mindverse/internal/runtime/memory"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/bus"
+	"taixu.icu/runtime/internal/core"
+	"taixu.icu/runtime/internal/runtime/memory"
+	"taixu.icu/runtime/internal/storage"
 )
 
 // TestMaybeReportToRequester 验证完成后主动汇报路径（拟人交互闭环任务 3）：

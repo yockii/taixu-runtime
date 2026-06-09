@@ -5,9 +5,9 @@ import (
 	"sync"
 	"testing"
 
-	"mindverse/internal/bus"
-	"mindverse/internal/runtime/reflex"
-	"mindverse/internal/runtime/skill"
+	"taixu.icu/runtime/internal/bus"
+	"taixu.icu/runtime/internal/runtime/reflex"
+	"taixu.icu/runtime/internal/runtime/skill"
 )
 
 // fakeEgress 记录收到的 Send/React/Approval，供断言"收到且不串渠道"。

@@ -14,11 +14,11 @@ import (
 	"strings"
 	"sync"
 
-	"mindverse/internal/bus"
-	"mindverse/internal/core"
-	"mindverse/internal/io/embed"
-	"mindverse/internal/shared"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/bus"
+	"taixu.icu/runtime/internal/core"
+	"taixu.icu/runtime/internal/io/embed"
+	"taixu.icu/runtime/internal/shared"
+	"taixu.icu/runtime/internal/storage"
 )
 
 // noiseEvents 纯内部节拍事件——对"经历"无叙事价值，episode 摘要只计数不列正文。

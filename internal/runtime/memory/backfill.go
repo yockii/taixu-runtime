@@ -4,8 +4,8 @@ import (
 	"context"
 	"log/slog"
 
-	"mindverse/internal/io/embed"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/io/embed"
+	"taixu.icu/runtime/internal/storage"
 )
 
 // 历史回填：给 embedding 为空的历史记忆行补 doc 向量（锁定长跑生命的旧记忆需要）。

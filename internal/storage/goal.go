@@ -3,7 +3,7 @@ package storage
 import (
 	"strings"
 
-	"mindverse/internal/core"
+	"taixu.icu/runtime/internal/core"
 )
 
 func EnqueueGoal(lifeID string, g *core.Goal) (int64, error) {

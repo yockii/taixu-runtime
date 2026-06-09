@@ -22,11 +22,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
-	"mindverse/internal/io/embed"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/io/embed"
+	"taixu.icu/runtime/internal/storage"
 )
 
 // 持久化配置键（复用 storage config KV）。
@@ -104,7 +105,7 @@ var (
 
 	opMu    sync.Mutex // 串行化 enable/disable 长操作，避免并发拉起多个子进程
 	onReady func()     // 就绪回调（主程序注入：触发历史回填）
-	managed bool       // 是否由本管理器接管（外部 MINDVERSE_EMBED_URL 覆盖时为 false）
+	managed bool       // 是否由本管理器接管（外部 TAIXU_EMBED_URL 覆盖时为 false）
 )
 
 // Init 装配管理器并按持久化开关自恢复。
@@ -126,6 +127,10 @@ func Init(mDir, bin string, ready func()) {
 	// 默认开（用户决策 2026-06-08）：嵌入是召回主用通道，开机自动启用（有模型直起 / 缺模型自动下）。
 	// 关键词召回保留为「嵌入真挂了」的崩溃保险，不再是用户需手动开的并行模式。面板仍可显式关。
 	enabled := storage.GetConfigBool(cfgEnabled, true)
+	// env 硬开关（部署/观察生命可强制关嵌入：省内存、免下模型）。设了就压过 DB 配置。
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("TAIXU_EMBED_ENABLED"))); v != "" {
+		enabled = v == "true" || v == "1" || v == "yes" || v == "on"
+	}
 	mu.Unlock()
 
 	if enabled {
@@ -186,7 +191,7 @@ func Enable(quantSel string) error {
 	}
 	if !managed {
 		mu.Unlock()
-		return errors.New("embedsvc: external MINDVERSE_EMBED_URL override active; panel toggle disabled")
+		return errors.New("embedsvc: external TAIXU_EMBED_URL override active; panel toggle disabled")
 	}
 	mu.Unlock()
 

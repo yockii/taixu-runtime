@@ -1,7 +1,7 @@
 package httpapi
 
 import (
-	"mindverse/internal/io/egress"
+	"taixu.icu/runtime/internal/io/egress"
 )
 
 // WebChannelName "web" 渠道名（入站/出站对齐）。网页发起的请求其响应回 web 渠道。

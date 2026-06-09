@@ -9,9 +9,9 @@ import (
 	"fmt"
 	mrand "math/rand/v2"
 
-	"mindverse/internal/core"
-	"mindverse/internal/shared"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/core"
+	"taixu.icu/runtime/internal/shared"
+	"taixu.icu/runtime/internal/storage"
 )
 
 // Bear 创建新生命体。返回 LifeID。

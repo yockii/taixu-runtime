@@ -7,7 +7,7 @@
 
 <svelte:head>
 	<link rel="icon" href={favicon} />
-	<title>Mindverse · Phase 0</title>
+	<title>Taixu · Phase 0</title>
 </svelte:head>
 
 <main class="mx-auto max-w-7xl px-4 py-6">

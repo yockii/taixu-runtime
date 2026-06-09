@@ -42,8 +42,8 @@ COPY internal/ ./internal/
 COPY --from=frontend /web/build/ ./cmd/runtime/webbuild/
 
 ENV CGO_ENABLED=0
-RUN go build -ldflags="-s -w" -trimpath -o /out/mindverse        ./cmd/runtime
-RUN go build -ldflags="-s -w" -trimpath -o /out/mindverse-setup  ./cmd/setup
+RUN go build -ldflags="-s -w" -trimpath -o /out/taixu        ./cmd/runtime
+RUN go build -ldflags="-s -w" -trimpath -o /out/taixu-setup  ./cmd/setup
 
 # ---------- 阶段 3：llama.cpp server 二进制来源 ----------
 # 嵌入服务以 llama-server 子进程跑（面板自管，见 internal/runtime/embedsvc）。
@@ -103,14 +103,19 @@ ENV http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= no_proxy= NO_PROXY=
 
 WORKDIR /app
 
-COPY --from=builder /out/mindverse        /usr/local/bin/mindverse
-COPY --from=builder /out/mindverse-setup  /usr/local/bin/mindverse-setup
+COPY --from=builder /out/taixu        /usr/local/bin/taixu
+COPY --from=builder /out/taixu-setup  /usr/local/bin/taixu-setup
 
-ENV MINDVERSE_DATA=/app/data \
+ENV TAIXU_DATA=/app/data \
     NODE_PATH=/usr/local/lib/node_modules \
-    MINDVERSE_LLAMA_BIN=/usr/local/bin/llama-server
-VOLUME ["/app/data", "/sandbox"]
+    TAIXU_LLAMA_BIN=/usr/local/bin/llama-server \
+    TAIXU_SANDBOX=/workspace/sandbox \
+    TAIXU_SKILLS=/workspace/skills
+# /app/data = 生命的大脑（sqlite 记忆/状态/密钥）；/workspace = 生命的工作目录：
+#   /workspace/sandbox 生命 fs.* 写出的诗/文/代码，/workspace/skills 投放的技能。
+# 用户 bind-mount /workspace 到本地磁盘即可保留生命的创作（见 docker-compose volumes）。
+VOLUME ["/app/data", "/workspace"]
 
 EXPOSE 3000
 
-ENTRYPOINT ["/usr/local/bin/mindverse"]
+ENTRYPOINT ["/usr/local/bin/taixu"]

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"mindverse/internal/core"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/core"
+	"taixu.icu/runtime/internal/storage"
 )
 
 // TestMaybeSedimentKnowledge 验证根研究目标完成 → 综合整棵子树成果 → 生成知识库 dossier。

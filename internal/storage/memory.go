@@ -3,7 +3,7 @@ package storage
 import (
 	"encoding/json"
 
-	"mindverse/internal/core"
+	"taixu.icu/runtime/internal/core"
 )
 
 // DialogueTurn 一轮对话（用户或生命体的一句话），供 reflex 载入历史上下文 + 面板展示。

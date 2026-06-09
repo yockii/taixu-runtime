@@ -7,11 +7,11 @@ export type Lang = 'zh' | 'en';
 const STORAGE_KEY = 'mindverse.lang';
 
 function initialLang(): Lang {
-	if (!browser) return 'zh';
+	// 默认英文（与 site/platform-web 一致；截图/首屏读作国际界面）。用户切换后记 localStorage 持久。
+	if (!browser) return 'en';
 	const saved = localStorage.getItem(STORAGE_KEY);
 	if (saved === 'zh' || saved === 'en') return saved;
-	const sys = navigator.language?.toLowerCase() ?? 'zh';
-	return sys.startsWith('zh') ? 'zh' : 'en';
+	return 'en';
 }
 
 export const lang = writable<Lang>(initialLang());
@@ -22,7 +22,7 @@ if (browser) {
 
 const dict: Record<Lang, Record<string, string>> = {
 	zh: {
-		title: 'Mindverse · 心域文明',
+		title: 'Taixu · 太虚文明',
 		cycle: 'cycle',
 		state_title: '生命状态 / 心境',
 		genome_title: '基因（出生即定）',
@@ -41,6 +41,7 @@ const dict: Record<Lang, Record<string, string>> = {
 		access_token_title: '访问令牌',
 		access_token_hint: '此实例开启了写操作鉴权。注入对话、改开关、批准依赖等交互需填入与服务端一致的令牌（仅存本机）。',
 		access_token_ph: '输入访问令牌…',
+		access_token_bad: '令牌错误，未解锁。请检查与服务端 TAIXU_ACCESS_TOKEN 是否一致。',
 		save: '保存',
 		saved: '已保存',
 		confirm: '确定',
@@ -182,7 +183,7 @@ const dict: Record<Lang, Record<string, string>> = {
 		state_Memorial: '纪念'
 	},
 	en: {
-		title: 'Mindverse · Digital Life',
+		title: 'Taixu · Digital Life',
 		cycle: 'cycle',
 		state_title: 'Life State / Mental',
 		genome_title: 'Genome (immutable at birth)',
@@ -202,6 +203,7 @@ const dict: Record<Lang, Record<string, string>> = {
 		access_token_hint:
 			'This instance requires auth for write actions. Injecting dialogue, toggling switches, approving deps, etc. need a token matching the server (stored locally only).',
 		access_token_ph: 'Enter access token…',
+		access_token_bad: 'Wrong token — not unlocked. Check it matches the server’s TAIXU_ACCESS_TOKEN.',
 		save: 'Save',
 		saved: 'Saved',
 		confirm: 'OK',

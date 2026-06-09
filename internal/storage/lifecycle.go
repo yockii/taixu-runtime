@@ -1,6 +1,6 @@
 package storage
 
-import "mindverse/internal/core"
+import "taixu.icu/runtime/internal/core"
 
 func LoadLifecycleState(lifeID string) (core.LifecycleState, int64, error) {
 	var state string

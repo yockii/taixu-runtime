@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"mindverse/internal/core"
-	"mindverse/internal/runtime/state"
+	"taixu.icu/runtime/internal/core"
+	"taixu.icu/runtime/internal/runtime/state"
 )
 
 // ExternalRequest 外部请求。

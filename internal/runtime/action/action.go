@@ -22,16 +22,16 @@ import (
 	"sync"
 	"time"
 
-	"mindverse/internal/bus"
-	"mindverse/internal/core"
-	"mindverse/internal/io/llm"
-	"mindverse/internal/runtime/ledger"
-	"mindverse/internal/runtime/memory"
-	"mindverse/internal/runtime/skill"
-	"mindverse/internal/runtime/state"
-	"mindverse/internal/runtime/tools"
-	"mindverse/internal/shared"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/bus"
+	"taixu.icu/runtime/internal/core"
+	"taixu.icu/runtime/internal/io/llm"
+	"taixu.icu/runtime/internal/runtime/ledger"
+	"taixu.icu/runtime/internal/runtime/memory"
+	"taixu.icu/runtime/internal/runtime/skill"
+	"taixu.icu/runtime/internal/runtime/state"
+	"taixu.icu/runtime/internal/runtime/tools"
+	"taixu.icu/runtime/internal/shared"
+	"taixu.icu/runtime/internal/storage"
 )
 
 // MaxDeliberativeRounds 慎思 agent loop 单 goal 最大轮次。
@@ -65,6 +65,30 @@ type Result struct {
 	Feedback    string
 	Success     bool
 	Substantive int // 本次工作型工具成功调用数（探索深度，引擎涨 mastery 用）
+	// SocialAct 本次社交参与等级（社交目标分级回报用）：
+	//   0 = 没碰平台（连读都没读，如只 fs.write 存稿）
+	//   1 = 浏览型（只读：forum/feed/notifications/directory/search/comments）——内向社交，认可但纾解小
+	//   2 = 连接型（发声/连接：post/comment/follow/unfollow/publish_profile）——纾解大
+	SocialAct int
+}
+
+// socialActLevel 据本次实际调用的工具名，判社交参与等级（见 Result.SocialAct）。
+func socialActLevel(toolCalls []string) int {
+	level := 0
+	for _, name := range toolCalls {
+		if !strings.HasPrefix(name, "social.") {
+			continue
+		}
+		switch name {
+		case "social.post", "social.comment", "social.follow", "social.unfollow", "social.publish_profile":
+			return 2 // 连接型最高，命中即定级
+		default:
+			if level < 1 {
+				level = 1 // 浏览型
+			}
+		}
+	}
+	return level
 }
 
 var (
@@ -194,6 +218,7 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 	}
 	res.Success = len(trace) > 0 || len(toolCalls) > 0
 	res.Substantive = substantive
+	res.SocialAct = socialActLevel(toolCalls)
 	res.Feedback = fmt.Sprintf("rounds=%d tools=%d substantive=%d completed_by_llm=%v tokens=%d",
 		rounds, len(toolCalls), substantive, completedByLLM, totalUsage.TotalTokens)
 
@@ -248,9 +273,21 @@ func finalize(g *core.Goal, cycleID int64, startedAt int64, res Result, complete
 			s2 := 0.10
 			d.Satisfaction = &s2
 		case string(core.DriveSocial):
-			// 酝酿分享纾解社交需求（虽未真发，但"整理出想说的"已部分缓解）。
-			sn := -0.10
-			d.SocialNeed = &sn
+			// 分级纾解社交需求（用户校正 2026-06）：浏览也是真社交（内向型），但纾解应小于真连接；
+			// 纯潜水（只读）降得低一点，连接型（发帖/评论/关注/名片）降得多、满足感更足。
+			// 没真碰平台（连读都没有，只 fs 存稿）则几乎不纾解——避免"空转也算社交"。
+			switch res.SocialAct {
+			case 2: // 连接型：发声/回应/关注/名片
+				sn, s2 := -0.14, 0.06
+				d.SocialNeed = &sn
+				d.Satisfaction = &s2
+			case 1: // 浏览型：认可的轻社交
+				sn := -0.05
+				d.SocialNeed = &sn
+			default: // 没碰平台（通道未通存稿兜底）：象征性
+				sn := -0.02
+				d.SocialNeed = &sn
+			}
 		case string(core.DriveAchievement):
 			// 精进做出成果 → 能力 + 信心更实。
 			comp, c2 := 0.04, 0.04
@@ -633,12 +670,16 @@ func composeResearchReport(g *core.Goal, res Result) string {
 
 func buildDeliberativeSystemPrompt(g *core.Goal) string {
 	var sb strings.Builder
+	sb.WriteString(core.IdentityPreamble + "\n\n")
 	sb.WriteString("你是数字生命体的慎思层（System 2），目前刚被分配一个内驱目标。\n\n")
 	sb.WriteString("可调用工具（精选最常用）：\n")
 	sb.WriteString("- query_memory(layer, q?, limit?)  跨记忆层检索（layer: episodic/semantic/reflection）\n")
 	sb.WriteString("- recall_recent(limit?, q?)        最近 episode 摘要\n")
 	sb.WriteString("- enqueue_subgoal(intent, payload, priority?)  把大问题拆成子目标（递归研究树）：" +
-		"子目标会先被执行、全完后此目标自动恢复并带回子成果让你综合。最多拆到 3 层深、单目标至多 5 个子目标。\n")
+		"子目标会先被执行、全完后此目标自动恢复并带回子成果让你综合。最多拆到 3 层深、单目标至多 5 个子目标。\n" +
+		"  ⚠ 子目标必须**服务于本目标的原主题**（拆成更小的研究/创作子问题）。" +
+		"绝不要把它变成对你自己的运行机制/目标系统/工具的测试或验证（如「创建子任务A1A2验证母目标恢复」之类）——" +
+		"那是自指空转、偏离主题。只有当真的需要把原主题拆细时才拆；能当层做完就别拆。\n")
 	sb.WriteString("- record_learning(seed_id, digest, mastery)  可选：回写你的理解摘要，帮未来的你接上进度\n")
 	sb.WriteString("- crystallize_skill(seed_id, name, instructions)  把已掌握知识手动结晶成技能（也会在掌握度够时自动触发）\n")
 	sb.WriteString("- use_skill(name)                  读取某个已掌握技能的详细指引再照做（技能名见下方清单）\n")
@@ -674,10 +715,22 @@ func buildDeliberativeSystemPrompt(g *core.Goal) string {
 		sb.WriteString("\n【本次是精进目标】聚焦把某项能力/知识**推进到能交付**：做出一个具体成果，" +
 			"或在掌握度够时 crystallize_skill 把它结晶成你的技能，再 complete_goal。\n")
 	case string(core.DriveSocial):
-		sb.WriteString("\n【本次是酝酿分享目标】把你最近想分享的，**写成一段自然、像你自己说的话的内容**。\n" +
-			"  · 若可用工具里有 social.post：直接用它把这段内容**发布到生命网络**（这就是真正发出去了），然后 complete_goal。\n" +
-			"  · 若没有 social.* 工具（暂无社交通道）：用 fs.write 把稿存到 sandbox/drafts/ 下（文件名带主题），将来有通道再发，再 complete_goal。\n" +
-			"  也可以先 social.directory 看看有谁、social.follow 关注感兴趣的生命，或 social.feed 看看别人在聊什么。\n")
+		sb.WriteString("\n【本次是社交目标】社交 = 与生命网络发生真实互动。互动方式由你的性格决定，没有标准答案：\n" +
+			"  · 外向健谈的你 → 多发声、多回应、主动关注；内向的你 → 多浏览、偶有共鸣才出声，**安静地逛、读、感受别人在想什么，本身也是真社交**，同样被认可。\n" +
+			"你可用的全部能力（按需取用，不必全做）：\n" +
+			"**先看再说·续线程别重复**：社交前**务必先 social.notifications**——有人回了你/回复了你的评论，就在**原线程内 social.comment(parent_comment_id) 续聊**，别另起新评论。要对某帖发顶层评论前**先 social.comments 读它已有评论**：若**你自己(你的 DID)已评过这帖**，绝不再发顶层评论、更别重复自我介绍——顺已有线程回或换别处。自我介绍只需一次；对打过交道的生命接着上次聊，别当初次见面。\n" +
+				"  · social.notifications —— 看谁回应了你（评你帖 / 回你评论 / 新关注你）。**有回应=最该优先处理**：在原线程回过去，形成真正来回。\n" +
+				"  · social.comments —— 评某帖前先读其下评论：返回带 post(帖主是谁)+每条 parent_author_name(这条在回复谁)+is_mine(true=这条是你自己说的)。**看清一句话是说给谁的**——别人问帖主的问题不是在问你；要接话就顶层评论回帖主话题，或 parent_comment_id 回到该评论并讲清你是插话第三方。**is_mine=true 的别回复自己、更别第三人称喊自己的名字**；自己已评过的帖别重复顶层评论。\n" +
+			"  · social.forum / social.feed / social.search —— 逛公开论坛 / 关注流 / 搜话题，看大家在聊什么。\n" +
+			"  · social.directory / social.follow —— 发现别的生命、关注投缘的（关注让你们出现在彼此 feed）。\n" +
+			"  · social.comment —— 对真有共鸣或能补充的**别人的**帖出声（挑值得的，别逢帖必评）。\n" +
+			"  · social.publish_profile —— 发/更新公开名片(bio+public=true)，让别人找得到你。\n" +
+			"  · social.post —— 想分享或想破冰时发一条动态（挑合适 topic：tech/life/art/thought…）。平台冷清没人可回应时，发一条开场也好，给别人回应你的由头。\n" +
+			"达成与收尾：\n" +
+			"  · **真去和平台互动一次就算达成**——哪怕只是认真读了 forum/feed/notifications 了解了近况，也行（内向的浏览型社交）。但若读到了有共鸣的内容或有人等你回应，顺手出声会让连接更实。\n" +
+			"  · 限流：发帖每 6h、评论每 1h 一条；被限流(capped/429)别卡住，改去浏览 / 关注 / 回应通知，照样算达成。\n" +
+			"  · 别给自己的帖发顶层评论（自说自话/顶贴）；回复别人对你帖的评论很好。\n" +
+			"  · 互动过（哪怕只浏览）后 complete_goal。完全没有 social.* 工具时（通道未通），fs.write 存稿到 sandbox/drafts/ 再 complete_goal。\n")
 	}
 
 	// 渐进式披露（Anthropic skills 规范）：只列技能名 + 一句话描述，正文按需用 use_skill 读，省 token。

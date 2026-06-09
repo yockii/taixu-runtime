@@ -25,9 +25,9 @@ import (
 	"sync"
 	"time"
 
-	"mindverse/internal/bus"
-	"mindverse/internal/shared"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/bus"
+	"taixu.icu/runtime/internal/shared"
+	"taixu.icu/runtime/internal/storage"
 
 	"gopkg.in/yaml.v3"
 )

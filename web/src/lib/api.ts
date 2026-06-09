@@ -1,4 +1,4 @@
-// Mindverse Phase 0.4 观察面板 API client。
+// Taixu Phase 0.4 观察面板 API client。
 
 export interface Genome {
 	life_id: string;
@@ -157,7 +157,7 @@ async function getJSON<T>(path: string): Promise<T> {
 }
 
 // --- 访问令牌（写/交互操作鉴权）---
-// 服务端设了 MINDVERSE_ACCESS_TOKEN 时，所有写操作要带 X-Mindverse-Token。
+// 服务端设了 TAIXU_ACCESS_TOKEN 时，所有写操作要带 X-Taixu-Token。
 // 令牌存浏览器本地，仅本机；空则不带（本地无鉴权部署照常用）。
 const TOKEN_KEY = 'mv_access_token';
 
@@ -172,10 +172,23 @@ export function setToken(token: string): void {
 	else localStorage.removeItem(TOKEN_KEY);
 }
 
+/** 验证候选令牌是否被服务端接受：拿候选 token 打一个受保护端点（/api/actions 含对话=需令牌），
+ * 非 401 即有效。用于「输入令牌」时先验真伪再解锁，杜绝错令牌也乐观解锁（开放读照样 200 的误导）。 */
+export async function verifyToken(candidate: string): Promise<boolean> {
+	try {
+		const r = await fetch('/api/actions?limit=1', {
+			headers: candidate ? { 'X-Taixu-Token': candidate } : {}
+		});
+		return r.status !== 401;
+	} catch {
+		return false;
+	}
+}
+
 /** 写请求 header：带本地保存的访问令牌（没设则空）。 */
 export function authHeaders(): Record<string, string> {
 	const t = getToken();
-	return t ? { 'X-Mindverse-Token': t } : {};
+	return t ? { 'X-Taixu-Token': t } : {};
 }
 
 /** 统一的写请求：自动带令牌；401 抛出可读错误。 */
@@ -221,6 +234,10 @@ export const api = {
 	/** 设置主动消息静默时段（勿扰）。 */
 	setQuiet: (q: { enabled: boolean; start: number; end: number; tz_offset_min: number }) =>
 		apiPost<{ enabled: boolean; start: number; end: number; tz_offset_min: number }>('/api/config/quiet', q),
+	/** 平台社交通道状态（是否接通 + 本生命 DID）。 */
+	platformStatus: () => getJSON<{ ready: boolean; did: string }>('/api/platform/status'),
+	/** 用平台领取的临时认领码，把本生命改绑到你的用户账户。 */
+	platformClaim: (code: string) => apiPost<{ ok: boolean; did: string }>('/api/platform/claim', { code }),
 	/** 嵌入增强记忆状态（开关 / 下载进度 / 向量覆盖）。GET 开放，前端轮询。 */
 	embedStatus: () => getJSON<EmbedStatus>('/api/embed/status'),
 	/** 启用嵌入增强记忆（按需下载模型 + 拉起子进程）。异步，轮询 embedStatus 看进度。 */

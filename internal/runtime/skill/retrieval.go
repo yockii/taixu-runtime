@@ -5,8 +5,8 @@ import (
 	"sort"
 	"time"
 
-	"mindverse/internal/io/embed"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/io/embed"
+	"taixu.icu/runtime/internal/storage"
 )
 
 // SkillListThreshold 技能数 ≤ 此值时直接全列（无需检索，省一次 embed 调用）。

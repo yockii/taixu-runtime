@@ -1,7 +1,7 @@
 // storage 查询函数（Phase 0.4 观察面板用）。
 package storage
 
-import "mindverse/internal/core"
+import "taixu.icu/runtime/internal/core"
 
 // ListEpisodes 取近 N 段（按 started_at desc）。q 非空时模糊匹配 summary/title。
 func ListEpisodes(lifeID, q string, limit, offset int) ([]core.Episode, error) {

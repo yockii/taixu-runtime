@@ -35,15 +35,15 @@ import (
 	"sync"
 	"time"
 
-	"mindverse/internal/io/embed"
-	"mindverse/internal/lifepack"
-	"mindverse/internal/runtime/embedsvc"
-	"mindverse/internal/runtime/memory"
-	"mindverse/internal/runtime/perception"
-	"mindverse/internal/runtime/reflex"
-	"mindverse/internal/runtime/skill"
-	"mindverse/internal/runtime/state"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/io/embed"
+	"taixu.icu/runtime/internal/lifepack"
+	"taixu.icu/runtime/internal/runtime/embedsvc"
+	"taixu.icu/runtime/internal/runtime/memory"
+	"taixu.icu/runtime/internal/runtime/perception"
+	"taixu.icu/runtime/internal/runtime/reflex"
+	"taixu.icu/runtime/internal/runtime/skill"
+	"taixu.icu/runtime/internal/runtime/state"
+	"taixu.icu/runtime/internal/storage"
 )
 
 var (
@@ -121,10 +121,13 @@ func Start(ctx context.Context, addr string) *http.Server {
 	// 详情用 Go 1.22+ ServeMux 路径参数 {id}；列表用固定路径（精确匹配优先于 {id} 模式）。
 	mux.HandleFunc("/api/knowledge", apiKnowledgeList)
 	mux.HandleFunc("/api/knowledge/{id}", apiKnowledgeDetail)
+	// 平台社交通道：状态 + 面板认领（用临时码把本生命改绑到用户账户）。
+	mux.HandleFunc("/api/platform/status", apiPlatformStatus)
+	mux.HandleFunc("/api/platform/claim", apiPlatformClaim)
 
-	accessToken = strings.TrimSpace(os.Getenv("MINDVERSE_ACCESS_TOKEN"))
+	accessToken = strings.TrimSpace(os.Getenv("TAIXU_ACCESS_TOKEN"))
 	if accessToken != "" {
-		slog.Info("http access token enabled — write/interactive ops require X-Mindverse-Token")
+		slog.Info("http access token enabled — write/interactive ops require X-Taixu-Token")
 	}
 
 	srv := &http.Server{Addr: addr, Handler: withAuth(mux), ReadHeaderTimeout: 5 * time.Second}
@@ -142,20 +145,20 @@ func Start(ctx context.Context, addr string) *http.Server {
 	return srv
 }
 
-// accessToken 来自 MINDVERSE_ACCESS_TOKEN。非空时，所有写/交互操作需带匹配 token。
+// accessToken 来自 TAIXU_ACCESS_TOKEN。非空时，所有写/交互操作需带匹配 token。
 // 空（默认）则不鉴权——localhost dogfooding 直接用。
 var accessToken string
 
 // withAuth 是写操作鉴权中间件（用户 2026-06-05 提出：防生命体被暴露到公网后被陌生人交互）。
 //
 // 策略（方法级，面向未来）：token 已设时，/api/ 下的**变更类方法**（POST/PUT/PATCH/DELETE）
-// 必须带匹配的 X-Mindverse-Token。读操作（GET/HEAD，含 SSE /api/stream）与静态资源永远开放——
+// 必须带匹配的 X-Taixu-Token。读操作（GET/HEAD，含 SSE /api/stream）与静态资源永远开放——
 // 暴露面板看看无妨，但注入消息 / 改 dangerous-skip / 批准装依赖等必须授权。
 func withAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if accessToken != "" && strings.HasPrefix(r.URL.Path, "/api/") &&
 			(isMutating(r.Method) || isProtectedRead(r)) {
-			got := r.Header.Get("X-Mindverse-Token")
+			got := r.Header.Get("X-Taixu-Token")
 			if subtle.ConstantTimeCompare([]byte(got), []byte(accessToken)) != 1 {
 				writeJSON(w, http.StatusUnauthorized, map[string]any{
 					"ok": false, "err": "unauthorized: missing or invalid access token",
@@ -387,7 +390,7 @@ func authed(r *http.Request) bool {
 	if accessToken == "" {
 		return true
 	}
-	return subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Mindverse-Token")), []byte(accessToken)) == 1
+	return subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Taixu-Token")), []byte(accessToken)) == 1
 }
 
 // -------- skill handlers (D.2 / D.3) --------
@@ -579,7 +582,7 @@ func skillIDParam(r *http.Request) string {
 
 // apiEmbedBackfill 手动触发历史记忆向量回填（给锁定生命的旧记忆补向量）。
 // 有界 + best-effort + 可重入：嵌入服务不可用 → 跳过返回 0；?max= 控每层上限（默认 256）。
-// 写操作，token 已设时需带 X-Mindverse-Token（withAuth 拦截）。
+// 写操作，token 已设时需带 X-Taixu-Token（withAuth 拦截）。
 func apiEmbedBackfill(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -613,7 +616,7 @@ func apiEmbedStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // apiEmbedEnable 启用嵌入增强记忆（POST {quant?}）。异步：立即返回，前端轮询 status 看进度。
-// 写操作，token 已设时需带 X-Mindverse-Token（withAuth 拦截）。
+// 写操作，token 已设时需带 X-Taixu-Token（withAuth 拦截）。
 func apiEmbedEnable(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -715,7 +718,7 @@ func apiExport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	man := lifepack.Manifest{
-		AppVersion:    getenvOr("MINDVERSE_VERSION", "dev"),
+		AppVersion:    getenvOr("TAIXU_VERSION", "dev"),
 		LifeID:        lifeID,
 		ExportedAt:    time.Now().Unix(),
 		GenomeVersion: "",
@@ -726,7 +729,7 @@ func apiExport(w http.ResponseWriter, r *http.Request) {
 	if v, ok, _ := storage.GetMeta("version"); ok {
 		man.SchemaVersion = v
 	}
-	ws := getenvOr("MINDVERSE_WORKSPACE", "/workspace")
+	ws := getenvOr("TAIXU_WORKSPACE", "/workspace")
 
 	// 先打到内存再下发：包失败可干净返回 500（DB 为 MB 级，可接受）。
 	var buf bytes.Buffer

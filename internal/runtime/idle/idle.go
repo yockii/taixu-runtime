@@ -19,14 +19,14 @@ import (
 	"sync"
 	"time"
 
-	"mindverse/internal/core"
-	"mindverse/internal/io/llm"
-	"mindverse/internal/runtime/memory"
-	"mindverse/internal/runtime/reflex"
-	"mindverse/internal/runtime/skill"
-	"mindverse/internal/runtime/state"
-	"mindverse/internal/shared"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/core"
+	"taixu.icu/runtime/internal/io/llm"
+	"taixu.icu/runtime/internal/runtime/memory"
+	"taixu.icu/runtime/internal/runtime/reflex"
+	"taixu.icu/runtime/internal/runtime/skill"
+	"taixu.icu/runtime/internal/runtime/state"
+	"taixu.icu/runtime/internal/shared"
+	"taixu.icu/runtime/internal/storage"
 )
 
 // BoredomThreshold 连续 idle 多少次后触发自发兴趣生成。
@@ -58,12 +58,23 @@ func Init(id string) error {
 func Tick(genome core.Genome) bool {
 	// 状态演化（选项 B：休息 + 孤独 + 平复 + 轻微无聊）。
 	// social_need 增速按 sociability 调（R82）：内向者孤独涨得慢，外向者快。
+	life, mental := state.Snapshot()
 	energy := 0.01
 	stress := -0.02
-	// social_need 涨速放慢 ~4×（R89）：原 0.005+0.03·soc 每 tick 太猛，cycle ~60s 几十轮就顶满，
-	// 导致频繁想打扰用户。改慢，孤独是慢慢累积的。
-	social := 0.0015 + 0.006*genome.Sociability
-	sat := -0.01
+	// social_need 涨速放慢 ~4×（R89）；并按「余量(1-SocialNeed)」衰减增速（软上限修，2026-06）：
+	// 原线性增长几十轮就钉死 1.0、relief(-0.14) 追不上 → social_need 永远顶满、satisfaction 被掏空。
+	// 改成接近顶时增速趋零（渐近 <1.0），让真社交的 relief 能把它实质拉下来，而非永远 1.0。
+	social := (0.0015 + 0.006*genome.Sociability) * (1.0 - life.SocialNeed)
+	// satisfaction 向基线回归（idle 失衡修，2026-06）：原固定 -0.01 把满足感线性抽到 0 下限——
+	// idle cycle 远多于产出目标 cycle（observed satisfaction 6h 钉死 0）。改为向 ~0.3 基线漂移：
+	// 平静独处 ≈ 温和满足(回升到基线)，成就把它抬高于基线、之后缓降回基线，而非永远归零。
+	const satBaseline = 0.3
+	var sat float64
+	if mental.Satisfaction > satBaseline {
+		sat = -0.01 // 高于基线：闲散中缓降回归
+	} else {
+		sat = 0.006 // 低于基线：无事发生≠痛苦，平静中缓慢回升至基线
+	}
 	_ = state.Apply(state.Delta{
 		Energy:       &energy,
 		Stress:       &stress,
@@ -78,7 +89,7 @@ func Tick(genome core.Genome) bool {
 
 	// 分支 1（B）：社交压力高 → 主动找老联系人（护栏 + toggle 在 reflex 内判定）。
 	// 够着了人比憋兴趣优先（孤独比无聊更迫切）。
-	life, _ := state.Snapshot()
+	life, _ = state.Snapshot()
 	if life.SocialNeed >= SocialPressureThreshold {
 		if reflex.TryProactiveReach(genome) {
 			return true
@@ -126,8 +137,11 @@ func spawnSpontaneousInterest(genome core.Genome) bool {
 	if !llm.Configured() {
 		return false
 	}
-	// 已有较强兴趣时不强行造新的（避免无意义堆积）
-	if seeds, err := storage.ListInterestSeeds(lifeID, 0.4, 1); err == nil && len(seeds) > 0 {
+	// 允许积累一个小兴趣组合再停（话题固着修，2026-06）：原「存在任一≥0.4 种子即拒绝造新」
+	// → 创世后 idle 造出的唯一种子被反复探索一直强 → 永远只有一个兴趣、所有知识目标磨同一主题
+	//（observed 心渊 16 个知识目标全围 seed#1）。改为允许长到 3 个活跃种子，给 drives 的主线/求新
+	// 双锚 + 探索衰减轮转留素材；满 3 个才不再造，避免无意义堆积。
+	if seeds, err := storage.ListInterestSeeds(lifeID, 0.4, 3); err == nil && len(seeds) >= 3 {
 		return false
 	}
 

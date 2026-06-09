@@ -16,12 +16,12 @@ import (
 	"sync"
 	"time"
 
-	"mindverse/internal/bus"
-	"mindverse/internal/core"
-	"mindverse/internal/runtime/lifecycle"
-	"mindverse/internal/runtime/perception"
-	"mindverse/internal/runtime/state"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/bus"
+	"taixu.icu/runtime/internal/core"
+	"taixu.icu/runtime/internal/runtime/lifecycle"
+	"taixu.icu/runtime/internal/runtime/perception"
+	"taixu.icu/runtime/internal/runtime/state"
+	"taixu.icu/runtime/internal/storage"
 )
 
 const (

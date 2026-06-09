@@ -1,6 +1,6 @@
 package lark
 
-import "mindverse/internal/io/egress"
+import "taixu.icu/runtime/internal/io/egress"
 
 // Egress 飞书出站渠道实现（egress.Egress + egress.ApprovalSender）。
 //

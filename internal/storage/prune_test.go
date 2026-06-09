@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"mindverse/internal/core"
+	"taixu.icu/runtime/internal/core"
 )
 
 func countRows(t *testing.T, table, lifeID string) int {

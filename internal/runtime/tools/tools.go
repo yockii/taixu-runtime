@@ -22,7 +22,7 @@ import (
 	"sort"
 	"sync"
 
-	"mindverse/internal/io/llm"
+	"taixu.icu/runtime/internal/io/llm"
 )
 
 // Lane 工具所属通道。
@@ -60,7 +60,11 @@ type Tool struct {
 	Description string
 	Parameters  map[string]any // JSON Schema
 	Lanes       []Lane
-	Handler     Handler
+	// AlwaysLoad 常驻白名单：标记为 true 的工具属于核心能力（如社交核心、complete_goal、fs 基础），
+	// 将来给 deliberative agent 引入相关性检索筛选时，这些永远进工具集、不被裁掉。当前无筛选（全量加载），
+	// 此标记仅作登记，由 ListAlwaysLoad 暴露。
+	AlwaysLoad bool
+	Handler    Handler
 }
 
 // ErrUnknownTool Dispatch 未找到工具。
@@ -150,6 +154,22 @@ func ListLLMTools(lane Lane) []llm.Tool {
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// ListAlwaysLoad 返回 lane 内标了 AlwaysLoad 的核心工具名（升序）。
+// 任务3 常驻白名单的查询面：将来 deliberative agent 引入工具相关性检索时，
+// 用此保证核心能力（社交核心 / complete_goal / fs 基础）永远在工具集里、不被裁掉。
+func ListAlwaysLoad(lane Lane) []string {
+	mu.RLock()
+	defer mu.RUnlock()
+	var out []string
+	for _, t := range byLane[lane] {
+		if t.AlwaysLoad {
+			out = append(out, t.Name)
+		}
+	}
+	sort.Strings(out)
 	return out
 }
 

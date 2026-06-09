@@ -18,14 +18,14 @@ import (
 	"fmt"
 	"strings"
 
-	"mindverse/internal/core"
-	"mindverse/internal/io/embed"
-	"mindverse/internal/runtime/memory"
-	"mindverse/internal/runtime/skill"
-	"mindverse/internal/runtime/tools"
-	"mindverse/internal/shared"
-	"mindverse/internal/skill/toolrunner"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/core"
+	"taixu.icu/runtime/internal/io/embed"
+	"taixu.icu/runtime/internal/runtime/memory"
+	"taixu.icu/runtime/internal/runtime/skill"
+	"taixu.icu/runtime/internal/runtime/tools"
+	"taixu.icu/runtime/internal/shared"
+	"taixu.icu/runtime/internal/skill/toolrunner"
+	"taixu.icu/runtime/internal/storage"
 )
 
 // Register 把所有内置 tool 注册到 registry。重复调用会因重名报错（每进程一次）。
@@ -351,7 +351,8 @@ func toolUseSkill() tools.Tool {
 			},
 			"required": []string{"name"},
 		},
-		Lanes: []tools.Lane{tools.LaneDeliberative},
+		Lanes:      []tools.Lane{tools.LaneDeliberative},
+		AlwaysLoad: true, // 核心：技能派发器（所有 skill 的唯一入口，故工具数不膨胀）
 		Handler: func(_ context.Context, _ tools.Context, argsJSON string) (string, error) {
 			var a struct {
 				Name string `json:"name"`
@@ -530,8 +531,9 @@ func toolCompleteGoal() tools.Tool {
 			},
 			"required": []string{"success"},
 		},
-		Lanes:   []tools.Lane{tools.LaneDeliberative},
-		Handler: handleCompleteGoal,
+		Lanes:      []tools.Lane{tools.LaneDeliberative},
+		AlwaysLoad: true, // 核心：收尾每个 goal 必需
+		Handler:    handleCompleteGoal,
 	}
 }
 
@@ -570,6 +572,7 @@ func toolFsRead() tools.Tool {
 		Description: "读 sandbox 内文件（路径相对 /sandbox/）。",
 		Parameters:  pathParam("文件路径（相对 /sandbox/）"),
 		Lanes:       []tools.Lane{tools.LaneDeliberative},
+		AlwaysLoad:  true, // 核心：sandbox 基础读
 		Handler:     wrapPath(func(cycleID int64, path string) (toolrunner.Result, error) { return toolrunner.FsRead(cycleID, path) }),
 	}
 }
@@ -586,7 +589,8 @@ func toolFsWrite() tools.Tool {
 			},
 			"required": []string{"path", "content"},
 		},
-		Lanes: []tools.Lane{tools.LaneDeliberative},
+		Lanes:      []tools.Lane{tools.LaneDeliberative},
+		AlwaysLoad: true, // 核心：sandbox 基础写（存稿/作品/降级社交稿）
 		Handler: func(_ context.Context, tctx tools.Context, argsJSON string) (string, error) {
 			var a struct {
 				Path    string `json:"path"`
@@ -607,6 +611,7 @@ func toolFsList() tools.Tool {
 		Description: "列 sandbox 内目录条目。",
 		Parameters:  pathParam("目录路径（相对 /sandbox/）"),
 		Lanes:       []tools.Lane{tools.LaneDeliberative},
+		AlwaysLoad:  true, // 核心：sandbox 基础列目录
 		Handler:     wrapPath(func(cycleID int64, path string) (toolrunner.Result, error) { return toolrunner.FsList(cycleID, path) }),
 	}
 }
@@ -617,6 +622,7 @@ func toolFsMkdir() tools.Tool {
 		Description: "在 sandbox 内创建目录（递归）。",
 		Parameters:  pathParam("目录路径（相对 /sandbox/）"),
 		Lanes:       []tools.Lane{tools.LaneDeliberative},
+		AlwaysLoad:  true, // 核心：sandbox 基础建目录
 		Handler:     wrapPath(func(cycleID int64, path string) (toolrunner.Result, error) { return toolrunner.FsMkdir(cycleID, path) }),
 	}
 }

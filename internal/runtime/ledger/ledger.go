@@ -8,9 +8,9 @@ import (
 	"errors"
 	"sync"
 
-	"mindverse/internal/runtime/state"
-	"mindverse/internal/shared"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/runtime/state"
+	"taixu.icu/runtime/internal/shared"
+	"taixu.icu/runtime/internal/storage"
 )
 
 const (

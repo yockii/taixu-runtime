@@ -5,11 +5,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"mindverse/internal/bus"
-	"mindverse/internal/core"
-	"mindverse/internal/runtime/memory"
-	"mindverse/internal/runtime/tools"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/bus"
+	"taixu.icu/runtime/internal/core"
+	"taixu.icu/runtime/internal/runtime/memory"
+	"taixu.icu/runtime/internal/runtime/tools"
+	"taixu.icu/runtime/internal/storage"
 )
 
 // TestHandlerDeferResearch 验证 defer_research 工具（拟人交互闭环任务 2）：

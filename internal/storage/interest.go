@@ -198,11 +198,10 @@ func DecayInterests(lifeID string, now int64, halfLifeDays float64) error {
 			continue
 		}
 		newStrength := it.strength * math.Pow(dailyFactor, elapsedDays)
-		if newStrength < 0.01 {
-			if _, err := db.Exec(`DELETE FROM interest_seed WHERE id = ?`, it.id); err != nil {
-				return fmt.Errorf("decay delete seed %d: %w", it.id, err)
-			}
-			continue
+		// 触底不删，保留休眠 ember（dormantFloor）：彻底清退交给 PruneInterests 的总量淘汰，
+		// 让淡掉的兴趣仍可被 ReviveDormantInterest 复燃（喜新厌旧之后又回归旧爱）。
+		if newStrength < dormantFloor {
+			newStrength = dormantFloor
 		}
 		if _, err := db.Exec(`UPDATE interest_seed SET strength = ?, decayed_at = ? WHERE id = ?`,
 			newStrength, now, it.id); err != nil {
@@ -210,6 +209,62 @@ func DecayInterests(lifeID string, now int64, halfLifeDays float64) error {
 		}
 	}
 	return nil
+}
+
+// 兴趣生命周期常量（2026-06 用户设计：有上限、喜新厌旧、可复燃、可替换）。
+const (
+	dormantFloor    = 0.05 // 衰减触底保留的休眠 ember（仍可复燃，不直接删）
+	driveThreshold  = 0.4  // ≥ 此值才驱动目标（与 drives.Derive 一致）
+	maxInterestRows = 20   // 兴趣总量上限：超了淘汰最弱，腾位给新兴趣（替换）
+)
+
+// PruneInterests 总量封顶（替换）：兴趣行数超 maxInterestRows 时，删掉最弱的几条
+// （strength 升序、再 last_seen 升序——最弱且最久没碰的先走），但保护当前活跃(≥driveThreshold)的。
+// 让「不再感兴趣的」被清退、新兴趣有位置进来。
+func PruneInterests(lifeID string, now int64) error {
+	var total int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM interest_seed WHERE life_id = ?`, lifeID).Scan(&total); err != nil {
+		return err
+	}
+	excess := total - maxInterestRows
+	if excess <= 0 {
+		return nil
+	}
+	// 只从非活跃池里淘汰（strength < driveThreshold），避免误删正驱动的兴趣。
+	_, err := db.Exec(`
+		DELETE FROM interest_seed
+		WHERE id IN (
+			SELECT id FROM interest_seed
+			WHERE life_id = ? AND strength < ?
+			ORDER BY strength ASC, last_seen_at ASC
+			LIMIT ?
+		)`, lifeID, driveThreshold, excess)
+	return err
+}
+
+// ReviveDormantInterest 复燃：把一个休眠最久的兴趣（dormant 区间、且曾有些掌握/探索过）
+// 强度回升到驱动阈值之上，让生命体「过段时间又重拾某个旧兴趣关注点」。返回被复燃的内容（无则 ""）。
+func ReviveDormantInterest(lifeID string, now int64) (string, error) {
+	var id int64
+	var content string
+	err := db.QueryRow(`
+		SELECT id, content FROM interest_seed
+		WHERE life_id = ? AND strength >= ? AND strength < ?
+		ORDER BY last_seen_at ASC
+		LIMIT 1`, lifeID, dormantFloor, driveThreshold).Scan(&id, &content)
+	if err != nil {
+		if err.Error() == "sql: no rows in result set" {
+			return "", nil
+		}
+		return "", err
+	}
+	// 回升到阈值之上（0.5），并刷新 last_seen / decayed_at（重新计时）。
+	if _, err := db.Exec(`
+		UPDATE interest_seed SET strength = 0.5, last_seen_at = ?, decayed_at = ? WHERE id = ?`,
+		now, now, id); err != nil {
+		return "", err
+	}
+	return content, nil
 }
 
 func clampStrength(v float64) float64 {

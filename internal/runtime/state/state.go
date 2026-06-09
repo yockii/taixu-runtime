@@ -7,10 +7,10 @@ import (
 	"errors"
 	"sync"
 
-	"mindverse/internal/bus"
-	"mindverse/internal/core"
-	"mindverse/internal/shared"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/bus"
+	"taixu.icu/runtime/internal/core"
+	"taixu.icu/runtime/internal/shared"
+	"taixu.icu/runtime/internal/storage"
 )
 
 // Delta 状态变更建议。nil 字段不变。

@@ -12,11 +12,11 @@ import (
 	"regexp"
 	"sync"
 
-	"mindverse/internal/bus"
-	"mindverse/internal/core"
-	"mindverse/internal/runtime/perception"
-	"mindverse/internal/shared"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/bus"
+	"taixu.icu/runtime/internal/core"
+	"taixu.icu/runtime/internal/runtime/perception"
+	"taixu.icu/runtime/internal/shared"
+	"taixu.icu/runtime/internal/storage"
 )
 
 // MaxOpenGoals 队列内可同时存在的 active+pending 总数上限。

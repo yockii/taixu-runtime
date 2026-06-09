@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"mindverse/internal/core"
+	"taixu.icu/runtime/internal/core"
 )
 
 // TestGoalRequesterRoundTrip 验证 migration 008 的请求者列存取往返：

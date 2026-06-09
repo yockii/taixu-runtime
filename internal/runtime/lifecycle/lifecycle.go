@@ -19,10 +19,10 @@ import (
 	"errors"
 	"fmt"
 
-	"mindverse/internal/bus"
-	"mindverse/internal/core"
-	"mindverse/internal/shared"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/bus"
+	"taixu.icu/runtime/internal/core"
+	"taixu.icu/runtime/internal/shared"
+	"taixu.icu/runtime/internal/storage"
 )
 
 var allowed = map[core.LifecycleState]map[core.LifecycleState]bool{

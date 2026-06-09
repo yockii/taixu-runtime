@@ -28,10 +28,10 @@ import (
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 
-	"mindverse/internal/bus"
-	"mindverse/internal/runtime/tools"
-	"mindverse/internal/shared"
-	"mindverse/internal/storage"
+	"taixu.icu/runtime/internal/bus"
+	"taixu.icu/runtime/internal/runtime/tools"
+	"taixu.icu/runtime/internal/shared"
+	"taixu.icu/runtime/internal/storage"
 )
 
 // cfgEnabled 总开关（config KV）。默认 false——浏览器操作能力强、风险高，须用户显式开。

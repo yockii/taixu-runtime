@@ -31,8 +31,8 @@ import (
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 
-	"mindverse/internal/runtime/perception"
-	"mindverse/internal/runtime/reflex"
+	"taixu.icu/runtime/internal/runtime/perception"
+	"taixu.icu/runtime/internal/runtime/reflex"
 )
 
 // Config 飞书配置。
