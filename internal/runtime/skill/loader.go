@@ -540,6 +540,27 @@ func UseByName(name string) (string, error) {
 	return "", fmt.Errorf("skill %q not found", name)
 }
 
+// RecordOutcome 据「用了某技能的目标真成败」回写其掌握度（C2 结果验证 competence）。
+// name 解析为技能 id；找不到（已退役 / 改名）则忽略。由 action.finalize 在目标终态时按名归因。
+func RecordOutcome(name string, success bool) {
+	if name == "" {
+		return
+	}
+	mu.Lock()
+	lid := lifeID
+	mu.Unlock()
+	all, err := storage.ListSkillInstances(lid, 100)
+	if err != nil {
+		return
+	}
+	for _, s := range all {
+		if s.Name == name {
+			_ = storage.BumpSkillOutcome(s.ID, success, shared.SystemClock.UnixSec())
+			return
+		}
+	}
+}
+
 // missingDeps 返回不在 baseline 白名单的依赖。
 func missingDeps(fm Frontmatter) []Dep {
 	var out []Dep

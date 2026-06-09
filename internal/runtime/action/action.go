@@ -64,8 +64,9 @@ type Result struct {
 	Output      string
 	Feedback    string
 	Success     bool
-	Substantive int     // 本次工作型工具成功调用数（探索深度，引擎涨 mastery 用）
-	TokenEnergy float64 // 本轮 LLM token 折算的 energy 量（认知开销 → 体力消耗随之浮动，速胜#5）
+	Substantive int      // 本次工作型工具成功调用数（探索深度，引擎涨 mastery 用）
+	TokenEnergy float64  // 本轮 LLM token 折算的 energy 量（认知开销 → 体力消耗随之浮动，速胜#5）
+	UsedSkills  []string // 本次 use_skill 调用过的技能名（C2：目标终态时按真成败回写其掌握度）
 	// SocialAct 本次社交参与等级（社交目标分级回报用）：
 	//   0 = 没碰平台（连读都没读，如只 fs.write 存稿）
 	//   1 = 浏览型（只读：forum/feed/notifications/directory/search/comments）——内向社交，认可但纾解小
@@ -151,6 +152,7 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 	var totalUsage llm.Usage
 	var trace []string // 每轮 content
 	var toolCalls []string
+	var usedSkills []string // 本次 use_skill 用过的技能名（C2 结果验证归因）
 	completedByLLM := false
 	substantive := 0 // 工作型工具成功调用数 → 探索深度 → 引擎涨 mastery 的幅度（R83）
 	rounds := 0
@@ -193,6 +195,14 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 			if tc.Name == "complete_goal" {
 				completedByLLM = true
 			}
+			if tc.Name == "use_skill" { // C2：记下用了哪些技能，终态按目标成败回写其掌握度
+				var sa struct {
+					Name string `json:"name"`
+				}
+				if json.Unmarshal([]byte(tc.ArgsJSON), &sa) == nil && sa.Name != "" {
+					usedSkills = append(usedSkills, sa.Name)
+				}
+			}
 			toolCtx, cancelTool := context.WithTimeout(context.Background(), ToolDispatchTimeout)
 			result, derr := tools.Dispatch(toolCtx, tools.LaneDeliberative, tctx, tc.Name, tc.ArgsJSON)
 			cancelTool()
@@ -226,6 +236,7 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 	res.Success = len(trace) > 0 || len(toolCalls) > 0
 	res.Substantive = substantive
 	res.SocialAct = socialActLevel(toolCalls)
+	res.UsedSkills = usedSkills
 	res.Feedback = fmt.Sprintf("rounds=%d tools=%d substantive=%d completed_by_llm=%v tokens=%d",
 		rounds, len(toolCalls), substantive, completedByLLM, totalUsage.TotalTokens)
 
@@ -251,7 +262,7 @@ func finalize(g *core.Goal, cycleID int64, startedAt int64, res Result, complete
 	if res.Success {
 		if id := parseInterestSeedID(g.Payload); id > 0 {
 			now := shared.SystemClock.UnixSec()
-			delta := masteryDelta(res.Substantive)
+			delta := masteryDelta(res.Substantive, completedByLLM)
 			if err := storage.BumpInterestExplored(id, delta, now); err != nil {
 				slog.Warn("bump interest explored", "err", err, "seed", id)
 			} else if seed, err := storage.GetInterestSeed(id); err == nil && seed != nil {
@@ -381,6 +392,19 @@ func finalize(g *core.Goal, cycleID int64, startedAt int64, res Result, complete
 		// 根研究目标完成 → 综合整棵子树成果，沉淀一篇知识库 dossier（任务 B）。
 		if completed {
 			maybeSedimentKnowledge(g, finishedAt)
+		}
+	}
+
+	// 技能结果验证（C2）：本目标用到的技能，按目标真成败回写掌握度（替"用即+0.05"自评）。
+	// 仅终态归因（pendingChildren==0；"回 pending 等子目标"的中间态不算数，成败未定）。
+	if pendingChildren == 0 {
+		seen := map[string]bool{} // 去重：同目标多次 use_skill 同一技能只归因一次（成败按目标算，非按调用次数）
+		for _, sn := range res.UsedSkills {
+			if sn == "" || seen[sn] {
+				continue
+			}
+			seen[sn] = true
+			skill.RecordOutcome(sn, completed)
 		}
 	}
 
@@ -847,13 +871,18 @@ func truncate(s string, n int) string {
 //   - 深探索（≥3 个工作型工具）再 +0.08；纯空转（0 个）压到 0.05
 //
 // ~3 次扎实探索即可越过 0.8 结晶门槛；record_learning 若被调可 MAX-merge 再拔高。
-func masteryDelta(substantive int) float64 {
+func masteryDelta(substantive int, validated bool) float64 {
 	d := 0.18 + 0.12*genome.Persistence
 	switch {
 	case substantive == 0:
 		d = 0.05
 	case substantive >= 3:
 		d += 0.08
+	}
+	// C2 结果验证：未真收尾（没调 complete_goal、只做了些动作）→ 掌握增量大打折，
+	// 防"凭工具调用次数刷满结晶门槛"的浅探（mastery 应反映真做成，非走过流程）。
+	if !validated {
+		d *= 0.4
 	}
 	return d
 }

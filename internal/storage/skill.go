@@ -190,14 +190,31 @@ func SetSkillMastery(id string, mastery float64) error {
 	return err
 }
 
-// BumpSkillUsed used_count++ + last_used_at + 练习提升 mastery（用进废退的"用进"，R82）。
+// BumpSkillUsed used_count++ + last_used_at（仅记"用过"，不再凭"用"涨 mastery）。
+// C2 结果验证：掌握度=能让后续任务成功的真本事，改由 BumpSkillOutcome 据目标真成败驱动，
+// 而非"读过几次指引"自评（旧 mastery+=0.05 让纯翻阅也刷满，与是否真有用脱钩）。
 func BumpSkillUsed(id string, ts int64) error {
 	_, err := db.Exec(`
 		UPDATE skill_instance
 		SET used_count = used_count + 1,
-		    last_used_at = ?,
-		    mastery = MIN(1.0, mastery + 0.05)
+		    last_used_at = ?
 		WHERE id = ?`, ts, id)
+	return err
+}
+
+// BumpSkillOutcome 据"用了这技能的目标真成败"回写掌握度（C2 结果验证 competence）。
+// 成功 +0.06、失败 -0.04，clamp [0,1]。掌握度自此反映"用它的活成没成"，非"读过没读过"——
+// 检索排序(RelevantReady)据此优先曾促成成功的技能；结晶/衰减沿用同一 mastery 字段。
+func BumpSkillOutcome(id string, success bool, ts int64) error {
+	delta := -0.04
+	if success {
+		delta = 0.06
+	}
+	_, err := db.Exec(`
+		UPDATE skill_instance
+		SET mastery = MAX(0.0, MIN(1.0, mastery + ?)),
+		    last_used_at = ?
+		WHERE id = ?`, delta, ts, id)
 	return err
 }
 

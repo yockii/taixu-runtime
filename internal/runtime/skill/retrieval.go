@@ -16,6 +16,11 @@ const SkillListThreshold = 8
 // RelevantTopK 检索时注入的相关技能上限。
 const RelevantTopK = 8
 
+// masteryBias 检索排序里掌握度的权重（C2）：score = cosine × (1 + masteryBias×mastery)。
+// 掌握度现由结果验证驱动（BumpSkillOutcome，曾促成目标成功的技能 mastery 高），故在语义相似
+// 基础上让"真有用过"的技能优先浮现。0.5 = mastery 满分技能其相似分放大 1.5×（不喧宾夺主盖过语义）。
+const masteryBias = 0.5
+
 // RelevantReady 按当前目标文本返回「最该让 LLM 看到」的 ready 技能（真正按需装载）：
 //   - 技能数 ≤ 阈值 / 未配嵌入 / 检索失败 → 全列（与旧行为一致，绝不因检索而漏技能）。
 //   - 否则用 goalText 语义检索，取 top-k 相关技能。
@@ -74,7 +79,13 @@ func RelevantReady(goalText string) ([]storage.SkillInstance, error) {
 		if e != nil {
 			continue
 		}
-		ranked = append(ranked, scored{s: s, score: embed.Cosine(qv, dv)})
+		// C2：语义相似 × 掌握度加成——曾促成成功的技能在同等相关下优先。
+		// cos clamp ≥0：反相关(cos<0)归零，避免负分被 mastery 放大后扰乱降序排序。
+		cos := embed.Cosine(qv, dv)
+		if cos < 0 {
+			cos = 0
+		}
+		ranked = append(ranked, scored{s: s, score: cos * (1.0 + masteryBias*s.Mastery)})
 	}
 	if len(ranked) == 0 {
 		return all, nil
