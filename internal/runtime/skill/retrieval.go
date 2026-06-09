@@ -2,6 +2,7 @@ package skill
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -94,6 +95,12 @@ func RelevantReady(goalText string) ([]storage.SkillInstance, error) {
 	k := RelevantTopK
 	if k > len(ranked) {
 		k = len(ranked)
+	}
+	// C5 检索可观测性（精度度量基础）：记下本次语义检索的候选数 / 命中分布 / 实际注入数，
+	// 供后续把"检索精度 vs 目标成败"关联起来调阈值（替固定 >8 启发）。
+	if k > 0 {
+		slog.Debug("skill retrieval", "goalText_len", len(goalText), "candidates", len(ranked),
+			"top_score", ranked[0].score, "cut_score", ranked[k-1].score, "returned", k)
 	}
 	out := make([]storage.SkillInstance, 0, k)
 	for i := 0; i < k; i++ {
