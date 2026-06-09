@@ -8,18 +8,26 @@
 package memory
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"taixu.icu/runtime/internal/bus"
 	"taixu.icu/runtime/internal/core"
 	"taixu.icu/runtime/internal/io/embed"
+	"taixu.icu/runtime/internal/io/llm"
+	"taixu.icu/runtime/internal/runtime/ledger"
 	"taixu.icu/runtime/internal/shared"
 	"taixu.icu/runtime/internal/storage"
 )
+
+// distillTimeout 语义蒸馏单发 LLM 超时。
+const distillTimeout = 60 * time.Second
 
 // noiseEvents 纯内部节拍事件——对"经历"无叙事价值，episode 摘要只计数不列正文。
 // 不过滤这些，episode 摘要会被 cycle.start/idle.daydream 淹没成无意义直方图（修：episode 噪声洪泛）。
@@ -182,6 +190,96 @@ func ExtractSemantic() (int, error) {
 		return added, err
 	}
 	return added, nil
+}
+
+// DistillEpisodeKnowledge 用 LLM 从一段刚封段的 episode 蒸馏 0..N 条原子知识，写入语义候选（P0b）。
+//
+// 替代 ExtractSemantic 的纯频次 STUB（只 freq[payload]++ 数 tool.success、不萃内容）：让生命体真正
+// 「从经历里学到知识」，而非把重复的 tool 成功串当知识。LLM 未配 / 失败 / 无可萃取 → 静默跳过
+//（频次路径仍兜底）。
+//
+// ⚠ 必须**异步**调用（go DistillEpisodeKnowledge(ep)）：LLM 有延迟，绝不可阻塞 runCycle 节拍
+//（ConsiderSealEpisode/ExtractSemantic 在 cycle 内联）。封段频率（~20 事件 / 30min）天然限流，
+// 故每段蒸馏一次的开销可控。
+func DistillEpisodeKnowledge(ep *core.Episode) {
+	if ep == nil || !llm.Configured() {
+		return
+	}
+	summary := strings.TrimSpace(ep.Summary)
+	if summary == "" {
+		return
+	}
+	sys := "你是一个数字生命体的语义记忆抽取器。从下面这段经历摘要里，提炼出 0 到 3 条**值得长期记住的原子知识**" +
+		"（具体事实 / 方法 / 关于世界或自己的稳定结论），每条独立成句、自洽可复用。" +
+		"纯事务流水 / 无信息量的日常就别硬凑——宁可一条不出。必须调用 record_knowledge 工具。"
+	user := "经历摘要：\n" + truncateRunes(summary, 1200)
+
+	tool := llm.Tool{
+		Name:        "record_knowledge",
+		Description: "登记从这段经历里学到的原子知识（0..3 条，可空）。",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"items": map[string]any{
+					"type":        "array",
+					"description": "原子知识条目（可空）",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"content":    map[string]any{"type": "string", "description": "一条自洽的知识陈述"},
+							"confidence": map[string]any{"type": "number", "description": "置信 0..1"},
+						},
+						"required": []string{"content"},
+					},
+				},
+			},
+			"required": []string{"items"},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), distillTimeout)
+	defer cancel()
+	resp, err := llm.ReasonWithTools(ctx, []llm.Message{
+		{Role: "system", Content: sys},
+		{Role: "user", Content: user},
+	}, []llm.Tool{tool})
+	if err != nil {
+		slog.Warn("distill episode knowledge", "episode", ep.ID, "err", err)
+		return
+	}
+	_ = ledger.Spend(ledger.Energy, llm.TokensToEnergy(resp.Usage), "llm.tokens.semantic_distill", "episode", "")
+	now := shared.SystemClock.UnixSec()
+	src := fmt.Sprintf("extractor:llm:ep%d", ep.ID)
+	added := 0
+	for _, tc := range resp.ToolCalls {
+		if tc.Name != "record_knowledge" {
+			continue
+		}
+		var a struct {
+			Items []struct {
+				Content    string  `json:"content"`
+				Confidence float64 `json:"confidence"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal([]byte(tc.ArgsJSON), &a); err != nil {
+			continue
+		}
+		for _, it := range a.Items {
+			c := strings.TrimSpace(it.Content)
+			if c == "" {
+				continue
+			}
+			conf := it.Confidence
+			if conf <= 0 || conf > 1 {
+				conf = 0.6 // 缺省中等置信（仍需 ShallowReflect ≥0.75 固化；多次出现累积升信）
+			}
+			if err := storage.UpsertSemanticCandidateConf(lifeID, c, src, now, conf); err == nil {
+				added++
+			}
+		}
+	}
+	if added > 0 {
+		slog.Info("distilled episode knowledge", "episode", ep.ID, "candidates", added)
+	}
 }
 
 // summarize 把一段 raw_trail 概括成可读的经历摘要：过滤纯内部节拍噪声，

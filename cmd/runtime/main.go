@@ -95,7 +95,7 @@ func main() {
 	mustInit("state", state.Init(lifeID))
 	mustInit("ledger", ledger.Init(lifeID))
 	mustInit("memory", memory.Init(lifeID))
-	mustInit("reflect", reflect.Init(lifeID))
+	mustInit("reflect", reflect.Init(lifeID, genome))
 	mustInit("goal", goal.Init(lifeID))
 	mustInit("action", action.Init(lifeID, genome))
 	mustInit("scheduler", scheduler.Init(lifeID))
@@ -244,12 +244,37 @@ func markBehavior(key string, now int64) {
 	_ = storage.SetMeta(key, strconv.FormatInt(now, 10))
 }
 
+// DeepReflectCooldownSec DeepReflect 最小间隔（远低频于 ShallowReflect）：价值观应缓慢演化、绝不跳变。
+const DeepReflectCooldownSec = 6 * 3600
+
+// deepReflectDue 距上次深反思是否已过冷却（首次/重启即可跑一次）。
+func deepReflectDue(lifeID string, now int64) bool {
+	v, ok, err := storage.GetMeta("deep_reflect_last:" + lifeID)
+	if err != nil || !ok {
+		return true
+	}
+	last, _ := strconv.ParseInt(v, 10, 64)
+	return now-last >= DeepReflectCooldownSec
+}
+
 // 维护参数：raw_trail 在两消费游标之前再留 RawTrailKeepBuffer 条余量；working_memory 仅留最近若干条。
 const (
 	MaintenanceIntervalSec = 24 * 3600
 	RawTrailKeepBuffer     = 500
 	WorkingMemoryKeep      = 500
+	// VacuumIntervalSec VACUUM 回收磁盘空洞间隔（R99）：开销大，按月触发（剪枝日度、回收月度）。
+	VacuumIntervalSec = 30 * 24 * 3600
 )
+
+// vacuumDue 距上次 VACUUM 是否已过一个月。
+func vacuumDue(lifeID string, now int64) bool {
+	v, ok, err := storage.GetMeta("vacuum_last:" + lifeID)
+	if err != nil || !ok {
+		return true
+	}
+	last, _ := strconv.ParseInt(v, 10, 64)
+	return now-last >= VacuumIntervalSec
+}
 
 // maintenanceDue 距上次日度维护是否已过 24h（首次/重启即跑一次，剪枝幂等且廉价）。
 func maintenanceDue(lifeID string, now int64) bool {
@@ -272,6 +297,16 @@ func runMaintenance(lifeID string) {
 		slog.Warn("maintenance prune working_memory", "err", err)
 	} else if n > 0 {
 		slog.Info("maintenance pruned working_memory", "deleted", n)
+	}
+	// VACUUM 回收磁盘空洞（R99：删行不缩文件）。月度门控——剪枝是日度，整库重写按月一次。
+	now := shared.SystemClock.UnixSec()
+	if vacuumDue(lifeID, now) {
+		if err := storage.Vacuum(); err != nil {
+			slog.Warn("maintenance vacuum", "err", err)
+		} else {
+			markBehavior("vacuum_last:"+lifeID, now)
+			slog.Info("maintenance vacuumed db")
+		}
 	}
 }
 
@@ -323,6 +358,22 @@ func runCycle(cycleID int64, lifeID string, genome core.Genome) {
 			markBehavior("reflect_last:"+lifeID, cycleNow)
 			_ = memory.AppendEvent(cycleID, "reflect", map[string]any{"promoted": promoted, "id": rid})
 			slog.Info("reflect", "promoted", promoted, "id", rid)
+		}
+	}
+
+	// 4b. DeepReflect（白皮书核心模块，P0a opt-in）：据近期经历修正价值观权重 + 一句洞见，
+	// 闭合「反思 → 修正价值观 → 调整目标」回路（goalgen 已读 Values 仲裁，回路自动闭）。
+	// 远低频（≥DeepReflectCooldownSec）+ 配置开关（默认关，长跑可开 deep_reflect_enabled）+ 需 LLM。
+	if storage.GetConfigBool("deep_reflect_enabled", false) && deepReflectDue(lifeID, cycleNow) {
+		adjusted, rid, err := reflect.RunDeep("scheduler.cycle")
+		if err != nil {
+			slog.Warn("deep reflect", "err", err)
+		} else {
+			markBehavior("deep_reflect_last:"+lifeID, cycleNow)
+			if rid > 0 {
+				_ = memory.AppendEvent(cycleID, "deep_reflect", map[string]any{"adjusted": adjusted, "id": rid})
+				slog.Info("deep reflect", "adjusted", adjusted, "id", rid)
+			}
 		}
 	}
 
@@ -394,6 +445,10 @@ func runCycle(cycleID int64, lifeID string, genome core.Genome) {
 	if ep, err := memory.ConsiderSealEpisode(); err == nil && ep != nil {
 		slog.Info("episode sealed", "id", ep.ID, "events_in_seg", ep.RawEndID-ep.RawStartID+1)
 		_ = memory.AppendEvent(cycleID, "episode.sealed", map[string]any{"id": ep.ID})
+		// 异步从这段经历蒸馏原子知识入语义候选（P0b）：LLM 有延迟，绝不阻塞节拍；封段频率天然限流。
+		if llm.Configured() {
+			go memory.DistillEpisodeKnowledge(ep)
+		}
 	}
 	if added, err := memory.ExtractSemantic(); err == nil && added > 0 {
 		_ = memory.AppendEvent(cycleID, "semantic.candidates", map[string]any{"added": added})
@@ -472,13 +527,43 @@ func buildLLM() error {
 			temp = float32(f)
 		}
 	}
-	return llm.Init(llm.Config{
+	if err := llm.Init(llm.Config{
 		BaseURL:     base,
 		APIKey:      key,
 		Model:       model,
 		Temperature: temp,
 		Timeout:     90 * time.Second,
-	})
+	}); err != nil {
+		return err
+	}
+
+	// 可选 strong 模型档（C1 模型路由）：配了 LLM_STRONG_BASE_URL 即注册，慎思层把硬推理/编码派给它
+	// （战略「向最强者租单任务天花板」）；未配则慎思回退 default、行为不变。strong 可指向更强模型、
+	// 甚至不同厂商/端点。best-effort：配置不全只 warn，不阻断启动。
+	if sbase := os.Getenv("LLM_STRONG_BASE_URL"); sbase != "" {
+		smodel := os.Getenv("LLM_STRONG_MODEL")
+		if smodel == "" {
+			smodel = model
+		}
+		stemp := temp
+		if v := os.Getenv("LLM_STRONG_TEMPERATURE"); v != "" {
+			if f, err := strconv.ParseFloat(v, 32); err == nil {
+				stemp = float32(f)
+			}
+		}
+		if err := llm.InitModel(llm.ModelStrong, llm.Config{
+			BaseURL:     sbase,
+			APIKey:      envOr("LLM_STRONG_API_KEY", key),
+			Model:       smodel,
+			Temperature: stemp,
+			Timeout:     120 * time.Second,
+		}); err != nil {
+			slog.Warn("llm strong model not configured", "err", err)
+		} else {
+			slog.Info("llm strong model wired", "model", smodel)
+		}
+	}
+	return nil
 }
 
 // approveSkillAsync 后台安装技能依赖（卡片回调 3s 截止内必须返回，安装异步跑）。

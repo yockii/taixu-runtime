@@ -64,7 +64,8 @@ type Result struct {
 	Output      string
 	Feedback    string
 	Success     bool
-	Substantive int // 本次工作型工具成功调用数（探索深度，引擎涨 mastery 用）
+	Substantive int     // 本次工作型工具成功调用数（探索深度，引擎涨 mastery 用）
+	TokenEnergy float64 // 本轮 LLM token 折算的 energy 量（认知开销 → 体力消耗随之浮动，速胜#5）
 	// SocialAct 本次社交参与等级（社交目标分级回报用）：
 	//   0 = 没碰平台（连读都没读，如只 fs.write 存稿）
 	//   1 = 浏览型（只读：forum/feed/notifications/directory/search/comments）——内向社交，认可但纾解小
@@ -154,11 +155,17 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 	substantive := 0 // 工作型工具成功调用数 → 探索深度 → 引擎涨 mastery 的幅度（R83）
 	rounds := 0
 
+	// 慎思层模型路由（C1）：配了 strong 档则把这条硬推理/工具编排链派给它（向最强者租单任务天花板），
+	// 否则回退 default。仅慎思走 strong；reflex/idle/反思洞见等廉价环仍 default，省钱。
+	delibModel := llm.ModelDefault
+	if llm.HasModel(llm.ModelStrong) {
+		delibModel = llm.ModelStrong
+	}
 	limit := maxRounds() // 按 persistence 调（R82）
 	for round := 0; round < limit; round++ {
 		rounds++
 		llmCtx, cancelLLM := context.WithTimeout(context.Background(), LLMRoundTimeout)
-		resp, err := llm.ReasonWithTools(llmCtx, msgs, delibTools)
+		resp, err := llm.ReasonWithToolsModel(llmCtx, delibModel, msgs, delibTools)
 		cancelLLM()
 		if err != nil {
 			trace = append(trace, fmt.Sprintf("[r%d] llm err: %v", round, err))
@@ -222,9 +229,10 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 	res.Feedback = fmt.Sprintf("rounds=%d tools=%d substantive=%d completed_by_llm=%v tokens=%d",
 		rounds, len(toolCalls), substantive, completedByLLM, totalUsage.TotalTokens)
 
-	// 累计 LLM 消耗 → energy
+	// 累计 LLM 消耗 → energy（账本记账 + 传给 finalize 折算体力消耗 / 当日认知支出）
 	if totalUsage.TotalTokens > 0 {
 		cost := llm.TokensToEnergy(totalUsage)
+		res.TokenEnergy = cost
 		if err := ledger.Spend(ledger.Energy, cost, "llm.tokens.deliberate", "goal", ""); err != nil {
 			slog.Warn("deliberate ledger spend", "err", err, "goal", g.ID)
 		}
@@ -254,8 +262,21 @@ func finalize(g *core.Goal, cycleID int64, startedAt int64, res Result, complete
 		}
 	}
 
-	energyDelta := -0.02
+	// 体力消耗随本轮认知量浮动（速胜#5）：重思（多轮 / 多 token）比浅触更累，
+	// 把「token → 世界资源」的翻译真正接进体力闸。base 0.02 保底（=旧定额，LLM 未配也成立），
+	// 叠加 token 折算能量的一部分，clamp 上界防一次掏空 → 一次重研究至多累 0.12 体力。
+	vitalityCost := 0.02 + 0.4*res.TokenEnergy
+	if vitalityCost > 0.12 {
+		vitalityCost = 0.12
+	}
+	energyDelta := -vitalityCost
 	d := state.Delta{Energy: &energyDelta, Reason: "deliberate.cost"}
+	// 同步累加当日认知支出（EnergyUsedToday 死字段复活，速胜#2 / R106）：每日 ledger 清零。
+	if res.TokenEnergy > 0 {
+		if err := state.AddEnergyUsed(res.TokenEnergy); err != nil {
+			slog.Warn("add energy used", "err", err, "goal", g.ID)
+		}
+	}
 	if res.Success {
 		sat := 0.03
 		conf := 0.01
@@ -692,8 +713,7 @@ func buildDeliberativeSystemPrompt(g *core.Goal) string {
 		"用 web.search 的结果里**判断靠谱的链接**再 fetch 进去读（跳过内容农场/垃圾站，优先权威源）\n")
 	sb.WriteString("  ⚠ 优先选你的网络环境能稳定访问的权威源。若某 URL 抓取超时/失败，立刻换一个**不同域名**的源，\n")
 	sb.WriteString("    别在同一个失败地址反复重试浪费轮次（不同部署所处网络可达性不同，按实际反馈自适应）。\n")
-	sb.WriteString("- http.get / http.post             调 JSON API（只回状态码，不适合读网页正文）\n")
-	sb.WriteString("- script.python / script.node      跑脚本（白名单包；不要自己抓网页，用 web.fetch）\n")
+	sb.WriteString("- script.python / script.node      跑脚本（白名单包；要调 JSON API 在脚本里发请求；不要自己抓网页，用 web.fetch）\n")
 	sb.WriteString("- time.now()                       当前时间戳\n")
 	sb.WriteString("- complete_goal(success)           完成 / 放弃时调用\n\n")
 	sb.WriteString("准则：\n")
@@ -725,11 +745,12 @@ func buildDeliberativeSystemPrompt(g *core.Goal) string {
 			"  · social.directory / social.follow —— 发现别的生命、关注投缘的（关注让你们出现在彼此 feed）。\n" +
 			"  · social.comment —— 对真有共鸣或能补充的**别人的**帖出声（挑值得的，别逢帖必评）。\n" +
 			"  · social.publish_profile —— 发/更新公开名片(bio+public=true)，让别人找得到你。\n" +
-			"  · social.post —— 想分享或想破冰时发一条动态（挑合适 topic：tech/life/art/thought…）。平台冷清没人可回应时，发一条开场也好，给别人回应你的由头。\n" +
+			"  · social.post —— 想分享或想破冰时发一条动态。**发帖务必选一个贴切的版块 topic**（tech/life/art/thought/… 按内容选），别都丢进 general。平台冷清没人可回应时，发一条开场也好，给别人回应你的由头。\n" +
 			"达成与收尾：\n" +
 			"  · **真去和平台互动一次就算达成**——哪怕只是认真读了 forum/feed/notifications 了解了近况，也行（内向的浏览型社交）。但若读到了有共鸣的内容或有人等你回应，顺手出声会让连接更实。\n" +
 			"  · 限流：发帖每 6h、评论每 1h 一条；被限流(capped/429)别卡住，改去浏览 / 关注 / 回应通知，照样算达成。\n" +
-			"  · 别给自己的帖发顶层评论（自说自话/顶贴）；回复别人对你帖的评论很好。\n" +
+			"  · **禁自顶贴**：平台已**硬性拦截**——给自己的帖发顶层评论、或回复你自己的评论，都会被拒（403）。别浪费轮次试。" +
+				"回复**别人**对你帖的评论很好（真来回）；没有别人的新内容可回应时，**优先发一条新帖**开个新话题（挑 topic），而不是在自己旧帖下打转。\n" +
 			"  · 互动过（哪怕只浏览）后 complete_goal。完全没有 social.* 工具时（通道未通），fs.write 存稿到 sandbox/drafts/ 再 complete_goal。\n")
 	}
 
@@ -842,7 +863,6 @@ var substantiveTools = map[string]bool{
 	"web.fetch": true, "web.render": true,
 	"script.python": true, "script.node": true,
 	"fs.read": true, "fs.write": true,
-	"http.get": true, "http.post": true,
 	"query_memory": true, "record_learning": true,
 }
 

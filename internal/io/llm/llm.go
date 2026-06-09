@@ -2,6 +2,10 @@
 //
 // Phase 0.3 仅启 Reason + Summarize。Embed 待 bge-m3 接入；Critique 待 Phase 2。
 // token 永不暴露给 Agent；usage 由本包内部读出并翻译为 energy。
+//
+// C1 多模型路由：除 default 模型外，可选配 strong 模型（更强/更贵）。慎思层把硬推理/编码派给
+// strong，廉价环（反思洞见 / 摘要 / 对话）仍走 default——「向最强者租单任务天花板」（战略
+// project_runtime_strategy_vs_agents 的 now 杠杆①）。未配 strong → 一切回退 default，行为不变。
 package llm
 
 import (
@@ -13,6 +17,12 @@ import (
 	"time"
 
 	openai "github.com/sashabaranov/go-openai"
+)
+
+// 模型档名。ModelDefault 必配；ModelStrong 可选（未配则 resolveModel 回退 default）。
+const (
+	ModelDefault = "default"
+	ModelStrong  = "strong"
 )
 
 // Config LLM 配置。
@@ -65,58 +75,92 @@ type ReasonResult struct {
 	Usage     Usage
 }
 
-var (
-	mu     sync.Mutex
+// modelClient 一个具名模型档的 client + 配置。
+type modelClient struct {
 	cfg    Config
 	client *openai.Client
-	ready  bool
+}
+
+var (
+	mu     sync.Mutex
+	models = map[string]*modelClient{} // 档名 → client（"default" 必有；"strong" 可选）
 )
 
-// Init 装配 client。可调多次（替换配置）。
-func Init(c Config) error {
+// Init 装配 default 模型。可调多次（替换配置）。
+func Init(c Config) error { return InitModel(ModelDefault, c) }
+
+// InitModel 装配一个具名模型档（如 ModelStrong）。BaseURL/APIKey/Model 必填。
+func InitModel(name string, c Config) error {
 	if c.BaseURL == "" || c.APIKey == "" || c.Model == "" {
 		return errors.New("llm: incomplete config")
 	}
 	if c.Timeout == 0 {
 		c.Timeout = 60 * time.Second
 	}
-	mu.Lock()
-	defer mu.Unlock()
 	clientCfg := openai.DefaultConfig(c.APIKey)
 	clientCfg.BaseURL = strings.TrimRight(c.BaseURL, "/")
-	cfg = c
-	client = openai.NewClientWithConfig(clientCfg)
-	ready = true
+	mu.Lock()
+	defer mu.Unlock()
+	models[name] = &modelClient{cfg: c, client: openai.NewClientWithConfig(clientCfg)}
 	return nil
 }
 
-// Configured 是否已 Init。
+// Configured 是否已配 default 模型。
 func Configured() bool {
 	mu.Lock()
 	defer mu.Unlock()
-	return ready
+	_, ok := models[ModelDefault]
+	return ok
 }
 
-// Reason Chat Completions（无 tool）。
+// HasModel 某具名模型档是否已配（如判断 strong 是否可用、据此决定路由）。
+func HasModel(name string) bool {
+	mu.Lock()
+	defer mu.Unlock()
+	_, ok := models[name]
+	return ok
+}
+
+// resolveModel 取具名模型档；不存在则回退 default。
+func resolveModel(name string) (*modelClient, bool) {
+	mu.Lock()
+	defer mu.Unlock()
+	if mc, ok := models[name]; ok {
+		return mc, true
+	}
+	mc, ok := models[ModelDefault]
+	return mc, ok
+}
+
+// Reason Chat Completions（无 tool，default 模型）。
 func Reason(ctx context.Context, msgs []Message) (ReasonResult, error) {
-	return reasonInternal(ctx, msgs, nil)
+	return reasonInternal(ctx, ModelDefault, msgs, nil)
 }
 
-// ReasonWithTools Chat Completions + function calling。
+// ReasonWithTools Chat Completions + function calling（default 模型）。
 // 返回 ReasonResult 含 Text 与 ToolCalls；调用方负责 agent loop 直至 ToolCalls 空。
 func ReasonWithTools(ctx context.Context, msgs []Message, tools []Tool) (ReasonResult, error) {
-	return reasonInternal(ctx, msgs, tools)
+	return reasonInternal(ctx, ModelDefault, msgs, tools)
 }
 
-func reasonInternal(ctx context.Context, msgs []Message, tools []Tool) (ReasonResult, error) {
-	mu.Lock()
-	cli := client
-	c := cfg
-	ok := ready
-	mu.Unlock()
+// ReasonModel 指定模型档的无 tool 推理（如 ModelStrong；未配该档自动回退 default）。
+func ReasonModel(ctx context.Context, model string, msgs []Message) (ReasonResult, error) {
+	return reasonInternal(ctx, model, msgs, nil)
+}
+
+// ReasonWithToolsModel 指定模型档的 function-calling 推理（慎思层把硬推理/编码派给 ModelStrong）。
+// 未配该档自动回退 default——故调用方可无脑传 ModelStrong，没配也安全。
+func ReasonWithToolsModel(ctx context.Context, model string, msgs []Message, tools []Tool) (ReasonResult, error) {
+	return reasonInternal(ctx, model, msgs, tools)
+}
+
+func reasonInternal(ctx context.Context, model string, msgs []Message, tools []Tool) (ReasonResult, error) {
+	mc, ok := resolveModel(model)
 	if !ok {
 		return ReasonResult{}, errors.New("llm: not configured")
 	}
+	c := mc.cfg
+	cli := mc.client
 	ctx, cancel := context.WithTimeout(ctx, c.Timeout)
 	defer cancel()
 
@@ -188,7 +232,7 @@ func reasonInternal(ctx context.Context, msgs []Message, tools []Tool) (ReasonRe
 	return out, nil
 }
 
-// Summarize 总结。
+// Summarize 总结（default 模型）。
 func Summarize(ctx context.Context, raw string) (ReasonResult, error) {
 	return Reason(ctx, []Message{
 		{Role: "system", Content: "你是一个简洁的事件摘要器。把输入的事件流概括为不超过两句话。"},

@@ -21,6 +21,8 @@ services:
       TAIXU_DATA: /app/data
       TAIXU_SANDBOX: /workspace/sandbox
       TAIXU_SKILLS: /workspace/skills
+      # 观察轮一律关增强记忆（用户决策）：嵌入模型首次下载耗时长 + 占带宽，观察社交不需要。
+      TAIXU_EMBED_ENABLED: "false"
       # 嵌入服务（Qwen3-Embedding-0.6B，docs/TECH-STACK §5）现为「面板自管」：
       # llama-server 随 runtime 镜像分发，由 runtime 以子进程拉起（见 internal/runtime/embedsvc）。
       # 用户在 :3000 控制面勾选「嵌入增强记忆」即按需下载模型 + 启动，全程优雅降级、开关持久化。

@@ -60,8 +60,6 @@ func allTools() []tools.Tool {
 		toolFsWrite(),
 		toolFsList(),
 		toolFsMkdir(),
-		toolHTTPGet(),
-		toolHTTPPost(),
 		toolTimeNow(),
 		// --- deliberative · 网页抓取（Tier 分层；正文提取）---
 		toolWebSearch(),
@@ -627,63 +625,9 @@ func toolFsMkdir() tools.Tool {
 	}
 }
 
-func toolHTTPGet() tools.Tool {
-	return tools.Tool{
-		Name:        "http.get",
-		Description: "HTTP GET 请求。返回状态码与 body 字节数（Phase 0；后续 web.fetch 替代）。",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"url": map[string]any{"type": "string"},
-			},
-			"required": []string{"url"},
-		},
-		Lanes: []tools.Lane{tools.LaneDeliberative},
-		Handler: func(_ context.Context, tctx tools.Context, argsJSON string) (string, error) {
-			var a struct {
-				URL string `json:"url"`
-			}
-			if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
-				return errJSON("invalid args"), err
-			}
-			if a.URL == "" {
-				return errJSON("empty url"), nil
-			}
-			r, err := toolrunner.HTTPGet(tctx.CycleID, a.URL)
-			return wrapRunnerResult(r, err)
-		},
-	}
-}
-
-func toolHTTPPost() tools.Tool {
-	return tools.Tool{
-		Name:        "http.post",
-		Description: "HTTP POST 请求。body 以 application/json 发出。",
-		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"url":  map[string]any{"type": "string"},
-				"body": map[string]any{"type": "string"},
-			},
-			"required": []string{"url", "body"},
-		},
-		Lanes: []tools.Lane{tools.LaneDeliberative},
-		Handler: func(_ context.Context, tctx tools.Context, argsJSON string) (string, error) {
-			var a struct {
-				URL  string `json:"url"`
-				Body string `json:"body"`
-			}
-			if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
-				return errJSON("invalid args"), err
-			}
-			if a.URL == "" {
-				return errJSON("empty url"), nil
-			}
-			r, err := toolrunner.HTTPPost(tctx.CycleID, a.URL, a.Body)
-			return wrapRunnerResult(r, err)
-		},
-	}
-}
+// http.get / http.post 已撤（速胜#3）：旧实现只回状态码 + 字节数（desc 自承「web.fetch 替代」），
+// 在慎思 agent loop 里白耗轮次。读网页正文统一走 web.fetch；要调 JSON API 在 script.python/node 里发请求。
+// toolrunner.HTTPGet/HTTPPost 桥保留（其他 lane / 未来可复用），仅不再注册进慎思 lane。
 
 func toolTimeNow() tools.Tool {
 	return tools.Tool{

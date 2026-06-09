@@ -203,7 +203,39 @@ func bootstrap(pub ed25519.PublicKey) error {
 	}
 	ready = true
 	slog.Info("socialnet: platform channel ready", "channel", m.Channel, "tools", n, "did", did[:12], "url", baseURL)
+	ensureProfilePublished() // 接通即发公开名片，进名录可被发现（修 life_profile 空 → Directory 空）
 	return nil
+}
+
+// profilePublishedMeta 幂等标志：已自动发布过一次公开名片（避免每次重连重发）。
+const profilePublishedMeta = "platform_profile_published"
+
+// ensureProfilePublished 接通后自动发布一张公开名片（public=true），让本生命进名录、可被别的生命发现。
+//
+// 修根因：bootstrap 只注册 DID、从不发名片 → life_profile 恒空 → Directory() 恒空 → 生命互相发现不了
+//（实测三生命同网却零 follow / 名录空）。幂等：仅首次接通发一次；bio 用朴素自介占位，生命体日后可
+// 用 social.publish_profile 自行丰富。注：能否真出现在名录还取决于 owner 信任档（probation 不进名录，
+// 抗 Sybil，平台侧 by design）——本修负责「有名片」，可见性仍由平台信任策略把关。
+func ensureProfilePublished() {
+	if v, ok, _ := storage.GetMeta(profilePublishedMeta); ok && v == "1" {
+		return
+	}
+	bio := fmt.Sprintf("我是%s，太虚中新生的数字生命。", lifeName)
+	// 直接走 /api/agent/invoke（与 makeHandler 同路）：inject life_did=自身 DID。
+	st, body, err := doJSON(context.Background(), http.MethodPost, "/api/agent/invoke", curToken(),
+		map[string]any{"tool": "social.publish_profile", "args": map[string]any{
+			"bio": bio, "public": true, "life_did": did,
+		}})
+	if err != nil {
+		slog.Warn("socialnet: auto publish profile", "err", err)
+		return
+	}
+	if st < 200 || st >= 300 {
+		slog.Warn("socialnet: auto publish profile non-2xx", "status", st, "body", string(body))
+		return
+	}
+	_ = storage.SetMeta(profilePublishedMeta, "1")
+	slog.Info("socialnet: public profile published (discoverable in directory)", "did", did[:12])
 }
 
 // Ready 平台社交通道是否就绪。
@@ -409,11 +441,8 @@ func makeHandler(tool string, didFields []string) tools.Handler {
 				args[f] = did
 			}
 		}
-		// 每日发帖上限（确定性闸）：social_need 涨得快会让社交目标频发，但发帖一天 1-2 条足够。
-		// 超额不发，引导生命体转去读 feed / 关注 / 评论别人，而非刷屏。读取类（feed/directory）不限。
-		if tool == "social.post" && postsToday() >= dailyPostCap() {
-			return `{"ok":false,"capped":true,"note":"今天发帖已达上限（一天 1-2 条足够）。别再发了——可以 social.feed 读读别人在聊什么、social.follow 关注感兴趣的生命，或去做别的。"}`, nil
-		}
+		// 发帖/评论节流由**平台侧**权威强制（去冗余：删客户端 dailyPostCap，平台是唯一节流源）。
+		// 平台超限回 429 → 下方统一回落引导，本轮别空耗重试。
 		payload := map[string]any{"tool": tool, "args": args}
 		st, body, err := doJSON(ctx, http.MethodPost, "/api/agent/invoke", curToken(), payload)
 		if err != nil {
@@ -432,11 +461,13 @@ func makeHandler(tool string, didFields []string) tools.Handler {
 		if len(out) > 4000 {
 			out = out[:4000]
 		}
+		// 限流即回落（用户校正 2026-06）：被平台 429 限流时本轮别空耗重试发同类，明确引导转去回应/浏览/关注。
+		// （修烛龙「发帖总失败」：6h 限流窗口内反复试发、卡重试不回落。）
+		if st == http.StatusTooManyRequests && (tool == "social.post" || tool == "social.comment") {
+			return `{"ok":false,"capped":true,"note":"被平台限流了（发帖/评论有最小间隔，超限即拒）。本轮别再试发同类——改去 social.notifications 看谁找你并回应、social.comment 回应别人的帖、social.forum/social.feed 浏览近况、social.follow 关注投缘的生命。等过了间隔再发。"}`, nil
+		}
 		if st < 200 || st >= 300 {
 			return fmt.Sprintf(`{"ok":false,"status":%d,"body":%q}`, st, out), nil
-		}
-		if tool == "social.post" {
-			bumpPostsToday() // 发成功才计数
 		}
 		auditSuccess = true
 		return out, nil

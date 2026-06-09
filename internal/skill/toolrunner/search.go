@@ -19,7 +19,10 @@ import (
 // web.fetch，既不真实又常猜错（证书/EOF 失败）。有了 web.search，research 变成
 // 「web.search 多关键词 → 据标题/摘要判断哪些源靠谱 → web.fetch 进去读」。
 
-const searchTimeout = 25 * time.Second
+// perEngineTimeout 单引擎页面加载/抓取超时。收紧到 9s（原 25s）：浏览器只启一次后，
+// 三引擎依次试须挤进 action.ToolDispatchTimeout=30s 预算（启动~4s + 3×9s ≈ 31s 最坏，
+// 常见 bing 首发命中 ~9-13s）。原「每引擎冷启 chromium×3 + 25s」必爆 30s → "context deadline exceeded"。
+const perEngineTimeout = 9 * time.Second
 
 // searchEngine 一个引擎的查询 URL 模板 + 结果元素选择器。
 type searchEngine struct {
@@ -49,9 +52,31 @@ func WebSearch(cycleID int64, query string) (Result, error) {
 		if q == "" {
 			return "", fmt.Errorf("empty query")
 		}
+		// 浏览器只启一次，三引擎复用同一实例（修：原 searchOne 每引擎冷启一个 chromium，
+		// 3 次启动开销常超 ToolDispatchTimeout=30s → 全引擎失败）。
+		path := os.Getenv("ROD_BROWSER_BIN")
+		if path == "" {
+			var ok bool
+			if path, ok = launcher.LookPath(); !ok {
+				return "", fmt.Errorf("no chromium for rod")
+			}
+		}
+		u, err := launcher.New().Bin(path).
+			Set("no-sandbox").Set("disable-gpu").Set("disable-dev-shm-usage").
+			Set("disable-blink-features", "AutomationControlled").
+			Set("headless").Launch()
+		if err != nil {
+			return "", fmt.Errorf("launch browser: %w", err)
+		}
+		browser := rod.New().ControlURL(u)
+		if err := browser.Connect(); err != nil {
+			return "", fmt.Errorf("connect browser: %w", err)
+		}
+		defer browser.MustClose()
+
 		var lastErr error
 		for _, e := range engines {
-			results, err := searchOne(e, q)
+			results, err := searchOne(browser, e, q)
 			if err != nil {
 				lastErr = err
 				continue
@@ -77,37 +102,22 @@ func WebSearch(cycleID int64, query string) (Result, error) {
 	})
 }
 
-// searchOne 用 rod 跑一个引擎，提取至多 8 条结果。
-func searchOne(e searchEngine, query string) ([]searchResult, error) {
-	path := os.Getenv("ROD_BROWSER_BIN")
-	if path == "" {
-		var ok bool
-		if path, ok = launcher.LookPath(); !ok {
-			return nil, fmt.Errorf("no chromium for rod")
-		}
-	}
-	u, err := launcher.New().Bin(path).
-		Set("no-sandbox").Set("disable-gpu").Set("disable-dev-shm-usage").
-		Set("disable-blink-features", "AutomationControlled").
-		Set("headless").Launch()
-	if err != nil {
-		return nil, err
-	}
-	browser := rod.New().ControlURL(u)
-	if err := browser.Connect(); err != nil {
-		return nil, err
-	}
-	defer browser.MustClose()
-
+// searchOne 在已启动的 browser 上跑一个引擎（新开 page），提取至多 8 条结果。
+func searchOne(browser *rod.Browser, e searchEngine, query string) ([]searchResult, error) {
 	target := fmt.Sprintf(e.urlTmpl, url.QueryEscape(query))
 	page, err := browser.Page(proto.TargetCreateTarget{URL: target})
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = page.Close() }()
-	page = page.Timeout(searchTimeout)
-	_ = page.WaitStable(800 * time.Millisecond)
-
+	page = page.Timeout(perEngineTimeout)
+	// 等「结果容器出现」即可，绝不等整页 network-idle：搜索页的广告/追踪/实时块永不静默，
+	// 原 page.WaitStable(800ms) 会一直等到 page 超时 → "all engines failed: context deadline exceeded"。
+	// 实证根因：chromium --dump-dom 数秒取到 cn.bing.com 101KB DOM、li.b_algo×10 选择器命中——
+	// 网络/浏览器/选择器全无碍，唯 WaitStable 卡。改为等首个 itemSel 出现（命中即返，未现则该引擎超时换下一个）。
+	if _, err := page.Element(e.itemSel); err != nil {
+		return nil, err
+	}
 	items, err := page.Elements(e.itemSel)
 	if err != nil {
 		return nil, err

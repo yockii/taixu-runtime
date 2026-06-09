@@ -100,6 +100,22 @@ func Apply(d Delta) error {
 	return nil
 }
 
+// AddEnergyUsed 累加今日已耗精力（认知开销，按 token→energy 折算；R106 死字段复活）。
+//
+// 与 life.Energy（当前体力标量，gate 行为、自回血）不同：EnergyUsedToday 是当日累计
+// 认知支出的只增计量，由 ledger.MaybeResetEnergyDailyCap 每日清零。当前仅供观测/面板，
+// 尚不作硬闸（token→cap 折算公式 Phase 1 校准，R45）。amount 应为正（折算后的 energy 量）。
+func AddEnergyUsed(amount float64) error {
+	if amount <= 0 {
+		return nil
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	life.EnergyUsedToday += amount
+	life.UpdatedAt = shared.SystemClock.UnixSec()
+	return storage.UpsertLifeState(&life)
+}
+
 // ResetEnergyDailyCap 重置日精力上限（ledger 模块触发）。
 func ResetEnergyDailyCap(newCap float64, nextResetAt int64) error {
 	if newCap < 0 || newCap > 1 {
