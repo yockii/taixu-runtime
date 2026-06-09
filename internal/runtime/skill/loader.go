@@ -534,10 +534,34 @@ func UseByName(name string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("read skill body: %w", err)
 		}
+		out := string(body)
+		// C4 可执行技能绑定（第一步）：技能目录含可执行入口时，提示生命体可用 script.* 直接跑它，
+		// 而非仅照抄散文——让复用从"重读指引"渐进为"运行能力"。（完整的可调度工具注册待后续切片。）
+		if ep := detectEntrypoint(s.InstallPath); ep != "" {
+			out += fmt.Sprintf("\n\n【可执行】本技能目录含可执行入口 %s——需要时可用 script.python / script.node 直接运行它（路径 %s），而非仅照抄文字步骤。",
+				filepath.Base(ep), ep)
+		}
 		_ = storage.BumpSkillUsed(s.ID, shared.SystemClock.UnixSec())
-		return string(body), nil
+		return out, nil
 	}
 	return "", fmt.Errorf("skill %q not found", name)
+}
+
+// skillEntrypoints 约定的技能可执行入口文件名（C4）。
+var skillEntrypoints = []string{"run.py", "main.py", "run.js", "run.sh"}
+
+// detectEntrypoint 返回技能目录里首个存在的可执行入口绝对路径；无则空串。
+func detectEntrypoint(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	for _, n := range skillEntrypoints {
+		p := filepath.Join(dir, n)
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			return p
+		}
+	}
+	return ""
 }
 
 // RecordOutcome 据「用了某技能的目标真成败」回写其掌握度（C2 结果验证 competence）。
