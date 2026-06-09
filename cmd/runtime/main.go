@@ -112,6 +112,13 @@ func main() {
 	} else if n > 0 {
 		slog.Info("skills loaded from dir", "count", n)
 	}
+	// 技能全列/检索切换阈值（C5）：从固定 8 改 env 可调，便于据实测精度调（维护期会给推荐值）。
+	if v := os.Getenv("TAIXU_SKILL_LIST_THRESHOLD"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
+			skill.SetListThreshold(n)
+			slog.Info("skill list threshold set from env", "threshold", n)
+		}
+	}
 
 	cur, err := lifecycle.Current()
 	if err != nil {
@@ -305,6 +312,10 @@ func runMaintenance(lifeID string) {
 	} else if d > 0 || r > 0 {
 		slog.Info("maintenance decayed confirmed semantic", "decayed", d, "retracted", r)
 	}
+	// 检索精度推荐（C5）：据 skill_retrieval_log 实测把 SkillListThreshold 从拍脑袋变 data-driven。
+	// 样本够（filtered 观测≥10）才给建议——避免技能尚少时空喊。仅 log，调阈值仍走 env（不自动改，防 thrash）。
+	recommendSkillThreshold(lifeID)
+
 	// VACUUM 回收磁盘空洞（R99：删行不缩文件）。月度门控——剪枝是日度，整库重写按月一次。
 	now := shared.SystemClock.UnixSec()
 	if vacuumDue(lifeID, now) {
@@ -315,6 +326,43 @@ func runMaintenance(lifeID string) {
 			slog.Info("maintenance vacuumed db")
 		}
 	}
+}
+
+// recommendSkillThreshold 据实测检索精度给 SkillListThreshold 推荐（C5，仅 log 不自动改）。
+//
+// 信号（全量 skill_retrieval_log）：
+//   - recall 缺口 = filtered 目标里「用到却没注入」的次数（FilteredMiss）。>0 说明 top-k 漏了真要的技能
+//     → 阈值太低/太早进检索 → 建议 RAISE（让全列覆盖更久）。
+//   - precision = 注入技能被实际用到的比例（Hit/Injected）。很低说明注入大量没用上的噪声 → 可考虑收紧。
+// 样本不足（filtered 观测 < 10）不喊，避免技能尚少时噪声建议。
+func recommendSkillThreshold(lifeID string) {
+	st, err := storage.RetrievalStatsSince(lifeID, 0)
+	if err != nil {
+		slog.Warn("retrieval stats", "err", err)
+		return
+	}
+	if st.FilteredObs < 10 {
+		return // 样本不足，按兵不动
+	}
+	precision := 0.0
+	if st.InjectedSum > 0 {
+		precision = float64(st.HitSum) / float64(st.InjectedSum)
+	}
+	cur := skill.ListThreshold()
+	rec := cur
+	switch {
+	case st.FilteredMiss > 0:
+		rec = cur + 4 // 检索漏了真用到的技能 → 放宽全列窗口
+	case precision < 0.15:
+		rec = cur - 2 // 注入大量没用上的噪声 → 收紧（更早进检索/更小注入）
+		if rec < 2 {
+			rec = 2
+		}
+	}
+	slog.Info("skill retrieval precision",
+		"filtered_obs", st.FilteredObs, "injected", st.InjectedSum, "hit", st.HitSum,
+		"recall_gap_miss", st.FilteredMiss, "precision", precision,
+		"threshold_cur", cur, "threshold_suggest", rec)
 }
 
 // runCycle 9 步循环。

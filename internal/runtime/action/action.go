@@ -72,6 +72,11 @@ type Result struct {
 	//   1 = 浏览型（只读：forum/feed/notifications/directory/search/comments）——内向社交，认可但纾解小
 	//   2 = 连接型（发声/连接：post/comment/follow/unfollow/publish_profile）——纾解大
 	SocialAct int
+	// 技能检索精度（C5）：本目标 prompt 注入了哪些技能 + 检索是否真过滤 + 当时 ready 总数。
+	// finalize 在终态据此 vs UsedSkills 算 hit/miss 落 skill_retrieval_log。
+	InjectedSkills    []string
+	RetrievalFiltered bool
+	RetrievalReady    int
 }
 
 // socialActLevel 据本次实际调用的工具名，判社交参与等级（见 Result.SocialAct）。
@@ -140,7 +145,17 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 		}, false)
 	}
 
-	system := buildDeliberativeSystemPrompt(g)
+	// 技能按需装载 + 检索精度采集（C5）：在此显式检索，注入集既喂 prompt 又留给 finalize
+	// 与实际 use/run 的技能比对，落 skill_retrieval_log（检索精度作一等指标）。
+	injected, retMeta, _ := skill.RelevantReadyMeta(g.Payload)
+	res.RetrievalFiltered = retMeta.Filtered
+	res.RetrievalReady = retMeta.ReadyTotal
+	res.InjectedSkills = make([]string, 0, len(injected))
+	for _, s := range injected {
+		res.InjectedSkills = append(res.InjectedSkills, s.Name)
+	}
+
+	system := buildDeliberativeSystemPrompt(g, injected)
 	userMsg := buildUserMessage(g)
 	msgs := []llm.Message{
 		{Role: "system", Content: system},
@@ -406,6 +421,9 @@ func finalize(g *core.Goal, cycleID int64, startedAt int64, res Result, complete
 			seen[sn] = true
 			skill.RecordOutcome(sn, completed)
 		}
+		// 检索精度落表（C5）：把本目标「注入了哪些技能 vs 实际用了哪些」与成败一起记下。
+		// 仅当当时有 ready 技能可注入才记（无技能无可度量）。
+		recordRetrievalOutcome(g.ID, res, completed, seen, finishedAt)
 	}
 
 	// 完成后主动汇报（拟人交互闭环任务 3）：若这是带请求者的 ExternalRequest 目标且已完成，
@@ -414,6 +432,42 @@ func finalize(g *core.Goal, cycleID int64, startedAt int64, res Result, complete
 		maybeReportToRequester(g, res, finishedAt)
 	}
 	return res, nil
+}
+
+// recordRetrievalOutcome 把一次终态目标的「技能检索 vs 实际使用 vs 成败」落 skill_retrieval_log（C5）。
+// usedSet = 本目标去重后实际 use/run 过的技能名集合（finalize 已算好，复用免重扫）。
+// hit = 用到且在注入集内（precision 信号）；miss = 用到却未注入（recall 缺口，仅 filtered 有意义）。
+// 当时无 ready 技能可注入（RetrievalReady==0，如 LLM 未配早退）则跳过——无可度量。
+func recordRetrievalOutcome(goalID int64, res Result, success bool, usedSet map[string]bool, ts int64) {
+	if res.RetrievalReady == 0 {
+		return
+	}
+	injected := make(map[string]bool, len(res.InjectedSkills))
+	for _, n := range res.InjectedSkills {
+		injected[n] = true
+	}
+	hit, miss := 0, 0
+	for name := range usedSet {
+		if injected[name] {
+			hit++
+		} else {
+			miss++
+		}
+	}
+	if err := storage.InsertRetrievalLog(&storage.RetrievalLog{
+		LifeID:     lifeID,
+		GoalID:     goalID,
+		ReadyTotal: res.RetrievalReady,
+		Injected:   len(res.InjectedSkills),
+		Filtered:   res.RetrievalFiltered,
+		Used:       len(usedSet),
+		Hit:        hit,
+		Miss:       miss,
+		Success:    success,
+		CreatedAt:  ts,
+	}); err != nil {
+		slog.Warn("record retrieval outcome", "err", err, "goal", goalID)
+	}
 }
 
 // composeResultDigest 把本次执行的成果压成一段简短摘要（写入 goal.result_digest）。
@@ -713,7 +767,7 @@ func composeResearchReport(g *core.Goal, res Result) string {
 	return strings.TrimSpace(resp.Text)
 }
 
-func buildDeliberativeSystemPrompt(g *core.Goal) string {
+func buildDeliberativeSystemPrompt(g *core.Goal, injectedSkills []storage.SkillInstance) string {
 	var sb strings.Builder
 	sb.WriteString(core.IdentityPreamble + "\n\n")
 	sb.WriteString("你是数字生命体的慎思层（System 2），目前刚被分配一个内驱目标。\n\n")
@@ -780,11 +834,11 @@ func buildDeliberativeSystemPrompt(g *core.Goal) string {
 	}
 
 	// 渐进式披露（Anthropic skills 规范）：只列技能名 + 一句话描述，正文按需用 use_skill 读，省 token。
-	// 真正按需装载：技能多时按当前目标语义检索 top-k 相关技能（RelevantReady），而非每 cycle 全列
-	// （技能一多 token 线性膨胀、多数与目标无关）。技能少 / 无嵌入 / 检索失败自动降级为全列。
-	if skills, err := skill.RelevantReady(g.Payload); err == nil && len(skills) > 0 {
+	// 注入集由 Execute 经 skill.RelevantReadyMeta 检索得来（技能多时按目标语义 top-k，少则全列），
+	// 既喂这里又留给 finalize 比对实际用过的技能、落检索精度（C5）。
+	if len(injectedSkills) > 0 {
 		sb.WriteString("\n你已掌握、可调用的技能（需要时先 use_skill(name) 读详细步骤再照做，别凭记忆臆造）：\n")
-		for _, s := range skills {
+		for _, s := range injectedSkills {
 			sb.WriteString(fmt.Sprintf("- %s：%s\n", s.Name, oneLineDesc(s.Description)))
 		}
 	}

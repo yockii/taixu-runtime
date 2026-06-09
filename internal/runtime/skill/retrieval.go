@@ -10,9 +10,22 @@ import (
 	"taixu.icu/runtime/internal/storage"
 )
 
-// SkillListThreshold 技能数 ≤ 此值时直接全列（无需检索，省一次 embed 调用）。
+// skillListThreshold 技能数 ≤ 此值时直接全列（无需检索，省一次 embed 调用）。
 // 超过才按目标语义检索 top-k，避免技能多了 prompt token 线性膨胀（多数与当前目标无关）。
-const SkillListThreshold = 8
+// C5：从固定 8 改为可调 var——main 据 TAIXU_SKILL_LIST_THRESHOLD env 调，且维护期据
+// 实测检索精度（skill_retrieval_log）给推荐值，把阈值从拍脑袋变 data-driven。
+var skillListThreshold = 8
+
+// SetListThreshold 调全列/检索切换阈值（main 据 env 调；≤0 忽略，守地板 1）。
+func SetListThreshold(n int) {
+	if n < 1 {
+		return
+	}
+	skillListThreshold = n
+}
+
+// ListThreshold 取当前阈值（观测/推荐对比用）。
+func ListThreshold() int { return skillListThreshold }
 
 // RelevantTopK 检索时注入的相关技能上限。
 const RelevantTopK = 8
@@ -22,18 +35,27 @@ const RelevantTopK = 8
 // 基础上让"真有用过"的技能优先浮现。0.5 = mastery 满分技能其相似分放大 1.5×（不喧宾夺主盖过语义）。
 const masteryBias = 0.5
 
-// RelevantReady 按当前目标文本返回「最该让 LLM 看到」的 ready 技能（真正按需装载）：
-//   - 技能数 ≤ 阈值 / 未配嵌入 / 检索失败 → 全列（与旧行为一致，绝不因检索而漏技能）。
-//   - 否则用 goalText 语义检索，取 top-k 相关技能。
+// RetrievalMeta 一次按需装载的检索元信息（C5 精度落表用）。
+type RetrievalMeta struct {
+	ReadyTotal int  // 当时 ready 技能总数
+	Injected   int  // 实际返回（注入 prompt）的技能数
+	Filtered   bool // true=走了语义 top-k 过滤；false=全列（降级/技能少）
+}
+
+// RelevantReadyMeta 按当前目标文本返回「最该让 LLM 看到」的 ready 技能（真正按需装载），
+// 并带回检索元信息（C5）：
+//   - 技能数 ≤ 阈值 / 未配嵌入 / 检索失败 → 全列（Filtered=false，绝不因检索而漏技能）。
+//   - 否则用 goalText 语义检索，取 top-k 相关技能（Filtered=true）。
 //
 // 懒嵌入自愈：ready 但还没向量的技能，在此顺手补一次（best-effort），无需在装载/结晶处插钩子。
-func RelevantReady(goalText string) ([]storage.SkillInstance, error) {
+func RelevantReadyMeta(goalText string) ([]storage.SkillInstance, RetrievalMeta, error) {
 	all, err := ListReady()
 	if err != nil {
-		return nil, err
+		return nil, RetrievalMeta{}, err
 	}
-	if len(all) <= SkillListThreshold || goalText == "" || !embed.Configured() {
-		return all, nil
+	meta := RetrievalMeta{ReadyTotal: len(all), Injected: len(all), Filtered: false}
+	if len(all) <= skillListThreshold || goalText == "" || !embed.Configured() {
+		return all, meta, nil
 	}
 
 	mu.Lock()
@@ -57,13 +79,13 @@ func RelevantReady(goalText string) ([]storage.SkillInstance, error) {
 
 	vecs, err := storage.ReadySkillVectors(lid)
 	if err != nil || len(vecs) == 0 {
-		return all, nil // 降级全列
+		return all, meta, nil // 降级全列（Filtered 保持 false）
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	qv, err := embed.EmbedOne(ctx, goalText, true) // query 端
 	cancel()
 	if err != nil {
-		return all, nil
+		return all, meta, nil
 	}
 
 	type scored struct {
@@ -89,7 +111,7 @@ func RelevantReady(goalText string) ([]storage.SkillInstance, error) {
 		ranked = append(ranked, scored{s: s, score: cos * (1.0 + masteryBias*s.Mastery)})
 	}
 	if len(ranked) == 0 {
-		return all, nil
+		return all, meta, nil
 	}
 	sort.Slice(ranked, func(i, j int) bool { return ranked[i].score > ranked[j].score })
 	k := RelevantTopK
@@ -106,5 +128,7 @@ func RelevantReady(goalText string) ([]storage.SkillInstance, error) {
 	for i := 0; i < k; i++ {
 		out = append(out, ranked[i].s)
 	}
-	return out, nil
+	meta.Filtered = true
+	meta.Injected = len(out)
+	return out, meta, nil
 }
