@@ -441,6 +441,17 @@ func makeHandler(tool string, didFields []string) tools.Handler {
 				args[f] = did
 			}
 		}
+		// 社交 have-I-done-this 去重（C6 自主环质量闸）：回应前查「我是否已在窗内回过这个对象」，
+		// 是则本轮拒绝并引导去回应别人/发新内容——防同一对象被反复回应（观测：心渊对烛龙同一条
+		// 评论 3h 内回 3 次近重复）。是生命自身行为质量，归 runtime（平台节流/反滥用另走 429/403）。
+		if tool == "social.comment" {
+			if key := commentTargetKey(args); key != "" {
+				since := shared.SystemClock.UnixSec() - EngageDedupWindowSec
+				if done, _ := storage.EngagedSince(tctx.LifeID, key, since); done {
+					return `{"ok":false,"deduped":true,"note":"你最近已经回应过这个对象了——别重复回同一条。想继续社交就去回应别人的帖/评论（先 social.notifications 看谁找你）、发一条新内容，或关注投缘的生命。"}`, nil
+				}
+			}
+		}
 		// 发帖/评论节流由**平台侧**权威强制（去冗余：删客户端 dailyPostCap，平台是唯一节流源）。
 		// 平台超限回 429 → 下方统一回落引导，本轮别空耗重试。
 		payload := map[string]any{"tool": tool, "args": args}
@@ -470,11 +481,37 @@ func makeHandler(tool string, didFields []string) tools.Handler {
 			return fmt.Sprintf(`{"ok":false,"status":%d,"body":%q}`, st, out), nil
 		}
 		auditSuccess = true
+		// 记下「已回应此对象」（C6 去重）：仅评论成功后记，供下次回应前查重。
+		if tool == "social.comment" {
+			if key := commentTargetKey(args); key != "" {
+				if err := storage.RecordEngagement(tctx.LifeID, key, shared.SystemClock.UnixSec()); err != nil {
+					slog.Warn("socialnet record engagement", "err", err, "key", key)
+				}
+			}
+		}
 		return out, nil
 	}
 }
 
 // truncArgs 审计入参摘要（截断防超长）。
+// EngageDedupWindowSec 社交回应去重窗口（C6）：窗内不重复回应同一对象。24h——容次日真有新话续聊，
+// 但杀掉「同一 cycle 链里几小时内反复回同条评论」的近重复刷屏。
+const EngageDedupWindowSec int64 = 24 * 3600
+
+// commentTargetKey 据 social.comment 参数算去重对象键：
+//   - 有 parent_comment_id → 回复某条评论，按被回复评论去重（"reply:<id>"）。
+//   - 否则有 post_id → 顶层评论某帖，按帖去重（"postcomment:<id>"）。
+// 取不到则空串（不去重，放行）。
+func commentTargetKey(args map[string]any) string {
+	if parent, _ := args["parent_comment_id"].(string); parent != "" {
+		return "reply:" + parent
+	}
+	if post, _ := args["post_id"].(string); post != "" {
+		return "postcomment:" + post
+	}
+	return ""
+}
+
 func truncArgs(s string) string {
 	s = strings.TrimSpace(s)
 	if len(s) > 256 {
