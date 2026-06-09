@@ -195,7 +195,7 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 			if tc.Name == "complete_goal" {
 				completedByLLM = true
 			}
-			if tc.Name == "use_skill" { // C2：记下用了哪些技能，终态按目标成败回写其掌握度
+			if tc.Name == "use_skill" || tc.Name == "run_skill" { // C2：记下用/跑了哪些技能，终态按目标成败回写其掌握度
 				var sa struct {
 					Name string `json:"name"`
 				}
@@ -728,6 +728,7 @@ func buildDeliberativeSystemPrompt(g *core.Goal) string {
 	sb.WriteString("- record_learning(seed_id, digest, mastery)  可选：回写你的理解摘要，帮未来的你接上进度\n")
 	sb.WriteString("- crystallize_skill(seed_id, name, instructions)  把已掌握知识手动结晶成技能（也会在掌握度够时自动触发）\n")
 	sb.WriteString("- use_skill(name)                  读取某个已掌握技能的详细指引再照做（技能名见下方清单）\n")
+	sb.WriteString("- run_skill(name)                  直接运行某技能的可执行入口并取输出（技能本质是可复用代码时，比 use_skill 抄脚本更省准）\n")
 	sb.WriteString("- note_to_self(slot, content)      暂存想法到工作记忆\n")
 	sb.WriteString("- seal_episode()                   主动封段（重要节点）\n")
 	sb.WriteString("- fs.read / fs.write / fs.list / fs.mkdir   sandbox 文件系统\n")
@@ -891,7 +892,8 @@ func masteryDelta(substantive int, validated bool) float64 {
 var substantiveTools = map[string]bool{
 	"web.fetch": true, "web.render": true,
 	"script.python": true, "script.node": true,
-	"fs.read": true, "fs.write": true,
+	"run_skill": true, // C4：跑可执行技能入口 = 真干活（复用成运行能力）
+	"fs.read":   true, "fs.write": true,
 	"query_memory": true, "record_learning": true,
 }
 
@@ -937,7 +939,7 @@ func maybeCrystallize(seed *storage.InterestSeed) {
 	if !llm.Configured() {
 		return
 	}
-	name, desc, instr, atools := authorSkillFromSeed(seed)
+	name, desc, instr, atools, ep := authorSkillFromSeed(seed)
 	if instr == "" {
 		// LLM 判定不值得固化为技能：标记已学透并退役，免反复刷同一兴趣。
 		_ = storage.RetireInterestSeed(seed.ID, now)
@@ -946,7 +948,7 @@ func maybeCrystallize(seed *storage.InterestSeed) {
 		})
 		return
 	}
-	inst, err := skill.AuthorFromKnowledge(seed.ID, name, desc, instr, atools)
+	inst, err := skill.AuthorFromKnowledge(seed.ID, name, desc, instr, atools, ep)
 	if err != nil {
 		slog.Warn("auto crystallize", "err", err, "seed", seed.ID)
 		return
@@ -1006,8 +1008,9 @@ func distillSeedKnowledge(seed *storage.InterestSeed) string {
 }
 
 // authorSkillFromSeed 让慎思层用自己的话把一个已学透的兴趣写成 SKILL.md 正文（单发 LLM）。
-// 返回 (name, description, instructions, allowedTools)；若判定不值得做成技能则 instructions 为空。
-func authorSkillFromSeed(seed *storage.InterestSeed) (string, string, string, []string) {
+// 返回 (name, description, instructions, allowedTools, entrypoint)；若判定不值得做成技能则
+// instructions 为空。entrypoint 非空时表示这技能本质是一段可复用代码（C4），结晶会落成可执行入口。
+func authorSkillFromSeed(seed *storage.InterestSeed) (string, string, string, []string, *skill.Entrypoint) {
 	sys := "你是一个数字生命体的慎思层。你已经把一个兴趣学透了，现在要把它固化成一个可复用技能（SKILL.md），" +
 		"将来你自己能用 use_skill 调用，也能在社群里传授给别的生命体。\n" +
 		genome.PersonaPrompt() + "\n" +
@@ -1031,6 +1034,8 @@ func authorSkillFromSeed(seed *storage.InterestSeed) (string, string, string, []
 				"description":   map[string]any{"type": "string", "description": "一句话：这技能干什么、何时用"},
 				"instructions":  map[string]any{"type": "string", "description": "技能正文：步骤/要点/注意事项；不值得做成技能则留空"},
 				"allowed_tools": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "会用到的工具名（如 web.fetch / script.python）"},
+				"script":        map[string]any{"type": "string", "description": "可选：若这技能本质是一段可复用代码，把入口脚本写在这里——结晶后可用 run_skill 直接运行，无需每次重抄"},
+				"script_lang":   map[string]any{"type": "string", "description": "script 的语言：python / node / shell（填了 script 才需要）"},
 			},
 			"required": []string{"name"},
 		},
@@ -1044,7 +1049,7 @@ func authorSkillFromSeed(seed *storage.InterestSeed) (string, string, string, []
 	}, []llm.Tool{tool})
 	if err != nil {
 		slog.Warn("author skill from seed", "err", err, "seed", seed.ID)
-		return "", "", "", nil
+		return "", "", "", nil, nil
 	}
 	for _, tc := range resp.ToolCalls {
 		if tc.Name != "author_skill" {
@@ -1055,13 +1060,19 @@ func authorSkillFromSeed(seed *storage.InterestSeed) (string, string, string, []
 			Description  string   `json:"description"`
 			Instructions string   `json:"instructions"`
 			AllowedTools []string `json:"allowed_tools"`
+			Script       string   `json:"script"`
+			ScriptLang   string   `json:"script_lang"`
 		}
 		if err := json.Unmarshal([]byte(tc.ArgsJSON), &a); err != nil {
 			continue
 		}
-		return a.Name, a.Description, strings.TrimSpace(a.Instructions), a.AllowedTools
+		var ep *skill.Entrypoint
+		if strings.TrimSpace(a.Script) != "" {
+			ep = &skill.Entrypoint{Lang: a.ScriptLang, Code: a.Script}
+		}
+		return a.Name, a.Description, strings.TrimSpace(a.Instructions), a.AllowedTools, ep
 	}
-	return "", "", "", nil
+	return "", "", "", nil, nil
 }
 
 // seedRecentContext 拉与某兴趣相关的近期 episode 摘要（结晶写正文时给 LLM 回忆素材）。

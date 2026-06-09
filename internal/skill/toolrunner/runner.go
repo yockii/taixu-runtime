@@ -181,6 +181,51 @@ func ScriptNode(cycleID int64, code string) (Result, error) {
 	return runScript(cycleID, "script.node", code, "node", "-e", code)
 }
 
+// RunSkillFile 执行一个技能的可执行入口脚本文件（C4 可执行技能绑定）。
+// entry 为绝对路径（技能目录内的 run.py/run.js/run.sh）；按扩展名选解释器，
+// 工作目录沙箱、env 注入各 skill 私有依赖（与 script.* 同环境，故技能自带 deps 可 import）。
+//
+// 路径围栏（加固）：entry 经 EvalSymlinks 解析后必须落在 skills 根内，挡掉
+// symlink 指向仓外（TOCTOU：探测到普通文件后被换成 symlink）或未来误传外部路径。
+func RunSkillFile(cycleID int64, entry string) (Result, error) {
+	if err := entryWithinSkills(entry); err != nil {
+		return Result{}, err
+	}
+	switch strings.ToLower(filepath.Ext(entry)) {
+	case ".py":
+		return runScript(cycleID, "run_skill", entry, "python3", entry)
+	case ".js":
+		return runScript(cycleID, "run_skill", entry, "node", entry)
+	case ".sh":
+		return runScript(cycleID, "run_skill", entry, "sh", entry)
+	default:
+		return Result{}, fmt.Errorf("run_skill: unsupported entry %q", entry)
+	}
+}
+
+// entryWithinSkills 校验入口脚本经 symlink 解析后仍在 skills 根目录内（C4 路径围栏）。
+// skills 根取 TAIXU_SKILLS（默认 /workspace/skills），与 scriptEnv 一致。
+func entryWithinSkills(entry string) error {
+	root := os.Getenv("TAIXU_SKILLS")
+	if root == "" {
+		root = "/workspace/skills"
+	}
+	rootAbs, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		rootAbs, _ = filepath.Abs(root) // 根不存在（如测试环境）时退化为字面绝对路径
+	}
+	entryAbs, err := filepath.EvalSymlinks(entry)
+	if err != nil {
+		return fmt.Errorf("run_skill: resolve entry %q: %w", entry, err)
+	}
+	rootClean := filepath.Clean(rootAbs)
+	entryClean := filepath.Clean(entryAbs)
+	if entryClean != rootClean && !strings.HasPrefix(entryClean, rootClean+string(filepath.Separator)) {
+		return fmt.Errorf("run_skill: entry %q escapes skills root", entry)
+	}
+	return nil
+}
+
 func runScript(cycleID int64, toolName, args string, name string, scriptArgs ...string) (Result, error) {
 	return audit(cycleID, toolName, args, func() (string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), ScriptTimeout)

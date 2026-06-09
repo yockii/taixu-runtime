@@ -51,6 +51,7 @@ func allTools() []tools.Tool {
 		toolSealEpisode(),
 		toolRecordLearning(),
 		toolUseSkill(),
+		toolRunSkill(),
 		toolCrystallizeSkill(),
 		// --- deliberative · 目标管理 ---
 		toolEnqueueSubgoal(),
@@ -367,6 +368,38 @@ func toolUseSkill() tools.Tool {
 	}
 }
 
+func toolRunSkill() tools.Tool {
+	return tools.Tool{
+		Name: "run_skill",
+		Description: "直接运行一个已掌握技能的可执行入口（run.py/run.js/run.sh）并返回其输出。" +
+			"当某技能本质是一段可复用代码时，这比 use_skill 读正文再手抄脚本更省更准。" +
+			"技能没有可执行入口时会报错——那种改用 use_skill 读指引。仅 ready 技能可用。",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name": map[string]any{"type": "string", "description": "技能名（SKILL.md 的 name）"},
+			},
+			"required": []string{"name"},
+		},
+		Lanes:      []tools.Lane{tools.LaneDeliberative},
+		AlwaysLoad: true, // 与 use_skill 对偶：可执行技能的唯一运行入口，故工具数不膨胀
+		Handler: func(_ context.Context, tctx tools.Context, argsJSON string) (string, error) {
+			var a struct {
+				Name string `json:"name"`
+			}
+			if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+				return errJSON("invalid args"), err
+			}
+			entry, err := skill.ResolveEntrypoint(a.Name)
+			if err != nil {
+				return errJSON(err.Error()), err
+			}
+			r, rerr := toolrunner.RunSkillFile(tctx.CycleID, entry)
+			return wrapRunnerResult(r, rerr)
+		},
+	}
+}
+
 func toolCrystallizeSkill() tools.Tool {
 	return tools.Tool{
 		Name: "crystallize_skill",
@@ -381,6 +414,8 @@ func toolCrystallizeSkill() tools.Tool {
 				"description":   map[string]any{"type": "string", "description": "一句话：这技能干什么、何时用"},
 				"instructions":  map[string]any{"type": "string", "description": "技能正文：用自己的话写清步骤 / 要点 / 注意事项"},
 				"allowed_tools": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "这技能会用到的工具名（如 web.fetch / script.python）"},
+				"script":        map[string]any{"type": "string", "description": "可选：若这技能本质是一段可复用代码，把入口脚本写在这里——结晶后可用 run_skill 直接运行，无需每次重抄"},
+				"script_lang":   map[string]any{"type": "string", "description": "script 的语言：python / node / shell（填了 script 才需要）"},
 			},
 			"required": []string{"seed_id", "name", "instructions"},
 		},
@@ -392,6 +427,8 @@ func toolCrystallizeSkill() tools.Tool {
 				Description  string   `json:"description"`
 				Instructions string   `json:"instructions"`
 				AllowedTools []string `json:"allowed_tools"`
+				Script       string   `json:"script"`
+				ScriptLang   string   `json:"script_lang"`
 			}
 			if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 				return errJSON("invalid args"), err
@@ -399,7 +436,11 @@ func toolCrystallizeSkill() tools.Tool {
 			if a.SeedID <= 0 || a.Instructions == "" {
 				return errJSON("need seed_id + instructions"), nil
 			}
-			inst, err := skill.AuthorFromKnowledge(a.SeedID, a.Name, a.Description, a.Instructions, a.AllowedTools)
+			var ep *skill.Entrypoint
+			if strings.TrimSpace(a.Script) != "" {
+				ep = &skill.Entrypoint{Lang: a.ScriptLang, Code: a.Script}
+			}
+			inst, err := skill.AuthorFromKnowledge(a.SeedID, a.Name, a.Description, a.Instructions, a.AllowedTools, ep)
 			if err != nil {
 				return errJSON(err.Error()), err
 			}

@@ -30,3 +30,18 @@ func TestDetectEntrypoint(t *testing.T) {
 		t.Fatalf("同名目录不应算入口, 得 %q", got)
 	}
 }
+
+// TestEntrypointFilename 验 C4：结晶脚本语言 → 落盘入口文件名映射；未知语言不落盘。
+func TestEntrypointFilename(t *testing.T) {
+	cases := map[string]string{
+		"python": "run.py", "py": "run.py", "python3": "run.py", "PYTHON": "run.py",
+		"node": "run.js", "js": "run.js", "javascript": "run.js",
+		"shell": "run.sh", "sh": "run.sh", "bash": "run.sh",
+		"":     "", "ruby": "", "go": "",
+	}
+	for lang, want := range cases {
+		if got := entrypointFilename(lang); got != want {
+			t.Errorf("entrypointFilename(%q) = %q, 期 %q", lang, got, want)
+		}
+	}
+}

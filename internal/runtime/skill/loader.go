@@ -196,13 +196,36 @@ func ScanDir() (int, error) {
 // MasteryToCrystallize 知识结晶为 skill 的最低掌握度门槛（学透才结晶，免误人）。
 const MasteryToCrystallize = 0.8
 
+// Entrypoint 结晶技能时可附带的一段可执行入口脚本（C4 可执行绑定）。
+// Lang ∈ {python, node, shell}；Code 为脚本源码。生命体判断「这技能本质是一段可复用代码」
+// 时附上，结晶会把它落成 run.py/run.js/run.sh，之后可经 run_skill 直接运行而非重抄正文。
+type Entrypoint struct {
+	Lang string
+	Code string
+}
+
+// entrypointFilename 把 Entrypoint.Lang 映射到约定的入口文件名；未知语言返空串（不落盘）。
+func entrypointFilename(lang string) string {
+	switch strings.ToLower(strings.TrimSpace(lang)) {
+	case "python", "py", "python3":
+		return "run.py"
+	case "node", "js", "javascript":
+		return "run.js"
+	case "shell", "sh", "bash":
+		return "run.sh"
+	default:
+		return ""
+	}
+}
+
 // AuthorFromKnowledge 把生命体学透的知识结晶成一个自创 skill（知识→skill，R80 创作半）。
 //
 // 生命体（deliberative LLM）提供 name / description / instructions（用自己的话写的指引）
 // + 它学习时用过的 allowedTools。本函数组装 SKILL.md 文件夹（含血缘 frontmatter）并装载。
+// ep 非空且含代码时，额外把可执行入口落盘（C4），使技能从「重读散文」升级为「可直接运行」。
 //
 // 前瞻（Phase 4）：自创 skill 可在社群传授（Replica/Teach）。传前需审（R18）。
-func AuthorFromKnowledge(seedID int64, name, description, instructions string, allowedTools []string) (*storage.SkillInstance, error) {
+func AuthorFromKnowledge(seedID int64, name, description, instructions string, allowedTools []string, ep *Entrypoint) (*storage.SkillInstance, error) {
 	seed, err := storage.GetInterestSeed(seedID)
 	if err != nil || seed == nil {
 		return nil, fmt.Errorf("skill: interest_seed#%d not found", seedID)
@@ -244,6 +267,19 @@ authored_from: "%s"
 	inst, err := LoadFrom(content, Origin{}) // 自创技能无来源会话，审批走兜底/面板
 	if err != nil {
 		return nil, err
+	}
+	// C4 可执行入口落盘：技能本质是一段可复用代码时，把它写成 run.py/run.js/run.sh，
+	// 之后 run_skill 可直接运行（复用 = 运行能力，而非重抄正文）。写失败只 warn 不阻断结晶。
+	if ep != nil && strings.TrimSpace(ep.Code) != "" {
+		if fn := entrypointFilename(ep.Lang); fn != "" {
+			if werr := os.WriteFile(filepath.Join(inst.InstallPath, fn), []byte(ep.Code), 0o644); werr != nil {
+				slog.Warn("skill write entrypoint", "err", werr, "id", inst.ID, "file", fn)
+			} else {
+				slog.Info("skill entrypoint authored", "skill", inst.Name, "file", fn)
+			}
+		} else {
+			slog.Warn("skill entrypoint unknown lang, skipped", "id", inst.ID, "lang", ep.Lang)
+		}
 	}
 	// 标记血缘 + 以来源兴趣的掌握度初始化技能 mastery（结晶时已学透，R82 遗忘衰减从此起算）。
 	if err := storage.SetSkillAuthoredFrom(inst.ID, authoredFrom); err != nil {
@@ -543,6 +579,34 @@ func UseByName(name string) (string, error) {
 		}
 		_ = storage.BumpSkillUsed(s.ID, shared.SystemClock.UnixSec())
 		return out, nil
+	}
+	return "", fmt.Errorf("skill %q not found", name)
+}
+
+// ResolveEntrypoint 解析一个 ready 技能的可执行入口绝对路径（run_skill 工具用）。
+// 顺手 bump 使用计数（对可执行技能，run_skill 即「用」的入口，与 UseByName 对偶）。
+// 未找到 / 未 ready / 无入口 → 返 ("", error)，调用方据此提示改用 use_skill 读正文。
+func ResolveEntrypoint(name string) (string, error) {
+	mu.Lock()
+	lid := lifeID
+	mu.Unlock()
+	all, err := storage.ListSkillInstances(lid, 100)
+	if err != nil {
+		return "", err
+	}
+	for _, s := range all {
+		if s.Name != name {
+			continue
+		}
+		if s.Status != "ready" {
+			return "", fmt.Errorf("skill %q not ready (status=%s)", name, s.Status)
+		}
+		ep := detectEntrypoint(s.InstallPath)
+		if ep == "" {
+			return "", fmt.Errorf("skill %q has no executable entrypoint; use use_skill to read its guide instead", name)
+		}
+		_ = storage.BumpSkillUsed(s.ID, shared.SystemClock.UnixSec())
+		return ep, nil
 	}
 	return "", fmt.Errorf("skill %q not found", name)
 }
