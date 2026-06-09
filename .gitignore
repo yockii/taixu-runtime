@@ -71,3 +71,6 @@ __pycache__/
 
 # Docker
 .docker-cache/
+
+# 本地观察账户编排（含测试口令，不入库；按需本地保留）
+observe-lives.yml
