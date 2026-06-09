@@ -298,6 +298,13 @@ func runMaintenance(lifeID string) {
 	} else if n > 0 {
 		slog.Info("maintenance pruned working_memory", "deleted", n)
 	}
+	// 固化知识衰减纠错（C3）：日度乘 0.97 衰减置信、跌破 0.3 撤回——从不复现的知识渐淡去，
+	// 反复被印证的经 PromoteToConfirmed 刷新而留存，治"假信念永久复利成垃圾"。
+	if d, r, err := storage.DecayConfirmedSemantic(lifeID, 0.97, 0.3); err != nil {
+		slog.Warn("maintenance decay confirmed semantic", "err", err)
+	} else if d > 0 || r > 0 {
+		slog.Info("maintenance decayed confirmed semantic", "decayed", d, "retracted", r)
+	}
 	// VACUUM 回收磁盘空洞（R99：删行不缩文件）。月度门控——剪枝是日度，整库重写按月一次。
 	now := shared.SystemClock.UnixSec()
 	if vacuumDue(lifeID, now) {

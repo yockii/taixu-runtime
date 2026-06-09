@@ -301,15 +301,92 @@ func PromoteToConfirmedWithEmbedding(lifeID string, candidateID int64, content s
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`
-		INSERT INTO semantic_confirmed (life_id, content, confidence, promoted_from, embedding, confirmed_at)
-		VALUES (?, ?, ?, ?, ?, ?)`, lifeID, content, confidence, candidateID, embedding, ts); err != nil {
+	// C3 复confirm即强化：同 content 已固化 → 升置信 + 刷新 confirmed_at（重置衰减钟），不再造重复行。
+	// 反复被经历印证的知识自此留存，从不复现的经衰减撤回——治"假信念永久复利成垃圾"。
+	res, err := tx.Exec(`
+		UPDATE semantic_confirmed
+		SET confidence = MIN(1.0, confidence + 0.1), confirmed_at = ?
+		WHERE life_id = ? AND content = ?`, ts, lifeID, content)
+	if err != nil {
 		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		if _, err := tx.Exec(`
+			INSERT INTO semantic_confirmed (life_id, content, confidence, promoted_from, embedding, confirmed_at)
+			VALUES (?, ?, ?, ?, ?, ?)`, lifeID, content, confidence, candidateID, embedding, ts); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.Exec(`DELETE FROM semantic_candidate WHERE id = ?`, candidateID); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// DecayConfirmedSemantic 固化知识的衰减纠错（C3 防假信念永久复利）：每次（日度维护）对所有固化知识
+// 乘 perRunFactor 衰减置信；跌破 floor 即撤回（删除）——从不复现/复用的知识渐淡去，反复被印证的
+// 经 PromoteToConfirmed 刷新置信/confirmed_at 而留存。按维护节拍近似时间衰减（不逐行读 confirmed_at，
+// 避免"每次按全龄重复衰减"的复利 bug）。返回 (降信条数, 撤回条数)。
+func DecayConfirmedSemantic(lifeID string, perRunFactor, floor float64) (int, int, error) {
+	rows, err := db.Query(`SELECT id, confidence FROM semantic_confirmed WHERE life_id = ?`, lifeID)
+	if err != nil {
+		return 0, 0, err
+	}
+	type rec struct {
+		id   int64
+		conf float64
+	}
+	var recs []rec
+	for rows.Next() {
+		var r rec
+		if err := rows.Scan(&r.id, &r.conf); err != nil {
+			rows.Close()
+			return 0, 0, err
+		}
+		recs = append(recs, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, 0, err
+	}
+	if perRunFactor <= 0 || perRunFactor >= 1 {
+		perRunFactor = 0.97
+	}
+	// 事务化：整批衰减/撤回原子提交，任一失败回滚 + 上报（避免部分持久化、避免静默吞错）。
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	decayed, retracted := 0, 0
+	for _, r := range recs {
+		nc := r.conf * perRunFactor
+		if nc < floor {
+			if _, err := tx.Exec(`DELETE FROM semantic_confirmed WHERE id = ?`, r.id); err != nil {
+				return 0, 0, err
+			}
+			retracted++
+			continue
+		}
+		if _, err := tx.Exec(`UPDATE semantic_confirmed SET confidence = ? WHERE id = ?`, nc, r.id); err != nil {
+			return 0, 0, err
+		}
+		decayed++
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	return decayed, retracted, nil
+}
+
+// DowngradeConfirmedSemantic 据冲突证据下调某条固化知识的置信（C3 主动反驳入口）。
+// 反思/新证据与固化知识矛盾时调；降到 0 由下一次衰减撤回。content 精确匹配。
+func DowngradeConfirmedSemantic(lifeID, content string, delta float64) error {
+	if delta < 0 {
+		delta = -delta
+	}
+	_, err := db.Exec(`UPDATE semantic_confirmed SET confidence = MAX(0.0, confidence - ?) WHERE life_id = ? AND content = ?`, delta, lifeID, content)
+	return err
 }
 
 func InsertReflection(lifeID string, m *core.ReflectionMemory) (int64, error) {
