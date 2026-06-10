@@ -619,12 +619,12 @@ func toolFsRead() tools.Tool {
 func toolFsWrite() tools.Tool {
 	return tools.Tool{
 		Name:        "fs.write",
-		Description: "写 sandbox 内文件。覆盖；自动建目录。",
+		Description: "写 sandbox 内文件（路径相对 /sandbox/，禁绝对路径）。覆盖；自动建父目录。",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":    map[string]any{"type": "string"},
-				"content": map[string]any{"type": "string"},
+				"path":    map[string]any{"type": "string", "description": "文件路径（相对 /sandbox/，如 drafts/poem.txt；父目录自动创建。勿用绝对路径或 / 开头）"},
+				"content": map[string]any{"type": "string", "description": "文件内容"},
 			},
 			"required": []string{"path", "content"},
 		},
