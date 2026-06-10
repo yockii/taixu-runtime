@@ -75,6 +75,12 @@ var (
 	autoApproveDeps bool   // dangerous-skip-permissions（R73）
 )
 
+// MarkPublished 标记技能已发布到生命网络（C11 发布引导：socialnet 发布成功后调，避免重复 nudge）。
+// 按名匹配本生命的技能；best-effort。
+func MarkPublished(name string) error {
+	return storage.MarkSkillPublishedByName(lifeID, name, shared.SystemClock.UnixSec())
+}
+
 // Init 绑定生命体 ID + skills 目录。autoApprove 来自 config（dangerous-skip）。
 //
 // skills 目录是宿主 mount 进来的（docker-compose ./workspace/skills:/workspace/skills）。

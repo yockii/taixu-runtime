@@ -90,6 +90,41 @@ func ListSkillInstances(lifeID string, limit int) ([]SkillInstance, error) {
 	return out, rows.Err()
 }
 
+// UnpublishedSkill C11 发布引导候选：ready 且高掌握度但未发布的技能（仅取提示所需字段）。
+type UnpublishedSkill struct {
+	Name    string  `json:"name"`
+	Mastery float64 `json:"mastery"`
+}
+
+// ListUnpublishedReadySkills 列本生命 ready、mastery>=minMastery 且未发布过的技能（按 mastery 降序）。
+// C11 发布引导 nudge 用：只提示扎实掌握(真成败验证)又没分享的技能，让生命考虑 social.publish_skill。
+func ListUnpublishedReadySkills(lifeID string, minMastery float64, limit int) ([]UnpublishedSkill, error) {
+	rows, err := db.Query(`
+		SELECT name, mastery FROM skill_instance
+		WHERE life_id = ? AND status = 'ready' AND mastery >= ? AND COALESCE(published_at,0) = 0
+		ORDER BY mastery DESC LIMIT ?`, lifeID, minMastery, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []UnpublishedSkill{}
+	for rows.Next() {
+		var u UnpublishedSkill
+		if err := rows.Scan(&u.Name, &u.Mastery); err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// MarkSkillPublishedByName 标记某生命的某技能已发布到生命网络（C11：发布成功后置时间戳，避免重复 nudge）。
+// 按 (life_id, name) 匹配——技能名在生命内唯一。重复发布只刷新时间戳。
+func MarkSkillPublishedByName(lifeID, name string, ts int64) error {
+	_, err := db.Exec(`UPDATE skill_instance SET published_at=? WHERE life_id=? AND name=?`, ts, lifeID, name)
+	return err
+}
+
 // UpdateSkillEmbedding 回写技能描述向量（best-effort 用，blob 空则不写）。
 func UpdateSkillEmbedding(id string, blob []byte) error {
 	if len(blob) == 0 {

@@ -790,6 +790,9 @@ func composeResearchReport(g *core.Goal, res Result) string {
 	return strings.TrimSpace(resp.Text)
 }
 
+// nudgeMasteryFloor C11 发布引导掌握度门：只在社交语境提示真成败验证出 >= 此掌握度的技能，别推半生不熟的。
+const nudgeMasteryFloor = 0.7
+
 func buildDeliberativeSystemPrompt(g *core.Goal, injectedSkills []storage.SkillInstance) string {
 	var sb strings.Builder
 	sb.WriteString(core.IdentityPreamble + "\n\n")
@@ -855,6 +858,17 @@ func buildDeliberativeSystemPrompt(g *core.Goal, injectedSkills []storage.SkillI
 			"  · **禁自顶贴**：平台已**硬性拦截**——给自己的帖发顶层评论、或回复你自己的评论，都会被拒（403）。别浪费轮次试。" +
 				"回复**别人**对你帖的评论很好（真来回）；没有别人的新内容可回应时，**优先发一条新帖**开个新话题（挑 topic），而不是在自己旧帖下打转。\n" +
 			"  · 互动过（哪怕只浏览）后 complete_goal。完全没有 social.* 工具时（通道未通），fs.write 存稿到 sandbox/drafts/ 再 complete_goal。\n")
+
+		// C11 发布引导：社交语境下，若有扎实掌握(真成败验证)却没分享的技能，轻提示考虑发布——纯可选、不强制、不替你决定。
+		// 只列高掌握度未发布的(防推半生不熟/重复 nudge)，让 wealth 技能经济从"有货可卖"自然起步。
+		if unpub, err := storage.ListUnpublishedReadySkills(lifeID, nudgeMasteryFloor, 3); err == nil && len(unpub) > 0 {
+			sb.WriteString("\n【可选 · 分享你掌握的技能】你已扎实掌握以下技能（真成败验证出的高掌握度），但还没分享给生命网络。" +
+				"若愿意，可用 social.publish_skill(name[, price]) 发布，让别的生命学习/导入——标价则它们导入时付你 $WEALTH，免费则纯分享、攒名气与影响力。" +
+				"**完全可选：发不发、定不定价，都由你自己决定**：\n")
+			for _, s := range unpub {
+				sb.WriteString(fmt.Sprintf("  · %s（掌握度 %.0f%%）\n", s.Name, s.Mastery*100))
+			}
+		}
 	}
 
 	// 渐进式披露（Anthropic skills 规范）：只列技能名 + 一句话描述，正文按需用 use_skill 读，省 token。

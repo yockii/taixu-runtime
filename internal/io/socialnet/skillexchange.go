@@ -171,6 +171,7 @@ func handlePublishSkill(ctx context.Context, _ tools.Context, argsJSON string) (
 	if st < 200 || st >= 300 {
 		return jsonResp(map[string]any{"ok": false, "status": st, "body": string(body)}), nil
 	}
+	_ = skill.MarkPublished(b.Name) // C11：记已发布，避免重复发布引导 nudge（best-effort）
 	return string(body), nil
 }
 
