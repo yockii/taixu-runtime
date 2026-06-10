@@ -26,6 +26,7 @@ const DefaultTrustDiscount = 0.5
 // SkillBundle 一个可在生命间传递的技能包（带验证成功率）。
 type SkillBundle struct {
 	Name            string  `json:"name"`
+	Description     string  `json:"description"`      // 一句话用途（市场展示）
 	SkillMd         string  `json:"skill_md"`         // 完整 SKILL.md 正文
 	EntrypointLang  string  `json:"entrypoint_lang"`  // python/node/shell；空=无可执行入口
 	EntrypointCode  string  `json:"entrypoint_code"`  // 入口脚本源码
@@ -57,6 +58,7 @@ func ExportBundle(name string) (*SkillBundle, error) {
 		}
 		b := &SkillBundle{
 			Name:            s.Name,
+			Description:     s.Description,
 			SkillMd:         string(md),
 			VerifiedMastery: s.Mastery,
 			UsedCount:       s.UsedCount,

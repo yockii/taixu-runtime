@@ -181,6 +181,11 @@ func bootstrap(pub ed25519.PublicKey) error {
 		if t.Name == "" {
 			continue
 		}
+		// 技能交易工具（skill.*）需运行时本地 Export/Import 配合，非纯 passthrough → 跳过，
+		// 改注册带本地 bundle 处理的自定义 social.*_skill 版（registerSkillExchange，C9 余项①）。
+		if isSkillExchangeTool(t.Name) {
+			continue
+		}
 		params := t.Parameters
 		if params == nil {
 			params = map[string]any{"type": "object", "properties": map[string]any{}}
@@ -201,8 +206,9 @@ func bootstrap(pub ed25519.PublicKey) error {
 	if n == 0 {
 		return fmt.Errorf("manifest carried no tools")
 	}
+	registerSkillExchange() // C9：注册 social.publish_skill/browse_skills/import_skill（本地 Export/Import + POST 平台）
 	ready = true
-	slog.Info("socialnet: platform channel ready", "channel", m.Channel, "tools", n, "did", did[:12], "url", baseURL)
+	slog.Info("socialnet: platform channel ready", "channel", m.Channel, "tools", n+3, "did", did[:12], "url", baseURL)
 	ensureProfilePublished() // 接通即发公开名片，进名录可被发现（修 life_profile 空 → Directory 空）
 	return nil
 }

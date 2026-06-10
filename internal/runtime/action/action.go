@@ -87,11 +87,12 @@ func socialActLevel(toolCalls []string) int {
 			continue
 		}
 		switch name {
-		case "social.post", "social.comment", "social.follow", "social.unfollow", "social.publish_profile":
+		case "social.post", "social.comment", "social.follow", "social.unfollow", "social.publish_profile",
+			"social.publish_skill", "social.import_skill": // C9：向社群贡献/采纳技能=真连接
 			return 2 // 连接型最高，命中即定级
 		default:
 			if level < 1 {
-				level = 1 // 浏览型
+				level = 1 // 浏览型（含 social.browse_skills）
 			}
 		}
 	}
