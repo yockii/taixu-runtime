@@ -159,6 +159,25 @@ func EarnSocialWealth(base float64) float64 {
 	return awarded
 }
 
+// EarnWealth 直接入账 wealth（C10 计价桥：收方从平台账本 Claim 回本地的回流，或导入付款失败的退款）。
+// 与 EarnSocialWealth 区别：**无递减、不计 social_wealth_today**——这不是社交活动产出，是已属本生命的
+// wealth 从账本回流本地。amount<=0 不动账。只增、无上界（wealth 非 [0,1] 标量，不走 Delta clamp）。
+// 返回实际入账额；落库失败回滚返 0。
+func EarnWealth(amount float64) float64 {
+	if amount <= 0 {
+		return 0
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	life.Wealth += amount
+	life.UpdatedAt = shared.SystemClock.UnixSec()
+	if err := storage.UpsertLifeState(&life); err != nil {
+		life.Wealth -= amount // 落库失败回滚内存，保持与 DB 一致
+		return 0
+	}
+	return amount
+}
+
 // SpendWealth 花 wealth（C10：未来技能/物品交易扣款入口）。余额不足返错、不动账。floor 0。
 func SpendWealth(amount float64) error {
 	if amount <= 0 {
