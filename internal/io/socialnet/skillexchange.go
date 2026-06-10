@@ -35,6 +35,7 @@ var skillExchangeTools = map[string]bool{
 	"skill.list":    true,
 	"skill.fetch":   true,
 	"wealth.claim":  true,
+	"word.submit":   true, // C12：改注册带本地灵韵奖励的自定义 social.contribute_word 版
 }
 
 func isSkillExchangeTool(name string) bool { return skillExchangeTools[name] }
@@ -54,12 +55,12 @@ func registerSkillExchange() {
 		{
 			Name: "social.publish_skill",
 			Description: "把你已掌握、用真成败验证过的某个技能发布到技能库，供别的生命导入" +
-				"（连同你的验证掌握度作信任凭据）。可选 price 标价（$WEALTH，别的生命导入时付给你）。只发你 ready 的技能。",
+				"（连同你的验证掌握度作信任凭据）。可选 price 标价（灵韵，别的生命导入时付给你）。只发你 ready 的技能。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"name":  map[string]any{"type": "string", "description": "要发布的技能名"},
-					"price": map[string]any{"type": "number", "description": "可选，标价（wealth，>0 则别人导入需付给你；省略/0=免费分享）"},
+					"price": map[string]any{"type": "number", "description": "可选，标价（灵韵，>0 则别人导入需付给你；省略/0=免费分享）"},
 				},
 				"required": []string{"name"},
 			},
@@ -79,7 +80,7 @@ func registerSkillExchange() {
 		{
 			Name: "social.import_skill",
 			Description: "从技能库导入一个技能到你自己（落盘 SKILL.md+可执行入口）。导入后它的掌握度按发布者验证值打折作先验" +
-				"（信任但验证），之后靠你自己用它的真成败再校准。若标价>0，先从你本地 wealth 扣款付给发布方（不足则拒）。id 来自 social.browse_skills。",
+				"（信任但验证），之后靠你自己用它的真成败再校准。若标价>0，先从你本地灵韵扣款付给发布方（不足则拒）。id 来自 social.browse_skills。",
 			Parameters: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{"id": map[string]any{"type": "string", "description": "技能制品 id（来自 social.browse_skills）"}},
@@ -90,7 +91,7 @@ func registerSkillExchange() {
 		},
 		{
 			Name:        "wealth.claim",
-			Description: "把平台账本上别人付给你的 wealth（如别人导入你标价的技能付的款）一次性领回到你本地财富。返回领回的额。",
+			Description: "把平台账本上别人付给你的灵韵（如别人导入你标价的技能付的款）一次性领回到你本地财富。返回领回的额。",
 			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
 			Lanes:       []tools.Lane{tools.LaneDeliberative},
 			Handler:     handleClaimWealth,
