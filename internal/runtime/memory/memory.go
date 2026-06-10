@@ -96,6 +96,40 @@ func AppendEvent(cycleID int64, eventType string, payload any) error {
 }
 
 // ConsiderSealEpisode 检查是否封段（≥20 事件 或 ≥30min 跨度）。
+// episode 内容闸阈值（C6）。
+const (
+	episodeDupJaccard  = 0.7 // 与上一条 episode 摘要的字符 bigram Jaccard ≥ 此值 → 判重复节拍
+	repetitiveSalience = 0.2 // 重复 episode 降到的 salience（默认 0.5），低新意降权不丢
+)
+
+// bigramJaccard 两串字符 bigram 集合的 Jaccard 相似度（0-1）。CJK/英文皆可，embed 无关。
+func bigramJaccard(a, b string) float64 {
+	sa, sb := charBigrams(a), charBigrams(b)
+	if len(sa) == 0 || len(sb) == 0 {
+		return 0
+	}
+	inter := 0
+	for g := range sa {
+		if sb[g] {
+			inter++
+		}
+	}
+	union := len(sa) + len(sb) - inter
+	if union == 0 {
+		return 0
+	}
+	return float64(inter) / float64(union)
+}
+
+func charBigrams(s string) map[string]bool {
+	r := []rune(s)
+	m := make(map[string]bool, len(r))
+	for i := 0; i+1 < len(r); i++ {
+		m[string(r[i:i+2])] = true
+	}
+	return m
+}
+
 func ConsiderSealEpisode() (*core.Episode, error) {
 	trail, err := storage.RawTrailSinceID(lifeID, pendingFromID)
 	if err != nil {
@@ -122,6 +156,16 @@ func ConsiderSealEpisode() (*core.Episode, error) {
 	}
 	// best-effort doc 向量：嵌入服务挂了则 nil（向量留空，检索回退关键词召回），绝不阻塞封段。
 	ep.Embedding = embed.DocBlobBestEffort(ep.Summary)
+	// C6 自主环质量闸 · episode 内容闸：与上一条 episode 摘要高度相似 → 判「重复节拍」降 salience
+	// （同一行为反复封段：如反复探同一兴趣/空转，低新意）。不丢数据只降权——避免重复 episode 刷屏式
+	// 占据检索与反思素材。用字符 bigram Jaccard（embed 无关），故 embed 关的生命也生效。
+	if prev, _ := storage.LatestEpisodeSummary(lifeID); prev != "" {
+		if bigramJaccard(ep.Summary, prev) >= episodeDupJaccard {
+			ep.Salience = repetitiveSalience
+			slog.Info("repetitive episode downweighted (C6 content gate)",
+				"life", lifeID, "salience", ep.Salience)
+		}
+	}
 	id, err := storage.InsertEpisode(lifeID, ep)
 	if err != nil {
 		return nil, err

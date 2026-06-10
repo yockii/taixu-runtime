@@ -1,7 +1,9 @@
 package storage
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 
 	"taixu.icu/runtime/internal/core"
 )
@@ -163,6 +165,23 @@ func LatestEpisodeRawEndID(lifeID string) (int64, error) {
 		return 0, nil
 	}
 	return *v, nil
+}
+
+// LatestEpisodeSummary 取最近一条 episode 的摘要（C6 内容闸：新封段与之比相似度，去重复节拍）。
+// 无 episode → ("", nil)。须在 InsertEpisode 之前调，拿到的才是「上一条」。
+func LatestEpisodeSummary(lifeID string) (string, error) {
+	var s *string
+	err := db.QueryRow(`SELECT summary FROM episode WHERE life_id = ? ORDER BY id DESC LIMIT 1`, lifeID).Scan(&s)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil // 无 episode（如刚出生）→ 空，调用方据此跳过内容闸
+	}
+	if err != nil {
+		return "", err
+	}
+	if s == nil {
+		return "", nil
+	}
+	return *s, nil
 }
 
 // UpsertSemanticCandidate 复现 +1 支持度；初见以默认置信 0.5 入库。
