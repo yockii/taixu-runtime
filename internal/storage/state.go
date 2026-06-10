@@ -5,12 +5,13 @@ import "taixu.icu/runtime/internal/core"
 func LoadLifeState(lifeID string) (*core.LifeState, error) {
 	row := db.QueryRow(`
 		SELECT life_id, energy, competence, social_need, stress, confidence, stability,
-		       energy_daily_cap, energy_used_today, cap_reset_at, updated_at
+		       energy_daily_cap, energy_used_today, cap_reset_at, wealth, social_wealth_today, updated_at
 		FROM life_state WHERE life_id = ?`, lifeID)
 	var ls core.LifeState
 	err := row.Scan(&ls.LifeID, &ls.Energy, &ls.Competence, &ls.SocialNeed,
 		&ls.Stress, &ls.Confidence, &ls.Stability,
-		&ls.EnergyDailyCap, &ls.EnergyUsedToday, &ls.CapResetAt, &ls.UpdatedAt)
+		&ls.EnergyDailyCap, &ls.EnergyUsedToday, &ls.CapResetAt,
+		&ls.Wealth, &ls.SocialWealthToday, &ls.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -20,8 +21,8 @@ func LoadLifeState(lifeID string) (*core.LifeState, error) {
 func UpsertLifeState(ls *core.LifeState) error {
 	_, err := db.Exec(`
 		INSERT INTO life_state (life_id, energy, competence, social_need, stress, confidence, stability,
-		                       energy_daily_cap, energy_used_today, cap_reset_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                       energy_daily_cap, energy_used_today, cap_reset_at, wealth, social_wealth_today, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(life_id) DO UPDATE SET
 		    energy=excluded.energy, competence=excluded.competence,
 		    social_need=excluded.social_need, stress=excluded.stress,
@@ -29,10 +30,13 @@ func UpsertLifeState(ls *core.LifeState) error {
 		    energy_daily_cap=excluded.energy_daily_cap,
 		    energy_used_today=excluded.energy_used_today,
 		    cap_reset_at=excluded.cap_reset_at,
+		    wealth=excluded.wealth,
+		    social_wealth_today=excluded.social_wealth_today,
 		    updated_at=excluded.updated_at`,
 		ls.LifeID, ls.Energy, ls.Competence, ls.SocialNeed,
 		ls.Stress, ls.Confidence, ls.Stability,
-		ls.EnergyDailyCap, ls.EnergyUsedToday, ls.CapResetAt, ls.UpdatedAt)
+		ls.EnergyDailyCap, ls.EnergyUsedToday, ls.CapResetAt,
+		ls.Wealth, ls.SocialWealthToday, ls.UpdatedAt)
 	return err
 }
 

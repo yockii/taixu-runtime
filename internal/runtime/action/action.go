@@ -79,6 +79,19 @@ type Result struct {
 	RetrievalReady    int
 }
 
+// socialWealthBase 据社交参与等级给本次社交活动的 wealth 基础产出（C10 / §3.1.2）。
+// 连接型（发声/回应/连接=2）厚于浏览型（潜水=1）；没碰平台（0）不产。Phase 0.5 实测标定（R109）。
+func socialWealthBase(socialAct int) float64 {
+	switch socialAct {
+	case 2:
+		return 1.0 // 连接型：发帖/评论/关注/分享技能/名片
+	case 1:
+		return 0.2 // 浏览型：潜水读流，认可的轻社交
+	default:
+		return 0
+	}
+}
+
 // socialActLevel 据本次实际调用的工具名，判社交参与等级（见 Result.SocialAct）。
 func socialActLevel(toolCalls []string) int {
 	level := 0
@@ -348,6 +361,15 @@ func finalize(g *core.Goal, cycleID int64, startedAt int64, res Result, complete
 	}
 	if err := state.Apply(d); err != nil {
 		return res, fmt.Errorf("apply delta: %w", err)
+	}
+
+	// 社交活动产 wealth（C10 / 06 §3.1.2）：本次有真社交动作（连接型发声/回应 or 浏览型）→ 按等级
+	// 产出 wealth，用经济正向激励社交。独立于目标 intent——奖励的是「真社交动作」本身。EarnSocialWealth
+	// 内含当日递减反刷（R109）。slice1 仅自身动作基础产出+递减；声誉加权/被采纳追加/跨链门待平台反馈后续。
+	if res.SocialAct > 0 {
+		if w := state.EarnSocialWealth(socialWealthBase(res.SocialAct)); w > 0 {
+			slog.Debug("social wealth earned", "goal", g.ID, "social_act", res.SocialAct, "wealth", w)
+		}
 	}
 
 	finishedAt := shared.SystemClock.UnixSec()

@@ -116,7 +116,7 @@ func AddEnergyUsed(amount float64) error {
 	return storage.UpsertLifeState(&life)
 }
 
-// ResetEnergyDailyCap 重置日精力上限（ledger 模块触发）。
+// ResetEnergyDailyCap 重置日精力上限（ledger 模块触发）。一并清当日社交产 wealth 计数（反刷递减按日重置）。
 func ResetEnergyDailyCap(newCap float64, nextResetAt int64) error {
 	if newCap < 0 || newCap > 1 {
 		return errors.New("cap out of [0,1]")
@@ -125,9 +125,57 @@ func ResetEnergyDailyCap(newCap float64, nextResetAt int64) error {
 	defer mu.Unlock()
 	life.EnergyDailyCap = newCap
 	life.EnergyUsedToday = 0
+	life.SocialWealthToday = 0
 	life.CapResetAt = nextResetAt
 	life.UpdatedAt = shared.SystemClock.UnixSec()
 	return storage.UpsertLifeState(&life)
+}
+
+// 社交活动产 wealth 反刷参数（C10 / R109）。回报系数 Phase 0.5 实测标定，先用保守值。
+const socialWealthDiminishK = 0.5 // 递减斜率：awarded = base / (1 + k×当日已产)，今日产越多单次越小
+
+// EarnSocialWealth 据本次社交活动产出 wealth（C10 / 06 §3.1.2）。**递减反刷**：base 经当日已产
+// wealth 折减（刷得越多单次越少），floor 0、无上界（wealth 非 [0,1] 标量，不走 Delta clamp）。
+// 返回本次实际入账的 wealth。base<=0 不产。
+//
+// slice1 边界：仅按本生命**自身社交动作等级**给基础产出 + 递减闸。声誉/信任档加权、被回应/被采纳
+// 追加、跨所有权链门（§3.1.2 余项）需平台反馈，留后续 slice。
+func EarnSocialWealth(base float64) float64 {
+	if base <= 0 {
+		return 0
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	awarded := base / (1 + socialWealthDiminishK*life.SocialWealthToday)
+	life.Wealth += awarded
+	life.SocialWealthToday += awarded
+	life.UpdatedAt = shared.SystemClock.UnixSec()
+	if err := storage.UpsertLifeState(&life); err != nil {
+		// 入账失败回滚内存，保持一致。
+		life.Wealth -= awarded
+		life.SocialWealthToday -= awarded
+		return 0
+	}
+	return awarded
+}
+
+// SpendWealth 花 wealth（C10：未来技能/物品交易扣款入口）。余额不足返错、不动账。floor 0。
+func SpendWealth(amount float64) error {
+	if amount <= 0 {
+		return nil
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if life.Wealth < amount {
+		return errors.New("state: insufficient wealth")
+	}
+	life.Wealth -= amount
+	life.UpdatedAt = shared.SystemClock.UnixSec()
+	if err := storage.UpsertLifeState(&life); err != nil {
+		life.Wealth += amount // 落库失败回滚内存，保持与 DB 一致
+		return err
+	}
+	return nil
 }
 
 func applyDelta(field *float64, delta *float64) {
