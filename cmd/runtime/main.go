@@ -590,6 +590,10 @@ func runCycle(cycleID int64, lifeID string, genome core.Genome) {
 		slog.Warn("decay skills", "err", err)
 	}
 
+	// C15 游戏心跳：刷新进行中对局待办缓存（供下轮 DriveGame 发起）+ 赢局 mental 接线 + 顺手领奖。
+	// best-effort 非阻塞：平台通道未就绪/不可达即软返回，不影响节拍。
+	socialnet.PollGames(context.Background())
+
 	memory.ResetWorking()
 }
 

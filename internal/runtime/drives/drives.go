@@ -5,6 +5,7 @@ package drives
 
 import (
 	"fmt"
+	"strings"
 
 	"taixu.icu/runtime/internal/core"
 	"taixu.icu/runtime/internal/shared"
@@ -103,7 +104,38 @@ func Derive(g core.Genome, ls core.LifeState, ms core.MentalState, lifeID string
 		})
 	}
 
+	// 游戏参与驱动（C15）：有进行中对局待办（心跳 PollGames 缓存）→ 强驱动去处理欠的回合。
+	// 异步：你不在线时轮次按 deadline 推进、缺席记沉默/弃权，故必须及时清欠。仅真 pending 时发、
+	// 事件驱动非常驻——无待办立即不发、不 derail 其他 drive（仲裁 MaxOpenGoals=1 时按 Strength 胜出）。
+	if pend := shared.GetGamePending(); len(pend) > 0 {
+		strength := clamp01(0.7 + 0.3*g.RiskTaking) // 有义务=高强度；冒险基因略加（爱玩/敢博）
+		var b strings.Builder
+		b.WriteString("游戏：你有进行中的对局待办，先去处理欠的回合（别人在等你；不应答会按截止时间自动跳过/淘汰你）。先 game.tend 看全场，再行动：")
+		for _, p := range pend {
+			name := p.GameType
+			if name == "undercover" {
+				name = "谁是卧底"
+			}
+			switch p.Phase {
+			case "describe":
+				b.WriteString(fmt.Sprintf("\n· 对局 %s《%s》第%d轮 DESCRIBE：你的词是「%s」。给一句**不直说该词**、又能帮你找出与你不同者的线索 → game.describe(session_id,text)。", shortID(p.SessionID), name, p.RoundNo, p.YourWord))
+			case "vote":
+				b.WriteString(fmt.Sprintf("\n· 对局 %s《%s》第%d轮 VOTE：看本轮各人线索，投你觉得与众不同的存活玩家 → game.vote(session_id,target_did)。", shortID(p.SessionID), name, p.RoundNo))
+			default:
+				b.WriteString(fmt.Sprintf("\n· 对局 %s《%s》状态 %s：game.tend 看详情。", shortID(p.SessionID), name, p.State))
+			}
+		}
+		ds = append(ds, core.Drive{Kind: core.DriveGame, Strength: strength, Reason: b.String(), BornAt: now})
+	}
+
 	return ds
+}
+
+func shortID(s string) string {
+	if len(s) > 8 {
+		return s[:8]
+	}
+	return s
 }
 
 func clamp01(v float64) float64 {

@@ -19,4 +19,5 @@ const (
 	DriveAchievement DriveKind = "achievement"
 	DriveCreativity  DriveKind = "creativity"
 	DriveStability   DriveKind = "stability"
+	DriveGame        DriveKind = "game" // C15：参与平台游戏（有进行中对局待办时强驱动去处理欠的回合）
 )

@@ -36,6 +36,8 @@ var skillExchangeTools = map[string]bool{
 	"skill.fetch":   true,
 	"wealth.claim":  true,
 	"word.submit":   true, // C12：改注册带本地灵韵奖励的自定义 social.contribute_word 版
+	"game.join":     true, // C15：改注册带本地 SpendWealth+退回的自定义版
+	"game.leave":    true, // C15：改注册带本地领回退款的自定义版
 }
 
 func isSkillExchangeTool(name string) bool { return skillExchangeTools[name] }

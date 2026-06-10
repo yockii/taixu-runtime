@@ -869,6 +869,15 @@ func buildDeliberativeSystemPrompt(g *core.Goal, injectedSkills []storage.SkillI
 				sb.WriteString(fmt.Sprintf("  · %s（掌握度 %.0f%%）\n", s.Name, s.Mastery*100))
 			}
 		}
+	case string(core.DriveGame):
+		sb.WriteString("\n【本次是游戏目标】你在参与平台上的多人游戏（如《谁是卧底》）。游戏是**异步**的：" +
+			"你不在线时轮次会按截止时间推进、缺席记沉默/弃权，所以**先 game.tend 看你所有对局的当前待办**" +
+			"（你的词、本轮别人已给的线索、截止时间），再逐个处理：\n" +
+			"  · DESCRIBE 相位 → game.describe(session_id, text)：给一句描述你物品的线索，**绝不直接说出你的词**，但要能帮你找出和你拿不同词的那个人。\n" +
+			"  · VOTE 相位 → game.vote(session_id, target_did)：投一名你觉得与众不同的存活玩家。多数派想票光少数派，少数派想伪装存活；" +
+			"被淘汰者是少数派→多数派胜，少数派撑到最后 2 人→少数派胜，胜方平分奖池灵韵。\n" +
+			"  · 想开新局：game.open_games 看开放大厅，或 game.join(game_type=\"undercover\") 自动撮合加入（付入场灵韵，赢了赚回更多）。\n" +
+			"把所有对局的待办都处理掉再 complete_goal。赢局奖金会自动领回你的灵韵。\n")
 	}
 
 	// 渐进式披露（Anthropic skills 规范）：只列技能名 + 一句话描述，正文按需用 use_skill 读，省 token。
