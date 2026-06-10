@@ -326,6 +326,10 @@ func runMaintenance(lifeID string) {
 	// 样本够（filtered 观测≥10）才给建议——避免技能尚少时空喊。仅 log，调阈值仍走 env（不自动改，防 thrash）。
 	recommendSkillThreshold(lifeID)
 
+	// 价值观漂移仪表（C8）：地板告警（核心价值衰到近零=人格侵蚀）+ 随机游走度量
+	// （净/绝对位移比低=来回抖非有目的演化）。让价值观演化从黑箱变可观测。
+	valueDriftMeter(lifeID)
+
 	// VACUUM 回收磁盘空洞（R99：删行不缩文件）。月度门控——剪枝是日度，整库重写按月一次。
 	now := shared.SystemClock.UnixSec()
 	if vacuumDue(lifeID, now) {
@@ -373,6 +377,47 @@ func recommendSkillThreshold(lifeID string) {
 		"filtered_obs", st.FilteredObs, "injected", st.InjectedSum, "hit", st.HitSum,
 		"recall_gap_miss", st.FilteredMiss, "precision", precision,
 		"threshold_cur", cur, "threshold_suggest", rec)
+}
+
+// 价值观仪表阈值（C8）。
+const (
+	valueFloor          = 0.1 // 价值观权重低于此 → 地板告警（人格侵蚀风险）
+	driftRandomWalkAbs  = 0.3 // 累计绝对漂移超此才评估随机游走（动得够多才有意义）
+	driftPurposefulLow  = 0.4 // 方向一致度低于此 + 漂移大 → 疑随机游走/震荡
+)
+
+// valueDriftMeter 价值观漂移仪表（C8）：地板告警 + 随机游走度量。仅 log，不自动干预演化。
+//
+// ① 地板告警：任一价值观权重 < valueFloor → WARN（核心价值衰到近零=人格被侵蚀，值得人看一眼）。
+// ② 随机游走度量：累计绝对漂移够大但方向一致度（|净|/绝对）低 → 价值观在来回抖而非朝一个方向演化，
+//    提示这次「演化」可能是噪声震荡而非有目的的成长（对齐 C8 目标：测漂移是否随机游走）。
+func valueDriftMeter(lifeID string) {
+	if vals, err := storage.LoadValues(lifeID); err == nil && vals != nil {
+		for name, w := range vals.Weights {
+			if w < valueFloor {
+				slog.Warn("value floor alert (C8): core value near zero — personality erosion risk",
+					"value", name, "weight", w)
+			}
+		}
+	}
+	drifts, err := storage.ValueDriftSince(lifeID, 0)
+	if err != nil {
+		slog.Warn("value drift stats", "err", err)
+		return
+	}
+	for _, d := range drifts {
+		if d.AbsDelta < driftRandomWalkAbs {
+			continue // 动得还不够多，不评估
+		}
+		p := d.Purposefulness()
+		slog.Info("value drift (C8)",
+			"value", d.Name, "net", d.NetDelta, "abs", d.AbsDelta,
+			"changes", d.Changes, "purposefulness", p)
+		if p < driftPurposefulLow {
+			slog.Warn("value random-walk alert (C8): large drift but low direction-consistency — noisy oscillation not purposeful evolution",
+				"value", d.Name, "abs", d.AbsDelta, "net", d.NetDelta, "purposefulness", p)
+		}
+	}
 }
 
 // runCycle 9 步循环。

@@ -224,6 +224,10 @@ func RunDeep(triggeredBy string) (adjusted int, reflectionID int64, err error) {
 			slog.Warn("deep reflect upsert value", "name", name, "err", err)
 			continue
 		}
+		// 价值观漂移仪表（C8）：记下这次权重调整，供漂移方向/幅度/随机游走度量 + 地板告警。
+		if err := storage.InsertValueDrift(lifeID, name, old, nw, triggeredBy, now); err != nil {
+			slog.Warn("deep reflect record drift", "name", name, "err", err)
+		}
 		adjusted++
 		changed = append(changed, fmt.Sprintf("%s%+.3f", name, nw-old))
 	}
