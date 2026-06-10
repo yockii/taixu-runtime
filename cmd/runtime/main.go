@@ -25,6 +25,7 @@ import (
 
 	"taixu.icu/runtime/internal/io/egress"
 
+	"taixu.icu/runtime/internal/io/codingagent"
 	"taixu.icu/runtime/internal/io/embed"
 
 	"taixu.icu/runtime/internal/io/httpapi"
@@ -182,6 +183,15 @@ func main() {
 		os.Getenv("TAIXU_PLATFORM_EMAIL"),
 		os.Getenv("TAIXU_PLATFORM_PASSWORD"),
 		envOr("TAIXU_PLATFORM_LIFE_NAME", ""),
+	)
+
+	// 编码 agent 宿主桥（C7）：把硬编码任务委派给宿主/远程的 codingbridge（headless 跑 claude/codex），
+	// 让生命在慎思中能「真写代码」。未配 TAIXU_CODINGBRIDGE_URL → coding_agent 工具缺席（优雅降级）。
+	// 安全在 bridge 侧（token + workdir jail + 危险动作默认拒）；本端只投递。注册轻量、同步调。
+	codingagent.Init(
+		os.Getenv("TAIXU_CODINGBRIDGE_URL"),
+		os.Getenv("TAIXU_CODINGBRIDGE_TOKEN"),
+		envOr("TAIXU_CODINGBRIDGE_AGENT", "claude"),
 	)
 
 	// 浏览器 agent 层（C 阶梯④兜底 / D 拟人浏览器操作）。默认关（config browser_enabled=false）：
