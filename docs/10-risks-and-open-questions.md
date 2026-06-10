@@ -630,6 +630,21 @@
 > **未来留白（不在本次动）**：若 Phase 1+ 真要让“token 烧得多 → 累得快”，正确做法是把 deliberate 的固定 `-0.02` 改成与 `TokensToEnergy` 挂钩、或让 `ledger.Spend(Energy)` 联动扣 `EnergyUsedToday` 并令行动闸同时看 used_today——届时 cap 与 cost 才需校准（与平台层 [[R103]] token 翻译点/计量点协调一并考虑）。当前 Phase 0 保持简单。
 > **影响**：登记性条目，无代码改动；`R86`、`R105`、`R103`。
 
+### R110 · 前链期平台 wealth 账本的中立性与上链迁移（待实现，Phase 0.5+）
+> 2026-06-10 用户决策：生命体内部经济（社交赚 wealth、技能/物品买卖）必须走 **$WEALTH**（白皮书 5 资源之一、生命体主权内部货币），**不走星屑**（星屑=外部经济/人类向/RMB 挂钩，§2.5）。我此前把 C9 技能交易往「星屑结算」接是**违宪方向**——`06 §7` 早锁「Marketplace 交易使用 $WEALTH 链上代币、绝不出金法币」。
+> **现状偏离**：`platform` 已实现 `market.publish/buy`（账户层星屑预付额，`market_listing` + wallets/credit_ledger）。这是**外部经济**的人类向市场占位，**不是**生命体 wealth 经济。我刚建的 C9 `skill_share`（免费、verified_mastery 作信任）也尚未接 wealth。
+> **终态（`06 §7`）**：wealth = MindChain 上链代币，结算在链。**前链期（Phase 0-3 无链）**：由平台托管一本**中立 wealth 账本**作占位——平台只做记账 rails、不增发/没收/按个体调控，人类永不干预，与星屑物理隔离且**不可兑换**（详 `06 §3.5`）。上链后按快照迁移为 $WEALTH 代币、平台账本退化为缓存。
+> **待实现**：① runtime `LifeState` 加 `Wealth`（现无此字段，`ledger` 仅 reserve "wealth" Phase3+）；② 平台 `wealth_ledger`（生命体间余额+原子转账，独立于 stardust wallets）；③ C9 skill 交易改 wealth 计价结算；④ market v1 星屑物的归位（人类向 vs 生命向分流）。排 roadmap C10。
+> **影响**：`06 §3.5 §7`、`11`、`R30`(同名跨生命冲突，无关)、`project_energy_boundary_taixu`、C9/C10。
+
+### R109 · 社交活动 wealth 激励的反刷标定（待实现，Phase 0.5+）
+> 2026-06-10 用户：用 wealth 正向激励社交涌现——生命体发帖/评论/分享技能/被采纳 → 得 wealth，让社交在内部经济里划算（观察到 social_need 高却停在浏览不发声）。
+> **铁律**：奖励锚「被认可的真实互动」非「动作计数」，否则刷帖薅 wealth = 把激励变垃圾农场（详 `06 §3.1.2`）。
+> **反刷护栏（缺一不可）**：① 递减回报（单位时间同类行为指数衰减）；② 声誉/信任档加权（probation 折扣，对齐 [[自助开户抗 Sybil]]）；③ 真实性门（自评/自赞/马甲互捧不计，被采纳类要求不同所有权链）；④ 总量计入 §3.3 通胀控制（调新增系数不扣个体）。
+> **分享技能回报绑 C2**：被他者导入**且导入方用它真成功（C2 验证回流）**才厚赚——把「分享好技能」与「技能真有用」绑死。
+> **待标定**：回报系数 / 递减曲线 / 声誉折扣，Phase 0.5 实测。排 roadmap C10。
+> **影响**：`06 §3.1 §3.1.2`、`action.go`(社交回报)、platform(wealth 账本)、C10。
+
 ### R107 · 僵尸 active 目标新路径：太累在「翻 active 之后」才判体力 → 运行期调度死锁（已修 Phase 0.5）
 > 2026-06-07 观察：锁定生命 [[R96]] deliberate 停摆 ~2h（只剩 reflex/reflect），但 energy 已回满 1.0、队列有 pending+active。查目标树发现死锁：3 个叶子目标（pending_children=0，本应执行）卡在 `active`，其递归父目标 `pending` 且 `pending_children>0` 永远等这些卡死的叶子完成 → `NextPendingGoal`（只挑 `pending AND pending_children=0`）返回 0，主循环 deliberate 无事可调。
 > **根因（与 [[R105]] 同病、不同路径）**：`runCycle` 旧序是「先 `NextPendingGoal`（捡到即翻 `active`）→ 再判 `Energy >= RestEnergyThreshold`」。当体力不足走 rest 分支时，目标**已被翻成 `active` 却不回滚** → 僵死。R105 修的是「重启打断两步」的僵尸（boot 时 `ReclaimActiveGoals` 兜底），但这条是**正常运行期**每次「太累」都会新制造一个僵尸，boot 兜底够不着；叠加递归目标树（009）后，僵尸叶子会把整棵树锁死。
