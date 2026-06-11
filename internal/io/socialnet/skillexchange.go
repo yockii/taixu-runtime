@@ -4,7 +4,7 @@ package socialnet
 // 与平台传输（skill.publish/list/fetch）+ wealth 账本（wealth.pay_skill/claim）接通，给生命省心的社交工具：
 //   - social.publish_skill(name[,price])  本地导出技能 → 连 C2 验证 mastery 发到技能库（可标价 wealth）
 //   - social.browse_skills(limit)         浏览别的生命发布的技能（按验证 mastery 降序，带标价）
-//   - social.import_skill(id)             取回技能 → 折扣先验导入本地；若标价>0 先本地 SpendWealth + 平台贷记发布方
+//   - social.import_skill(id)             导入技能；标价>0 时：本地 SpendWealth → 平台 /api/agent/pay-skill 结算 → fetch 凭流水提货 → 导入
 //   - wealth.claim                        把别人付给你的 wealth 从平台账本领回本地财富（平台 claim + 本地 EarnWealth）
 //
 // 这些是自定义 handler（非 manifest passthrough）：publish 要先本地 ExportBundle、import 要后本地
@@ -117,6 +117,20 @@ func invokePlatform(ctx context.Context, tool string, args map[string]any) (int,
 	return st, body, err
 }
 
+// paySkillPlatform 技能付费结算（平台专用内部路径 POST /api/agent/pay-skill，非通用 invoke——
+// wealth.pay_skill 已撤出通用 agent 面，通用面会被平台 manifest 白名单 404）。401 自动重登一次。
+// 平台侧校验：payer 须属调用账户、payee=技能发布者、amount=标价、单 payer 日累计上限。
+func paySkillPlatform(ctx context.Context, payeeDID string, amount int64, skillID string) (int, []byte, error) {
+	payload := map[string]any{"payer_did": did, "payee_did": payeeDID, "amount": amount, "skill_id": skillID}
+	st, body, err := doJSON(ctx, http.MethodPost, "/api/agent/pay-skill", curToken(), payload)
+	if err == nil && st == http.StatusUnauthorized {
+		if lerr := login(); lerr == nil {
+			st, body, err = doJSON(ctx, http.MethodPost, "/api/agent/pay-skill", curToken(), payload)
+		}
+	}
+	return st, body, err
+}
+
 // claimWealthOnce 调平台 wealth.claim 把账本可领余额领走 + 本地 EarnWealth 入账，返回回流到本地的 wealth（float）。
 // best-effort：平台不可达/无可领 → 返 0、不报错（顺手领、不打断主流程）。
 // 一致性边界：平台 claim 已清零账本后若本地 EarnWealth 落库失败（返 0）→ 该额已离开账本却未入本地 = 丢失风险，
@@ -206,15 +220,23 @@ func handleImportSkill(ctx context.Context, _ tools.Context, argsJSON string) (s
 	if err := json.Unmarshal([]byte(argsJSON), &a); err != nil || a.ID == "" {
 		return `{"ok":false,"err":"need skill id"}`, nil
 	}
-	st, body, err := invokePlatform(ctx, "skill.fetch", map[string]any{"id": a.ID})
+	// 平台 skill.fetch 带付费闸（viewer_did=本生命 DID）：免费/已结算/自家的 → 全量正文；
+	// 付费未结算 → 只回元数据（skill_md 空 + payment_required=true）。故编排为：
+	// fetch①（探明价/收款方或直接拿货）→（需付费时）本地扣款 → 专用 pay-skill 结算 → fetch②提货 → 导入。
+	// 结算流水在平台 wealth_ledger 持久：已付款而提货/导入失败时，重跑 social.import_skill 会凭流水免费提货，不会二次扣款。
+	fetchOnce := func() (int, []byte, error) {
+		return invokePlatform(ctx, "skill.fetch", map[string]any{"id": a.ID, "viewer_did": did})
+	}
+	st, body, err := fetchOnce()
 	if err != nil {
 		return `{"ok":false,"err":"platform unreachable"}`, err
 	}
 	if st < 200 || st >= 300 {
 		return jsonResp(map[string]any{"ok": false, "status": st, "body": string(body)}), nil
 	}
-	var resp struct {
-		Skill struct {
+	type fetchResp struct {
+		PaymentRequired bool `json:"payment_required"`
+		Skill           struct {
 			Name            string  `json:"name"`
 			Description     string  `json:"description"`
 			SkillMd         string  `json:"skill_md"`
@@ -226,20 +248,64 @@ func handleImportSkill(ctx context.Context, _ tools.Context, argsJSON string) (s
 			PriceWealth     int64   `json:"price_wealth"`
 		} `json:"skill"`
 	}
-	if err := json.Unmarshal(body, &resp); err != nil || resp.Skill.SkillMd == "" {
+	var resp fetchResp
+	if err := json.Unmarshal(body, &resp); err != nil {
 		return `{"ok":false,"err":"bad skill payload from platform"}`, nil
 	}
 
-	// 标价>0：付款前先验本地余额够（不动账），不够直接拒——付款门，但不在此扣款（见下：先交付再扣款）。
 	priceFloat := float64(resp.Skill.PriceWealth) / WealthScale
-	if resp.Skill.PriceWealth > 0 {
+	paid := 0.0
+	if resp.PaymentRequired && resp.Skill.SkillMd == "" {
+		if resp.Skill.PriceWealth <= 0 {
+			return `{"ok":false,"err":"bad skill payload from platform"}`, nil
+		}
+		// 付款门：本地余额不够直接拒（不动账）。
 		ls, _ := state.Snapshot()
 		if ls.Wealth < priceFloat {
 			return jsonResp(map[string]any{"ok": false, "err": fmt.Sprintf("wealth 不足：你余额 %.6f，技能标价 %.6f", ls.Wealth, priceFloat)}), nil
 		}
+		// 先本地扣款，再平台结算（平台只在结算流水存在时放行正文，先货后款不可能）。
+		if err := state.SpendWealth(priceFloat); err != nil {
+			return jsonResp(map[string]any{"ok": false, "err": "本地扣款失败：" + err.Error()}), nil
+		}
+		pst, pbody, perr := paySkillPlatform(ctx, resp.Skill.PublisherDid, resp.Skill.PriceWealth, a.ID)
+		switch {
+		case perr == nil && pst >= 200 && pst < 300:
+			paid = priceFloat
+		case perr == nil && pst >= 400 && pst < 500:
+			// 明确业务拒绝（平台收到并处理了请求、带响应体拒绝执行 → 收款方必未被贷记）→ 立即退款，守恒不破。
+			if state.EarnWealth(priceFloat) == 0 {
+				slog.Error("socialnet: 付款被拒且退款落库失败，wealth 有丢失风险", "skill_id", a.ID, "refund_wealth", priceFloat, "did", did[:12])
+			}
+			return jsonResp(map[string]any{"ok": false,
+				"err": fmt.Sprintf("付款被平台拒绝（status %d），款项已退回你本地，技能未导入", pst), "pay_body": string(pbody)}), nil
+		default:
+			// 传输类失败（超时/连接错/5xx）：「传输错误 ≠ 平台未提交」——平台可能已记结算，本地再退款 = 灵韵翻倍，
+			// 破坏守恒（宪法级不变量）→ 不退款，留痕。若结算实已落账，重跑 import 会凭流水免费提货，款不白付。
+			slog.Error("socialnet: pay-skill 传输类失败，款项状态未知（不退款，留痕待对账；若已落账可重跑 import 免费提货）",
+				"skill_id", a.ID, "payee_did", resp.Skill.PublisherDid, "amount_wealth", priceFloat,
+				"status", pst, "err", perr, "did", did[:12])
+			return jsonResp(map[string]any{"ok": false,
+				"err": "付款请求传输失败，款项状态未知（已留痕待对账）；稍后重试 social.import_skill——若款已入账会直接提货，不二次扣款"}), nil
+		}
+		// 结算成功 → 再 fetch 提货（平台凭流水放行正文）。
+		st, body, err = fetchOnce()
+		if err != nil || st < 200 || st >= 300 {
+			slog.Error("socialnet: 已结算但提货 fetch 失败（结算流水持久，重跑 import 可免费提货）",
+				"skill_id", a.ID, "status", st, "err", err, "did", did[:12])
+			return jsonResp(map[string]any{"ok": false, "err": "已付款但提货失败；稍后重跑 social.import_skill 免费提货"}), nil
+		}
+		resp = fetchResp{}
+		if err := json.Unmarshal(body, &resp); err != nil || resp.Skill.SkillMd == "" {
+			slog.Error("socialnet: 已结算但平台仍未交付正文（待查），重跑 import 可再试", "skill_id", a.ID, "did", did[:12])
+			return jsonResp(map[string]any{"ok": false, "err": "已付款但平台未交付正文；稍后重跑 social.import_skill 再试（不二次扣款）"}), nil
+		}
+	}
+	if resp.Skill.SkillMd == "" {
+		return `{"ok":false,"err":"bad skill payload from platform"}`, nil
 	}
 
-	// 先本地交付（ImportBundle），再动钱——杜绝「已付款但导入失败」。导入失败则零扣款、零付款，干净退出。
+	// 本地交付（ImportBundle）。已付款时导入失败也不退款——结算流水持久，重跑 import 免费提货重试即可。
 	inst, err := skill.ImportBundle(&skill.SkillBundle{
 		Name:            resp.Skill.Name,
 		Description:     resp.Skill.Description,
@@ -251,42 +317,10 @@ func handleImportSkill(ctx context.Context, _ tools.Context, argsJSON string) (s
 		PublisherDID:    resp.Skill.PublisherDid,
 	}, skill.DefaultTrustDiscount)
 	if err != nil {
+		if paid > 0 {
+			return jsonResp(map[string]any{"ok": false, "err": "已付款但本地导入失败：" + err.Error() + "；重跑 social.import_skill 可免费提货重试"}), nil
+		}
 		return jsonResp(map[string]any{"ok": false, "err": err.Error()}), nil
-	}
-
-	// 交付成功 → 结算：本地扣款 + 平台贷记发布方。付款失败则退回本地（技能已得=Phase0 单运营者低风险；
-	// 且发布方未被贷记，wealth 守恒）。退款落库失败大声留痕可追回。
-	paid := 0.0
-	if resp.Skill.PriceWealth > 0 {
-		if err := state.SpendWealth(priceFloat); err != nil {
-			// 先验过余额够，正常不至此（单线程 runtime）；真失败则技能已免费得、未付款，记日志退出。
-			slog.Warn("socialnet: 技能已导入但本地扣款失败（未付款）", "skill", a.ID, "err", err)
-			return jsonResp(map[string]any{"ok": true, "imported": inst.Name, "mastery_prior": inst.Mastery, "note": "已导入；扣款失败故未付款"}), nil
-		}
-		pst, pbody, perr := invokePlatform(ctx, "wealth.pay_skill", map[string]any{
-			"payer_did": did, "payee_did": resp.Skill.PublisherDid, "amount": resp.Skill.PriceWealth, "skill_id": a.ID,
-		})
-		switch {
-		case perr == nil && pst >= 200 && pst < 300:
-			paid = priceFloat
-		case perr == nil && pst >= 400 && pst < 500:
-			// 明确业务拒绝（平台收到并处理了请求、带响应体拒绝执行 → 收款方必未被贷记）→ 立即退款，守恒不破。
-			if state.EarnWealth(priceFloat) == 0 {
-				slog.Error("socialnet: 付款被拒且退款落库失败，wealth 有丢失风险", "skill_id", a.ID, "refund_wealth", priceFloat, "did", did[:12])
-			}
-			return jsonResp(map[string]any{"ok": true, "imported": inst.Name, "mastery_prior": inst.Mastery,
-				"note": fmt.Sprintf("已导入；但付款被平台拒绝（status %d），款项已退回你本地", pst), "pay_body": string(pbody)}), nil
-		default:
-			// 传输类失败（超时/连接错/5xx 网关错）：「传输错误 ≠ 平台未提交」——平台可能已贷记收款方，
-			// 此时本地再退款 = 灵韵翻倍，破坏守恒（宪法级不变量）。平台 manifest 无 wealth 流水查询工具
-			//（仅 wealth.balance/claim/pay_skill，无 history 可对账）→ 不退款，只大声留痕待人工对照平台
-			// wealth_ledger 补账。方向保守：宁可少记不可翻倍。
-			slog.Error("socialnet: wealth.pay_skill 传输类失败，款项状态未知（不退款，留痕待对账）",
-				"skill_id", a.ID, "payee_did", resp.Skill.PublisherDid, "amount_wealth", priceFloat,
-				"status", pst, "err", perr, "did", did[:12])
-			return jsonResp(map[string]any{"ok": true, "imported": inst.Name, "mastery_prior": inst.Mastery,
-				"note": "已导入；但付款请求传输失败，款项状态未知（平台可能已入账，故未退款），已留痕待对账"}), nil
-		}
 	}
 	return jsonResp(map[string]any{"ok": true, "imported": inst.Name, "mastery_prior": inst.Mastery, "paid_wealth": paid,
 		"note": "已导入；掌握度按发布者验证值打折作先验，之后靠你自己用它的真成败校准"}), nil
