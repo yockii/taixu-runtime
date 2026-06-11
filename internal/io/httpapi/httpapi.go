@@ -152,8 +152,11 @@ var accessToken string
 // withAuth 是写操作鉴权中间件（用户 2026-06-05 提出：防生命体被暴露到公网后被陌生人交互）。
 //
 // 策略（方法级，面向未来）：token 已设时，/api/ 下的**变更类方法**（POST/PUT/PATCH/DELETE）
-// 必须带匹配的 X-Taixu-Token。读操作（GET/HEAD，含 SSE /api/stream）与静态资源永远开放——
+// 必须带匹配的 X-Taixu-Token。读操作（GET/HEAD）与静态资源默认开放——
 // 暴露面板看看无妨，但注入消息 / 改 dangerous-skip / 批准装依赖等必须授权。
+// 例外①：isProtectedRead 标记的隐私读端点需令牌。
+// 例外②：SSE /api/stream 连接本身开放，但在 sse.go 内部分级——未带有效
+// token（header 或 ?token=）时过滤含正文的隐私事件（见 privateSSEEvents）。
 func withAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if accessToken != "" && strings.HasPrefix(r.URL.Path, "/api/") &&

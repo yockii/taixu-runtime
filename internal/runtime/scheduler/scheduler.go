@@ -72,6 +72,9 @@ func Run(ctx context.Context, onTick func(cycleID int64)) error {
 		case <-time.After(iv):
 		}
 
+		// sleep（最长 30min）期间生命周期可能已变（归档/休眠等）——重读后再判定，
+		// 避免用睡前快照放行 onTick、让已归档/休眠的生命多跑一整拍。
+		lc, _ = lifecycle.Current()
 		if lc == core.StateDormant || lc == core.StateArchived || lc == core.StateDetached || lc == core.StateMemorial {
 			continue
 		}

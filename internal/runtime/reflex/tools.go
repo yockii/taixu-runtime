@@ -144,10 +144,7 @@ func composeDeferAck(topic string) string {
 		"意思是『收到、我会找时间研究、有结果再告诉你』。\n" + persona + moodPrompt() +
 		"⚠ 用你此刻心情下最自然的、属于你自己的话说，一两句即可，别套用客套模板、别每次都一个腔调。" +
 		"可以稍微提一下这件事勾起你的什么兴趣或想法。直接给消息正文。"
-	topic = strings.TrimSpace(topic)
-	if len(topic) > 200 {
-		topic = topic[:200]
-	}
+	topic = truncateRunes(strings.TrimSpace(topic), 200)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	resp, err := llm.Reason(ctx, []llm.Message{

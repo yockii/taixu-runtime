@@ -244,11 +244,7 @@ func composeProactiveMessage(genome core.Genome, contact *storage.Contact) strin
 	// 把本会话近期往来按对话角色喂进去，让它清楚哪条是自己发的、ta回没回（拟人化"为什么不回我"的基础）。
 	if turns, terr := storage.RecentDialogueTurnsForConvo(lifeID, contact.Channel, contact.PeerID, 16); terr == nil {
 		for _, t := range turns {
-			c := t.Content
-			if len(c) > 400 {
-				c = c[:400]
-			}
-			msgs = append(msgs, llm.Message{Role: t.Role, Content: c})
+			msgs = append(msgs, llm.Message{Role: t.Role, Content: truncateRunes(t.Content, 400)})
 		}
 	}
 	nudge := "（现在请你主动发一条消息给ta。"

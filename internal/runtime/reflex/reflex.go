@@ -383,13 +383,18 @@ func dialogueHistory(currentContent, channel, peer string) []llm.Message {
 	}
 	out := make([]llm.Message, 0, len(turns))
 	for _, t := range turns {
-		c := t.Content
-		if len(c) > MaxHistoryCharsPerTurn {
-			c = c[:MaxHistoryCharsPerTurn] + "…"
-		}
-		out = append(out, llm.Message{Role: t.Role, Content: c})
+		out = append(out, llm.Message{Role: t.Role, Content: truncateRunes(t.Content, MaxHistoryCharsPerTurn)})
 	}
 	return out
+}
+
+// truncateRunes 按字符（非字节）截断，避免切坏多字节 UTF-8（中文一字 3 字节，按字节切会产生半个字的乱码）。
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
 
 // DialogueSummaryBatch 累积多少条"挤出近期窗口"的对话后才更新滚动概要（控 LLM 调用频率）。
@@ -411,6 +416,10 @@ func dialogueSummaryContext(channel, peer string) string {
 	return "【更早对话的概要】" + strings.TrimSpace(v) + "\n（以上是和ta更早交流的概要；最近几轮原话在后面的消息里。）\n"
 }
 
+// dialogueSummaryLocks 按会话键的互斥锁：每条入站消息都 go maybeUpdateDialogueSummary，
+// 同会话多 goroutine 并发读-改-写概要会互相覆盖——取锁串行化，不同会话互不阻塞。
+var dialogueSummaryLocks sync.Map // convo key → *sync.Mutex
+
 // maybeUpdateDialogueSummary 异步滚动更新某会话的对话概要：把挤出近期窗口的更早对话折进概要。
 // 仅当新"过期"轮数 ≥ DialogueSummaryBatch 才调 LLM，避免每条消息都总结。按会话隔离（R90）。
 func maybeUpdateDialogueSummary(channel, peer string) {
@@ -418,6 +427,10 @@ func maybeUpdateDialogueSummary(channel, peer string) {
 		return
 	}
 	ck := channel + "|" + storage.PeerKey(peer)
+	lkAny, _ := dialogueSummaryLocks.LoadOrStore(ck, &sync.Mutex{})
+	lk := lkAny.(*sync.Mutex)
+	lk.Lock()
+	defer lk.Unlock()
 	turns, err := storage.RecentDialogueTurnsForConvo(lifeID, channel, peer, 50)
 	if err != nil || len(turns) <= MaxHistoryTurns {
 		return
@@ -454,11 +467,7 @@ func summarizeTurns(prev string, turns []storage.DialogueTurn) string {
 		if t.Role == "assistant" {
 			who = "我"
 		}
-		c := t.Content
-		if len(c) > 400 {
-			c = c[:400]
-		}
-		b.WriteString(who + "：" + c + "\n")
+		b.WriteString(who + "：" + truncateRunes(t.Content, 400) + "\n")
 	}
 	sys := "把对话压缩成一段简洁的中文概要（≤150字），只保留关键事实、约定、人物、话题与情绪走向，去掉寒暄客套。直接给概要正文。"
 	user := "已有概要：\n" + prev + "\n\n新增对话：\n" + b.String() + "\n\n输出融合后的更新概要（一段话）："

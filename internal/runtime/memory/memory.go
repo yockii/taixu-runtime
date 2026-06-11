@@ -4,7 +4,7 @@
 //   - WorkingMemory in-mem 单循环 map（mirror 到 working_memory 表便于回放）
 //   - RawTrail 每条事件 append（落 storage.raw_trail）
 //   - Episode 后台聚合（语义边界判定 v1：累积 ≥20 事件 或 ≥30min 跨度）
-//   - SemanticCandidate 抽取 v2：游标 + 滑动窗口（修 R66）
+//   - SemanticCandidate 抽取 v3：游标 + 滑动窗口 + 水位增量计数 + 噪声门（修 R66 复发）
 package memory
 
 import (
@@ -43,6 +43,9 @@ var (
 	working       = make(map[string]string)
 	pendingFromID int64
 	semWindow     []core.RawTrailEntry
+	// semCounted content → 已计数到的 raw_trail id 水位（修 R66 复发：杜绝窗口重扫白嫖加分）。
+	// 纯内存，重启丢失只损计数进度，可接受。
+	semCounted = make(map[string]int64)
 )
 
 // Init 加载游标（从最近一条 Episode 的 raw_end_id 续接）。
@@ -60,6 +63,7 @@ func Init(id string) error {
 	pendingFromID = cursor
 	working = make(map[string]string)
 	semWindow = nil
+	semCounted = make(map[string]int64)
 	return nil
 }
 
@@ -185,7 +189,25 @@ func ConsiderSealEpisode() (*core.Episode, error) {
 	return ep, nil
 }
 
-// ExtractSemantic 抽取 v2：游标 + 滑动窗口避免重复扫描（修 R66）。
+// isSemanticNoise 噪声门：工具流水串 / 低熵短串不进语义候选（修 R66 复发：固化内容是
+// res.Action 流水而非知识）。真知识抽取由 DistillEpisodeKnowledge（LLM 蒸馏）兜底。
+func isSemanticNoise(content string) bool {
+	if strings.Contains(content, "rounds=") || strings.Contains(content, "tools=[") {
+		return true
+	}
+	return len([]rune(content)) < 12
+}
+
+// ExtractSemantic 抽取 v3：游标 + 滑动窗口 + 增量计数（修 R66 复发）。
+//
+// v2 缺陷：每批把 newEvents 追进窗口后对**整个窗口**重算 freq，对所有 freq>=2 的 content
+// 无条件 Upsert（confidence +0.1）。cycle.start 节拍保证批批非空 → 历史出现过 2 次的 content
+// 之后每 cycle 白嫖 +0.1，约 4 cycle 破 0.75 固化阈值；promote 删候选后窗口内事件对还在 →
+// 重新 INSERT 0.5 再爬升，垃圾循环固化。
+//
+// v3 修法：每 content 记「已计数到的 raw_trail id 水位」（semCounted），仅本批**水位之上的
+// 新增出现**才 Upsert，+0.1×新增次数、单批封顶 +0.2（即至多两次 Upsert）；窗口只用于跨批
+// 凑满首个 freq>=2 判定。另加噪声门 isSemanticNoise。
 func ExtractSemantic() (int, error) {
 	cursorKey := "last_semantic_extract_raw_id:" + lifeID
 	cursorStr, _, err := storage.GetMeta(cursorKey)
@@ -211,21 +233,50 @@ func ExtractSemantic() (int, error) {
 	if len(semWindow) > windowMax {
 		semWindow = semWindow[len(semWindow)-windowMax:]
 	}
-	freq := map[string]int{}
+	// 本批各 content 的新增出现次数：只数水位之上的事件，并推进水位。
+	newCount := map[string]int{}
+	for _, t := range newEvents {
+		if t.EventType != "tool.success" || isSemanticNoise(t.Payload) {
+			continue
+		}
+		if t.ID > semCounted[t.Payload] {
+			newCount[t.Payload]++
+			semCounted[t.Payload] = t.ID
+		}
+	}
+	// 窗口频次：仅用于「跨批凑满首个 freq>=2」判定（首次配对的另一半可能在前批）。
+	winFreq := map[string]int{}
 	for _, t := range semWindow {
-		if t.EventType == "tool.success" {
-			freq[t.Payload]++
+		if t.EventType == "tool.success" && !isSemanticNoise(t.Payload) {
+			winFreq[t.Payload]++
+		}
+	}
+	// 水位表瘦身：content 已整体滑出窗口 → 不再参与配对判定，删水位防长跑膨胀。
+	oldestInWindow := semWindow[0].ID
+	for c, id := range semCounted {
+		if id < oldestInWindow {
+			delete(semCounted, c)
 		}
 	}
 	mu.Unlock()
 
 	now := shared.SystemClock.UnixSec()
 	added := 0
-	for content, n := range freq {
-		if n >= 2 {
-			if err := storage.UpsertSemanticCandidate(lifeID, content, "extractor:v2", now); err == nil {
-				added++
+	for content, n := range newCount {
+		if winFreq[content] < 2 {
+			continue // 窗口内尚未凑满首个配对，等后批
+		}
+		if n > 2 {
+			n = 2 // +0.1×新增次数，单批封顶 +0.2
+		}
+		ok := false
+		for i := 0; i < n; i++ {
+			if err := storage.UpsertSemanticCandidate(lifeID, content, "extractor:v3", now); err == nil {
+				ok = true
 			}
+		}
+		if ok {
+			added++
 		}
 	}
 

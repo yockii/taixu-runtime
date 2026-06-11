@@ -21,6 +21,7 @@
 	$effect(() => {
 		$episodeVer;
 		load();
+		return () => clearTimeout(timer); // 销毁时清 debounce 定时器
 	});
 
 	function debouncedSearch() {

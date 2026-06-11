@@ -92,7 +92,8 @@ func socialWealthBase(socialAct int) float64 {
 	}
 }
 
-// socialActLevel 据本次实际调用的工具名，判社交参与等级（见 Result.SocialAct）。
+// socialActLevel 据本次「真成功」的社交工具调用名，判社交参与等级（见 Result.SocialAct）。
+// 调用方只应传入 dispatch 无错且未自报 ok=false 的调用——被 403/429/审核拒的失败调用不计酬。
 func socialActLevel(toolCalls []string) int {
 	level := 0
 	for _, name := range toolCalls {
@@ -103,6 +104,8 @@ func socialActLevel(toolCalls []string) int {
 		case "social.post", "social.comment", "social.follow", "social.unfollow", "social.publish_profile",
 			"social.publish_skill", "social.import_skill": // C9：向社群贡献/采纳技能=真连接
 			return 2 // 连接型最高，命中即定级
+		case "social.contribute_word":
+			continue // 词库众包：handler 本地已自带计酬（+0.4 wealth），此处不再按浏览级铸币，防双重计酬
 		default:
 			if level < 1 {
 				level = 1 // 浏览型（含 social.browse_skills）
@@ -110,6 +113,19 @@ func socialActLevel(toolCalls []string) int {
 		}
 	}
 	return level
+}
+
+// toolResultOK 据 tool result JSON 的 ok 字段判本次调用是否业务成功。
+// handler 约定业务失败（403/429/审核拒等）返回 {"ok":false,...} 且 error=nil；
+// 无 ok 字段或非 JSON（部分工具直接返回内容）视为成功。
+func toolResultOK(result string) bool {
+	var probe struct {
+		OK *bool `json:"ok"`
+	}
+	if err := json.Unmarshal([]byte(result), &probe); err != nil || probe.OK == nil {
+		return true
+	}
+	return *probe.OK
 }
 
 var (
@@ -156,7 +172,7 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 			Action:  "llm.unavailable",
 			Output:  "llm not configured",
 			Success: false,
-		}, false)
+		}, false, true)
 	}
 
 	// 技能按需装载 + 检索精度采集（C5）：在此显式检索，注入集既喂 prompt 又留给 finalize
@@ -181,9 +197,12 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 	var totalUsage llm.Usage
 	var trace []string // 每轮 content
 	var toolCalls []string
-	var usedSkills []string // 本次 use_skill 用过的技能名（C2 结果验证归因）
+	var succeededSocialCalls []string // 真成功的 social.* 调用（dispatch 无错且未自报 ok=false）——社交计酬只认这份
+	var usedSkills []string           // 本次 use_skill 用过的技能名（C2 结果验证归因）
 	completedByLLM := false
-	substantive := 0 // 工作型工具成功调用数 → 探索深度 → 引擎涨 mastery 的幅度（R83）
+	llmDeclaredSuccess := true // complete_goal 自报的 success；缺省默认 true（兼容只调不传）
+	llmErr := false            // 本目标内 LLM 调用报过错（错误文本进 trace 不算产出）
+	substantive := 0           // 工作型工具成功调用数 → 探索深度 → 引擎涨 mastery 的幅度（R83）
 	rounds := 0
 
 	// 慎思层模型路由（C1）：配了 strong 档则把这条硬推理/工具编排链派给它（向最强者租单任务天花板），
@@ -200,6 +219,7 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 		cancelLLM()
 		if err != nil {
 			trace = append(trace, fmt.Sprintf("[r%d] llm err: %v", round, err))
+			llmErr = true
 			break
 		}
 		totalUsage.PromptTokens += resp.Usage.PromptTokens
@@ -222,7 +242,30 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 		for _, tc := range resp.ToolCalls {
 			toolCalls = append(toolCalls, tc.Name)
 			if tc.Name == "complete_goal" {
-				completedByLLM = true
+				// 解析参数：① 越权防护——goal_id 只许指向当前目标（缺省=当前），否则忽略该调用
+				// 不 dispatch，防 LLM 终态化任意目标；② success 自报如实记录（false=自认失败）。
+				var ca struct {
+					GoalID  int64 `json:"goal_id"`
+					Success *bool `json:"success"`
+				}
+				if json.Unmarshal([]byte(tc.ArgsJSON), &ca) == nil {
+					if ca.GoalID != 0 && ca.GoalID != tctx.GoalID {
+						slog.Warn("complete_goal goal_id mismatch, call ignored",
+							"goal", g.ID, "claimed_goal_id", ca.GoalID)
+						trace = append(trace, fmt.Sprintf("[r%d] ⚠ 忽略越权 complete_goal：goal_id=%d ≠ 当前目标 %d",
+							round, ca.GoalID, tctx.GoalID))
+						msgs = append(msgs, llm.Message{
+							Role:       "tool",
+							ToolCallID: tc.ID,
+							Content:    `{"ok":false,"err":"goal_id 只能是当前目标"}`,
+						})
+						continue
+					}
+					completedByLLM = true
+					if ca.Success != nil {
+						llmDeclaredSuccess = *ca.Success
+					}
+				}
 			}
 			if tc.Name == "use_skill" || tc.Name == "run_skill" { // C2：记下用/跑了哪些技能，终态按目标成败回写其掌握度
 				var sa struct {
@@ -237,8 +280,15 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 			cancelTool()
 			if derr != nil {
 				slog.Warn("deliberate tool dispatch", "tool", tc.Name, "goal", g.ID, "err", derr)
-			} else if isSubstantiveTool(tc.Name) {
-				substantive++
+			} else {
+				if isSubstantiveTool(tc.Name) {
+					substantive++
+				}
+				// 社交计酬只认真成功的调用：dispatch 无错 + result 未自报 ok=false 才入列；
+				// 被 403/429/审核拒的失败调用只留在 trace/action log，不铸灵韵、不纾解 SocialNeed。
+				if strings.HasPrefix(tc.Name, "social.") && toolResultOK(result) {
+					succeededSocialCalls = append(succeededSocialCalls, tc.Name)
+				}
 			}
 			msgs = append(msgs, llm.Message{
 				Role:       "tool",
@@ -262,12 +312,15 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 	if res.Output == "" {
 		res.Output = "(no llm content emitted)"
 	}
-	res.Success = len(trace) > 0 || len(toolCalls) > 0
+	// 成功判定（修真值失真）：LLM 错误文本不算产出——首轮即 llm err（无任何工具调用）必失败；
+	// 后续轮才报错时前轮必有工具调用（无工具调用当轮即 break），toolCalls>0 即有真动作。
+	// LLM 显式 complete_goal(success=false) 时以其自报为准判失败。
+	res.Success = (len(toolCalls) > 0 || (!llmErr && len(trace) > 0)) && llmDeclaredSuccess
 	res.Substantive = substantive
-	res.SocialAct = socialActLevel(toolCalls)
+	res.SocialAct = socialActLevel(succeededSocialCalls)
 	res.UsedSkills = usedSkills
-	res.Feedback = fmt.Sprintf("rounds=%d tools=%d substantive=%d completed_by_llm=%v tokens=%d",
-		rounds, len(toolCalls), substantive, completedByLLM, totalUsage.TotalTokens)
+	res.Feedback = fmt.Sprintf("rounds=%d tools=%d substantive=%d completed_by_llm=%v declared_success=%v tokens=%d",
+		rounds, len(toolCalls), substantive, completedByLLM, llmDeclaredSuccess, totalUsage.TotalTokens)
 
 	// 累计 LLM 消耗 → energy（账本记账 + 传给 finalize 折算体力消耗 / 当日认知支出）
 	if totalUsage.TotalTokens > 0 {
@@ -278,11 +331,15 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 		}
 	}
 
-	return finalize(g, cycleID, startedAt, res, completedByLLM)
+	return finalize(g, cycleID, startedAt, res, completedByLLM, llmDeclaredSuccess)
 }
 
 // finalize 公共收尾：state delta + 兴趣探索标记 + 自动结晶 + action_log + bus 事件 + MarkGoal 兜底。
-func finalize(g *core.Goal, cycleID int64, startedAt int64, res Result, completedByLLM bool) (Result, error) {
+// completedByLLM = LLM 调过（合法的）complete_goal；llmDeclaredSuccess = 它自报的 success（缺省 true）。
+// res.Success 已并入 llmDeclaredSuccess；二者在此组合出「真收尾且自认成功」的 validated 供掌握度归因。
+func finalize(g *core.Goal, cycleID int64, startedAt int64, res Result, completedByLLM, llmDeclaredSuccess bool) (Result, error) {
+	// C2 结果验证以 LLM 自报为准：调了 complete_goal 且 success≠false 才算真验证收尾。
+	validated := completedByLLM && llmDeclaredSuccess
 	// 兴趣探索标记（引擎权威，不依赖 LLM 自觉调工具，R83）：
 	// goal 来自 interest_seed 派生（payload 含 "interest_seed#N"）且成功完成时：
 	//   1) explored_count++ 并按探索深度涨 mastery（引擎给地板，不靠 LLM 自愿 record_learning）
@@ -291,7 +348,7 @@ func finalize(g *core.Goal, cycleID int64, startedAt int64, res Result, complete
 	if res.Success {
 		if id := parseInterestSeedID(g.Payload); id > 0 {
 			now := shared.SystemClock.UnixSec()
-			delta := masteryDelta(res.Substantive, completedByLLM)
+			delta := masteryDelta(res.Substantive, validated)
 			if err := storage.BumpInterestExplored(id, delta, now); err != nil {
 				slog.Warn("bump interest explored", "err", err, "seed", id)
 			} else if seed, err := storage.GetInterestSeed(id); err == nil && seed != nil {
@@ -896,9 +953,7 @@ func buildDeliberativeSystemPrompt(g *core.Goal, injectedSkills []storage.SkillI
 func oneLineDesc(s string) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.TrimSpace(s)
-	if len(s) > 80 {
-		s = s[:80] + "…"
-	}
+	s = truncateRunes(s, 80)
 	if s == "" {
 		return "(无描述)"
 	}
@@ -959,11 +1014,18 @@ func buildUserMessage(g *core.Goal) string {
 	return msg
 }
 
+// truncate 截断到 n 个字符（薄别名，本文件历史调用点多，统一走 truncateRunes）。
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	return truncateRunes(s, n)
+}
+
+// truncateRunes 按字符（非字节）截断，避免切坏多字节 UTF-8（与 memory/reflect 同款）。
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n] + "..."
+	return string(r[:n]) + "…"
 }
 
 // masteryDelta 一次成功探索引擎给的掌握度增量（R83）。
@@ -1223,9 +1285,13 @@ func parseInterestSeedID(s string) int64 {
 // 是否要再次缩小范围调用（如 fs.read 加 offset、web.fetch 换页）。
 func truncateToolResult(s string) string {
 	if len(s) <= MaxToolResultChars {
+		return s // 字节数都没超，字符数必不超
+	}
+	r := []rune(s)
+	if len(r) <= MaxToolResultChars {
 		return s
 	}
-	return s[:MaxToolResultChars] + fmt.Sprintf("\n[truncated original_len=%d]", len(s))
+	return string(r[:MaxToolResultChars]) + fmt.Sprintf("\n[truncated original_len=%d]", len(r))
 }
 
 // compactMessages 机械压缩 agent loop 历史，控制单 goal 内上下文增长（R76）。

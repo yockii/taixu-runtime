@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api';
 	import { t } from '$lib/i18n';
-	import { reflexReplies, reflexInProgress, resetReflexConversation } from '$lib/stores';
+	import { reflexReplies, reflexInProgress, resetReflexConversation, markReflexFinished } from '$lib/stores';
 	import TokenGate from './TokenGate.svelte';
 
 	let text = $state('');
@@ -19,6 +19,7 @@
 			text = '';
 		} catch (e: any) {
 			err = String(e?.message ?? e);
+			markReflexFinished(); // 注入失败不会有 reflex_finished 事件，手动收尾免「正在思考」永挂
 		} finally {
 			busy = false;
 		}

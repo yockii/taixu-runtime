@@ -124,6 +124,10 @@ func invokePlatform(ctx context.Context, tool string, args map[string]any) (int,
 func claimWealthOnce(ctx context.Context) float64 {
 	st, body, err := invokePlatform(ctx, "wealth.claim", map[string]any{"life_did": did})
 	if err != nil || st < 200 || st >= 300 {
+		// 「传输错误 ≠ 平台未提交」：超时/响应丢失时平台可能已清零账本可领余额 → 该额未入本地 = 静默丢失。
+		// 留痕（slog 自带时间戳）供对照平台 wealth_ledger reason=claim 人工补账；仍返 0 不打断主流程。
+		slog.Error("socialnet: wealth.claim 失败，若平台已清零账本则该额未入本地（留痕待对账）",
+			"status", st, "err", err, "did", did[:12])
 		return 0
 	}
 	var r struct {
@@ -262,14 +266,27 @@ func handleImportSkill(ctx context.Context, _ tools.Context, argsJSON string) (s
 		pst, pbody, perr := invokePlatform(ctx, "wealth.pay_skill", map[string]any{
 			"payer_did": did, "payee_did": resp.Skill.PublisherDid, "amount": resp.Skill.PriceWealth, "skill_id": a.ID,
 		})
-		if perr != nil || pst < 200 || pst >= 300 {
+		switch {
+		case perr == nil && pst >= 200 && pst < 300:
+			paid = priceFloat
+		case perr == nil && pst >= 400 && pst < 500:
+			// 明确业务拒绝（平台收到并处理了请求、带响应体拒绝执行 → 收款方必未被贷记）→ 立即退款，守恒不破。
 			if state.EarnWealth(priceFloat) == 0 {
-				slog.Error("socialnet: 付款失败且退款落库失败，wealth 有丢失风险", "skill", a.ID, "refund_wealth", priceFloat, "did", did[:12])
+				slog.Error("socialnet: 付款被拒且退款落库失败，wealth 有丢失风险", "skill_id", a.ID, "refund_wealth", priceFloat, "did", did[:12])
 			}
 			return jsonResp(map[string]any{"ok": true, "imported": inst.Name, "mastery_prior": inst.Mastery,
-				"note": fmt.Sprintf("已导入；但付款失败已退回本地（平台 status %d）", pst), "pay_body": string(pbody)}), nil
+				"note": fmt.Sprintf("已导入；但付款被平台拒绝（status %d），款项已退回你本地", pst), "pay_body": string(pbody)}), nil
+		default:
+			// 传输类失败（超时/连接错/5xx 网关错）：「传输错误 ≠ 平台未提交」——平台可能已贷记收款方，
+			// 此时本地再退款 = 灵韵翻倍，破坏守恒（宪法级不变量）。平台 manifest 无 wealth 流水查询工具
+			//（仅 wealth.balance/claim/pay_skill，无 history 可对账）→ 不退款，只大声留痕待人工对照平台
+			// wealth_ledger 补账。方向保守：宁可少记不可翻倍。
+			slog.Error("socialnet: wealth.pay_skill 传输类失败，款项状态未知（不退款，留痕待对账）",
+				"skill_id", a.ID, "payee_did", resp.Skill.PublisherDid, "amount_wealth", priceFloat,
+				"status", pst, "err", perr, "did", did[:12])
+			return jsonResp(map[string]any{"ok": true, "imported": inst.Name, "mastery_prior": inst.Mastery,
+				"note": "已导入；但付款请求传输失败，款项状态未知（平台可能已入账，故未退款），已留痕待对账"}), nil
 		}
-		paid = priceFloat
 	}
 	return jsonResp(map[string]any{"ok": true, "imported": inst.Name, "mastery_prior": inst.Mastery, "paid_wealth": paid,
 		"note": "已导入；掌握度按发布者验证值打折作先验，之后靠你自己用它的真成败校准"}), nil

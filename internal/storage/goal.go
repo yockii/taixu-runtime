@@ -35,8 +35,9 @@ func EnqueueExternalRequest(lifeID, topic, reqChannel, reqFrom string, priority 
 	if topic == "" {
 		return 0, false, nil
 	}
-	if open, derr := HasOpenGoalWithPayloadSubstring(lifeID, topic); derr == nil && open {
-		return 0, false, nil
+	if dupID, derr := openGoalIDWithPayloadSubstring(lifeID, topic); derr == nil && dupID != 0 {
+		// 判重命中：返回既有目标的真实 id（而非 0），上层可据此接力/关联请求者。
+		return dupID, false, nil
 	}
 	g := &core.Goal{
 		Source:     core.GoalExternal,
@@ -139,9 +140,23 @@ func MarkGoal(goalID int64, status core.GoalStatus, finishedAt int64) error {
 		}
 	}
 
-	if _, err := tx.Exec(`UPDATE goal_queue SET status = ?, finished_at = ? WHERE id = ?`,
-		string(status), finishedAt, goalID); err != nil {
+	// 幂等守卫：终态化只允许从 pending/active 出发。重复对同一目标终态化（重试/并发）时
+	// UPDATE 影响 0 行 → 跳过母计数扣减等一切副作用，避免 parent pending_children 被多减。
+	query := `UPDATE goal_queue SET status = ?, finished_at = ? WHERE id = ?`
+	if terminal {
+		query += ` AND status IN ('pending','active')`
+	}
+	res, err := tx.Exec(query, string(status), finishedAt, goalID)
+	if err != nil {
 		return err
+	}
+	if terminal {
+		if n, err := res.RowsAffected(); err != nil {
+			return err
+		} else if n == 0 {
+			// 目标不存在或已是终态：无副作用，直接提交（no-op）。
+			return tx.Commit()
+		}
 	}
 
 	if terminal && parentID != nil {
@@ -294,6 +309,7 @@ func CountActiveOrPendingGoals(lifeID string) (int, error) {
 
 // HasOpenGoalWithPayloadSubstring 判断是否存在 pending/active 且 payload 含 sub 的目标。
 // 用于 dedup：interest_seed#N 已在飞时不重复派发（R74 / R75）。
+// 用 instr 做纯子串匹配——LIKE 拼接不转义 %/_ 时，sub 含 % 会通配匹配任意目标（误吞托付）。
 func HasOpenGoalWithPayloadSubstring(lifeID, sub string) (bool, error) {
 	if sub == "" {
 		return false, nil
@@ -301,9 +317,27 @@ func HasOpenGoalWithPayloadSubstring(lifeID, sub string) (bool, error) {
 	var n int
 	err := db.QueryRow(`
 		SELECT COUNT(*) FROM goal_queue
-		WHERE life_id = ? AND status IN ('pending','active') AND payload LIKE ?`,
-		lifeID, "%"+sub+"%").Scan(&n)
+		WHERE life_id = ? AND status IN ('pending','active') AND instr(payload, ?) > 0`,
+		lifeID, sub).Scan(&n)
 	return n > 0, err
+}
+
+// openGoalIDWithPayloadSubstring 返回最早一条 pending/active 且 payload 含 sub 的目标 id；
+// 无命中返回 0。供 EnqueueExternalRequest 判重命中时把既有目标 id 真实返回给上层接力。
+func openGoalIDWithPayloadSubstring(lifeID, sub string) (int64, error) {
+	if sub == "" {
+		return 0, nil
+	}
+	var id int64
+	err := db.QueryRow(`
+		SELECT id FROM goal_queue
+		WHERE life_id = ? AND status IN ('pending','active') AND instr(payload, ?) > 0
+		ORDER BY id ASC LIMIT 1`,
+		lifeID, sub).Scan(&id)
+	if err == ErrNoRows {
+		return 0, nil
+	}
+	return id, err
 }
 
 // HasRecentGoalWithPayloadSubstring 判断是否存在 pending/active，或近期（finished_at >= sinceTs）
@@ -315,9 +349,9 @@ func HasRecentGoalWithPayloadSubstring(lifeID, sub string, sinceTs int64) (bool,
 	var n int
 	err := db.QueryRow(`
 		SELECT COUNT(*) FROM goal_queue
-		WHERE life_id = ? AND payload LIKE ?
+		WHERE life_id = ? AND instr(payload, ?) > 0
 		  AND ( status IN ('pending','active')
 		        OR (status IN ('completed','failed') AND COALESCE(finished_at,0) >= ?) )`,
-		lifeID, "%"+sub+"%", sinceTs).Scan(&n)
+		lifeID, sub, sinceTs).Scan(&n)
 	return n > 0, err
 }

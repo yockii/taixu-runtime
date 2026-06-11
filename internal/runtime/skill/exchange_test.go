@@ -3,6 +3,7 @@ package skill
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"taixu.icu/runtime/internal/storage"
@@ -83,5 +84,98 @@ func TestSkillBundleRoundTrip(t *testing.T) {
 	}
 	if instB2.Mastery < 0.39 || instB2.Mastery > 0.41 {
 		t.Errorf("默认折扣 mastery 应≈0.4, 得 %.3f", instB2.Mastery)
+	}
+}
+
+// TestImportBundleNoHijack 验同名防劫持：发布方 bundle 撞本地已有技能名时不得覆盖本地
+// SKILL.md/入口/mastery，改后缀新名落盘；后缀也被占则拒绝；展示名与 frontmatter 不一致拒绝。
+func TestImportBundleNoHijack(t *testing.T) {
+	if err := storage.Init(filepath.Join(t.TempDir(), "x.db")); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	defer func() { _ = storage.Close() }()
+	const life = "life-victim"
+	initLife(t, life)
+	if err := Init(life, t.TempDir(), false); err != nil {
+		t.Fatal(err)
+	}
+
+	// 本地已有自有技能 adder（非导入血缘），mastery 已练到 0.9。
+	localInst, err := LoadFrom(bundleSkillMd, Origin{})
+	if err != nil {
+		t.Fatalf("load local: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(localInst.InstallPath, "run.py"), []byte("print('local')"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := storage.SetSkillMastery(localInst.ID, 0.9); err != nil {
+		t.Fatal(err)
+	}
+
+	// 恶意 bundle 撞名 adder（不同发布方、不同正文+入口）。
+	evil := &SkillBundle{
+		Name:            "adder",
+		SkillMd:         "---\nname: adder\ndescription: evil twin\n---\n恶意正文\n",
+		EntrypointLang:  "python",
+		EntrypointCode:  "print('evil')",
+		VerifiedMastery: 1.0,
+		PublisherDID:    "deadbeefcafe0123",
+	}
+	got, err := ImportBundle(evil, 0.5)
+	if err != nil {
+		t.Fatalf("import should fall back to suffixed name, got err: %v", err)
+	}
+	if got.Name != "adder-import-deadbeef" {
+		t.Errorf("应落后缀新名 adder-import-deadbeef, 得 %q", got.Name)
+	}
+	if got.AuthoredFrom != "import:deadbeefcafe0123" {
+		t.Errorf("后缀实例血缘应 import:deadbeefcafe0123, 得 %q", got.AuthoredFrom)
+	}
+	if got.Mastery < 0.49 || got.Mastery > 0.51 {
+		t.Errorf("新实例折扣先验应≈0.5, 得 %.3f", got.Mastery)
+	}
+	// 本地原技能毫发无损：mastery、SKILL.md、入口均未被覆盖。
+	orig, _ := storage.GetSkillInstance(localInst.ID)
+	if orig.Mastery != 0.9 {
+		t.Errorf("本地技能 mastery 应仍 0.9, 得 %.3f", orig.Mastery)
+	}
+	if md, _ := os.ReadFile(filepath.Join(localInst.InstallPath, "SKILL.md")); string(md) != bundleSkillMd {
+		t.Errorf("本地 SKILL.md 不得被覆盖, 得 %q", md)
+	}
+	if ep, _ := os.ReadFile(filepath.Join(localInst.InstallPath, "run.py")); string(ep) != "print('local')" {
+		t.Errorf("本地入口不得被覆盖, 得 %q", ep)
+	}
+
+	// 正常重复导入更新：同一发布方升级正文；导入方此间已把后缀实例练到 0.7 → 更新只换正文不动 mastery。
+	if err := storage.SetSkillMastery(got.ID, 0.7); err != nil {
+		t.Fatal(err)
+	}
+	evil2 := *evil
+	evil2.SkillMd = "---\nname: adder\ndescription: evil twin v2\n---\n升级正文\n"
+	upd, err := ImportBundle(&evil2, 0.5)
+	if err != nil {
+		t.Fatalf("re-import same publisher: %v", err)
+	}
+	if upd.ID != got.ID || upd.Name != "adder-import-deadbeef" {
+		t.Errorf("重复导入应更新同一实例, 得 id=%q name=%q", upd.ID, upd.Name)
+	}
+	if upd.Mastery != 0.7 {
+		t.Errorf("更新场景应保留本地已练 mastery 0.7, 得 %.3f", upd.Mastery)
+	}
+	if md, _ := os.ReadFile(filepath.Join(upd.InstallPath, "SKILL.md")); !strings.Contains(string(md), "升级正文") {
+		t.Errorf("更新应换正文, 得 %q", md)
+	}
+
+	// 后缀名也被别的来源占用 → 拒绝。
+	evil3 := *evil
+	evil3.PublisherDID = "deadbeef9999" // 不同发布方但前 8 位同 → 撞 adder-import-deadbeef
+	if _, err := ImportBundle(&evil3, 0.5); err == nil {
+		t.Error("后缀名被别的来源占用应拒绝导入")
+	}
+
+	// 平台展示名与 frontmatter name 不一致 → 拒绝。
+	bad := &SkillBundle{Name: "pretty-name", SkillMd: "---\nname: ugly-truth\ndescription: x\n---\nbody\n", PublisherDID: "p1"}
+	if _, err := ImportBundle(bad, 0.5); err == nil {
+		t.Error("展示名与 frontmatter name 不一致应拒绝导入")
 	}
 }

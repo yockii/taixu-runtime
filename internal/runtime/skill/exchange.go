@@ -11,9 +11,12 @@ package skill
 // 发布/浏览/取）与多生命分工放宽是 C9 余项。
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"taixu.icu/runtime/internal/storage"
@@ -76,6 +79,16 @@ func ExportBundle(name string) (*SkillBundle, error) {
 
 // ImportBundle 导入他人的技能 bundle：落盘 SKILL.md（+可执行入口），mastery 以折扣先验初始化
 // （信任但验证）。trustDiscount<=0 用 DefaultTrustDiscount。血缘记 import:<publisherDID>。
+//
+// 同名防劫持（frontmatter name 发布方完全可控，撞常见名不能覆盖本地技能）：
+//   - bundle.Name（平台 list/fetch 展示名，handleImportSkill 透传）非空时必须与 frontmatter name
+//     一致，否则拒绝——防「列表看是 A、装进来是 B」的挂羊头。bundle.Name 为空（无平台上下文，
+//     如本地测试/直接 bundle 交换）时跳过此校验。
+//   - 本地已有同名技能且血缘（authored_from）不是「同一发布方此前的导入」→ 绝不覆盖其
+//     SKILL.md/可执行入口/mastery，改用后缀新名 <name>-import-<发布方DID前8位> 落盘；
+//     后缀名也被别的来源占用 → 拒绝导入，返回明确错误。
+//   - 同一发布方同名重复导入 = 更新：只更新正文/入口，保留本地已练 mastery（C2 成果），
+//     折扣先验仅在新建实例时设置。
 func ImportBundle(b *SkillBundle, trustDiscount float64) (*storage.SkillInstance, error) {
 	if b == nil || strings.TrimSpace(b.SkillMd) == "" {
 		return nil, fmt.Errorf("import: empty bundle")
@@ -83,7 +96,57 @@ func ImportBundle(b *SkillBundle, trustDiscount float64) (*storage.SkillInstance
 	if trustDiscount <= 0 {
 		trustDiscount = DefaultTrustDiscount
 	}
-	inst, err := LoadFrom(b.SkillMd, Origin{})
+	fm, _, err := ParseSkillMd(b.SkillMd)
+	if err != nil {
+		return nil, fmt.Errorf("import parse: %w", err)
+	}
+	// 平台展示名一致性校验（见函数头注释；bundle.Name 为空时无平台展示名可校，跳过）。
+	if pn := strings.TrimSpace(b.Name); pn != "" && pn != fm.Name {
+		return nil, fmt.Errorf("import: 平台展示名 %q 与 SKILL.md frontmatter name %q 不一致，拒绝导入", pn, fm.Name)
+	}
+	from := "import"
+	if b.PublisherDID != "" {
+		from = "import:" + b.PublisherDID
+	}
+
+	mu.Lock()
+	lid := lifeID
+	mu.Unlock()
+	local, err := storage.ListSkillInstances(lid, 1000)
+	if err != nil {
+		return nil, fmt.Errorf("import list local: %w", err)
+	}
+	byName := func(name string) *storage.SkillInstance {
+		for i := range local {
+			if local[i].Name == name {
+				return &local[i]
+			}
+		}
+		return nil
+	}
+
+	content := b.SkillMd
+	isUpdate := false // 同一发布方同名重复导入（更新场景）：保留本地 mastery
+	if exist := byName(fm.Name); exist != nil {
+		if exist.AuthoredFrom == from {
+			isUpdate = true
+		} else {
+			// 同名但血缘不同（自创/本地投放/别的发布方）→ 不覆盖，改后缀新名落盘。
+			suffixed := fm.Name + "-import-" + publisherTag(b.PublisherDID)
+			if exist2 := byName(suffixed); exist2 != nil {
+				if exist2.AuthoredFrom != from {
+					return nil, fmt.Errorf("import: 本地已有同名技能 %q（来源 %q），冲突后缀名 %q 也已被来源 %q 占用，拒绝导入以防覆盖",
+						fm.Name, exist.AuthoredFrom, suffixed, exist2.AuthoredFrom)
+				}
+				isUpdate = true // 此前已以后缀名导入过同一发布方的它 → 更新
+			}
+			if content, err = renameSkillMdName(content, suffixed); err != nil {
+				return nil, fmt.Errorf("import rename: %w", err)
+			}
+		}
+	}
+
+	inst, err := LoadFrom(content, Origin{})
 	if err != nil {
 		return nil, fmt.Errorf("import load: %w", err)
 	}
@@ -93,25 +156,70 @@ func ImportBundle(b *SkillBundle, trustDiscount float64) (*storage.SkillInstance
 			_ = os.WriteFile(filepath.Join(inst.InstallPath, fn), []byte(b.EntrypointCode), 0o644)
 		}
 	}
-	// 折扣先验：继承发布者验证 mastery × discount，clamp [0,1]。剩下靠导入方 C2 自校准。
-	prior := b.VerifiedMastery * trustDiscount
-	if prior < 0 {
-		prior = 0
-	}
-	if prior > 1 {
-		prior = 1
-	}
-	if err := storage.SetSkillMastery(inst.ID, prior); err != nil {
-		return nil, fmt.Errorf("import set mastery: %w", err)
-	}
-	from := "import"
-	if b.PublisherDID != "" {
-		from = "import:" + b.PublisherDID
+	// 折扣先验只在新建实例时设置：继承发布者验证 mastery × discount，clamp [0,1]，剩下靠导入方
+	// C2 自校准。更新场景（同一发布方重复导入）保留本地已练 mastery——发布方的折扣先验不能
+	// 重置导入方用真成败练出来的值（UpsertSkillInstance 本就不动 mastery/used_count）。
+	if !isUpdate {
+		prior := b.VerifiedMastery * trustDiscount
+		if prior < 0 {
+			prior = 0
+		}
+		if prior > 1 {
+			prior = 1
+		}
+		if err := storage.SetSkillMastery(inst.ID, prior); err != nil {
+			return nil, fmt.Errorf("import set mastery: %w", err)
+		}
 	}
 	if err := storage.SetSkillAuthoredFrom(inst.ID, from); err != nil {
 		return nil, fmt.Errorf("import set provenance: %w", err)
 	}
 	return storage.GetSkillInstance(inst.ID)
+}
+
+// fmNameLineRe 匹配 frontmatter 顶层（列 0）的 name 行（renameSkillMdName 用）。
+var fmNameLineRe = regexp.MustCompile(`(?m)^name:[^\n]*$`)
+
+// renameSkillMdName 重写 SKILL.md frontmatter 的顶层 name（同名防劫持改后缀名落盘用）。
+// 新名用 YAML 双引号标量（strconv.Quote）写入，避免特殊字符破坏 frontmatter；
+// 改完回读校验解析结果确为新名。
+func renameSkillMdName(content, newName string) (string, error) {
+	s := strings.TrimLeft(content, " \t\r\n")
+	if !strings.HasPrefix(s, "---") {
+		return "", errors.New("missing frontmatter")
+	}
+	rest := s[3:]
+	end := strings.Index(rest, "\n---")
+	if end < 0 {
+		return "", errors.New("unterminated frontmatter")
+	}
+	head := rest[:end]
+	if !fmNameLineRe.MatchString(head) {
+		return "", errors.New("frontmatter has no top-level name line")
+	}
+	out := "---" + fmNameLineRe.ReplaceAllString(head, "name: "+strconv.Quote(newName)) + rest[end:]
+	if nfm, _, err := ParseSkillMd(out); err != nil || nfm.Name != newName {
+		return "", fmt.Errorf("rename verify failed (got %q)", out[:min(len(out), 80)])
+	}
+	return out, nil
+}
+
+// publisherTag 取发布方 DID 前 8 个字母数字字符作冲突后缀（DID 为 sha256 hex，前 8 位有区分度；
+// 仅保留字母数字防路径/YAML 注入）。空/无效 DID 用 "anon"。
+func publisherTag(did string) string {
+	out := make([]rune, 0, 8)
+	for _, r := range did {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			out = append(out, r)
+			if len(out) == 8 {
+				break
+			}
+		}
+	}
+	if len(out) == 0 {
+		return "anon"
+	}
+	return string(out)
 }
 
 // langFromEntrypoint 据入口文件扩展名反推语言（导出时填 bundle）。

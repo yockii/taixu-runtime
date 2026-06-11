@@ -1,4 +1,10 @@
 // SSE 客户端：订阅 /api/stream。
+//
+// 鉴权（R87）：EventSource 不能带自定义 header，令牌经 ?token= 查询参数传递。
+// 服务端令牌已配置而连接未带有效 token 时，仍可连接但收不到含正文的隐私事件
+// （reflex_reply / reflection / episode_sealed）。token 在 openStream 调用时一次性取出，
+// TokenGate 解锁后需重建连接才生效——解锁成功路径会 location.reload()（见 TokenGate.svelte）。
+import { getToken } from './api';
 import type { LifeState, MentalState } from './api';
 
 export type StreamEvent =
@@ -27,7 +33,8 @@ const EVENT_TYPES: StreamEvent['type'][] = [
 ];
 
 export function openStream(onEvent: (e: StreamEvent) => void): () => void {
-	const es = new EventSource('/api/stream');
+	const token = getToken();
+	const es = new EventSource('/api/stream' + (token ? '?token=' + encodeURIComponent(token) : ''));
 	for (const type of EVENT_TYPES) {
 		es.addEventListener(type, (ev: MessageEvent) => {
 			try {

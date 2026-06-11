@@ -32,6 +32,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"taixu.icu/runtime/internal/bus"
@@ -56,8 +57,8 @@ var (
 
 	priv            ed25519.PrivateKey
 	did             string
-	ready           bool
-	selfProvisioned bool // 无账号时自助开户模式（自治入网，用户日后认领）
+	ready           atomic.Bool // bootstrap goroutine 写、cycle/面板 goroutine 读 → 原子，防数据竞争
+	selfProvisioned bool        // 无账号时自助开户模式（自治入网，用户日后认领）
 
 	client = &http.Client{Timeout: 30 * time.Second}
 )
@@ -209,7 +210,7 @@ func bootstrap(pub ed25519.PublicKey) error {
 	registerSkillExchange() // C9：注册 social.publish_skill/browse_skills/import_skill（本地 Export/Import + POST 平台）
 	registerWordExchange()  // C12：注册 social.contribute_word（POST 平台收录词 + 本地产灵韵）
 	registerGameExchange()  // C15：注册 game.join/leave（本地 SpendWealth/EarnWealth 钱耦合）
-	ready = true
+	ready.Store(true)
 	slog.Info("socialnet: platform channel ready", "channel", m.Channel, "tools", n+3, "did", did[:12], "url", baseURL)
 	ensureProfilePublished() // 接通即发公开名片，进名录可被发现（修 life_profile 空 → Directory 空）
 	return nil
@@ -247,7 +248,7 @@ func ensureProfilePublished() {
 }
 
 // Ready 平台社交通道是否就绪。
-func Ready() bool { return ready }
+func Ready() bool { return ready.Load() }
 
 // DID 生命体在平台的 DID（未自举则空）。
 func DID() string { return did }

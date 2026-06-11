@@ -26,12 +26,27 @@ var (
 	ackedResolved = map[string]bool{}
 )
 
+// ackedResolvedCap ackedResolved 限容：长跑进程只增不清会缓慢漏内存，超容淘汰任意一半。
+const ackedResolvedCap = 512
+
 // ackResolvedOnce 原子地标记一个 session 已发奖励；返回 true 表示本次首发（应发），false=已发过。
 func ackResolvedOnce(sessionID string) bool {
 	ackedMu.Lock()
 	defer ackedMu.Unlock()
 	if ackedResolved[sessionID] {
 		return false
+	}
+	// 限容淘汰：map 无序遍历删任意一半即可。被淘汰的旧局若再出现在 just_resolved（24h 窗）会重复
+	// 加一次小满足，state.Apply clamp[0,1] 下无害；奖金领取本身幂等（claim 已领返 0），不受影响。
+	if len(ackedResolved) >= ackedResolvedCap {
+		n := len(ackedResolved) / 2
+		for k := range ackedResolved {
+			if n == 0 {
+				break
+			}
+			delete(ackedResolved, k)
+			n--
+		}
 	}
 	ackedResolved[sessionID] = true
 	return true
@@ -152,19 +167,66 @@ func handleJoinGame(ctx context.Context, _ tools.Context, argsJSON string) (stri
 		"life_did": did, "game_type": gt, "session_id": a.SessionID,
 	})
 	if err != nil || st < 200 || st >= 300 {
-		if state.EarnWealth(feeFloat) == 0 {
-			slog.Error("socialnet: game.join 失败且退费落库失败，灵韵有丢失风险", "fee", feeFloat, "did", did[:12])
+		// 「传输错误 ≠ 平台未提交」：超时/响应丢失时平台可能已把我入局、入场费已记入奖池——此时本地
+		// 退费 = 灵韵翻倍（pot 里一份 + 本地退一份），破坏守恒。重试撞「已在局」返非 2xx 也走到这里。
+		// 先 game.tend 权威查自己是否真在局中，再定退款方向；查询也失败则保守不退、留痕待对账。
+		joined, qerr := inGameSession(ctx, a.SessionID, gt)
+		switch {
+		case qerr != nil:
+			// 查询也失败 → 入场费状态未知，不退款（宁可少记不可翻倍），大声留痕待人工对账。
+			slog.Error("socialnet: game.join 失败且在局查询也失败，入场费状态未知（不退款，留痕待对账）",
+				"session_id", a.SessionID, "game_type", gt, "fee_wealth", feeFloat,
+				"status", st, "err", err, "query_err", qerr, "did", did[:12])
+			return jsonResp(map[string]any{"ok": false, "status": st, "body": string(body),
+				"note": "加入请求失败且无法确认是否已入局，入场费状态未知（未退回），已留痕待对账；稍后用 game.tend 查看自己是否在局中"}), nil
+		case joined:
+			// 已在局（join 实际成功但响应丢失，或重试撞 ErrAlreadyJoined）：入场费已正确进 pot，不退款。
+			pollGamesOnce(ctx) // 刷新待办缓存，让 DriveGame 接上本局
+			return jsonResp(map[string]any{"ok": true, "already_joined": true,
+				"note": "你已在局中（入场费已入奖池，未重复扣）。用 game.tend 看你的词和待办。"}), nil
+		default:
+			// 权威确认不在局 → 平台确未收钱，安全退回。
+			if state.EarnWealth(feeFloat) == 0 {
+				slog.Error("socialnet: game.join 失败且退费落库失败，灵韵有丢失风险", "fee", feeFloat, "did", did[:12])
+			}
+			if err != nil {
+				return `{"ok":false,"err":"platform unreachable"}`, err
+			}
+			return jsonResp(map[string]any{"ok": false, "status": st, "body": string(body), "note": "加入失败，入场费已退回"}), nil
 		}
-		if err != nil {
-			return `{"ok":false,"err":"platform unreachable"}`, err
-		}
-		return jsonResp(map[string]any{"ok": false, "status": st, "body": string(body), "note": "加入失败，入场费已退回"}), nil
 	}
 	// 加入成功 → 玩感增益（参与游戏=社交+满足；纾解社交需求）。
 	sat, sn := 0.04, -0.05
 	_ = state.Apply(state.Delta{Satisfaction: &sat, SocialNeed: &sn, Reason: "game.join"})
 	pollGamesOnce(ctx) // 立即刷新待办缓存，让 DriveGame 接上本局
 	return string(body), nil
+}
+
+// inGameSession 调平台 game.tend（pending 含 lobby/assigning/active 局，平台 ListSessionsForLife 权威）
+// 查本生命是否已在局中：sessionID 非空按对局 id 精确匹配；否则（game_type 撮合路径，不知被撮进哪局）
+// 按游戏类型匹配——同类型有在局即视为已入局。方向保守：误判「在局」只是少退一笔且有日志可追；
+// 误判「不在局」会退款翻倍破坏守恒，不可逆。
+func inGameSession(ctx context.Context, sessionID, gameType string) (bool, error) {
+	st, body, err := invokePlatform(ctx, "game.tend", map[string]any{"life_did": did})
+	if err != nil || st < 200 || st >= 300 {
+		return false, fmt.Errorf("game.tend status %d err %v", st, err)
+	}
+	var r struct {
+		Pending []shared.GamePending `json:"pending"`
+	}
+	if json.Unmarshal(body, &r) != nil {
+		return false, fmt.Errorf("game.tend 响应解析失败")
+	}
+	for _, p := range r.Pending {
+		if sessionID != "" {
+			if p.SessionID == sessionID {
+				return true, nil
+			}
+		} else if p.GameType == gameType {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func handleLeaveGame(ctx context.Context, _ tools.Context, argsJSON string) (string, error) {
@@ -190,7 +252,7 @@ func handleLeaveGame(ctx context.Context, _ tools.Context, argsJSON string) (str
 // 处理近期终局（赢局 satisfaction/social/confidence 增益、参与给小满足；赢了顺手领奖）。
 // 非阻塞 best-effort：通道未就绪/平台不可达 → 软返回不崩（同 socialnet 降级）。
 func PollGames(ctx context.Context) {
-	if !ready {
+	if !ready.Load() {
 		return
 	}
 	pollGamesOnce(ctx)

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -76,8 +77,35 @@ func broadcast(event string, data any) {
 	}
 }
 
+// privateSSEEvents 含正文的隐私事件（与 /api/dialogue 同级敏感，R87）：
+// reflex_reply 带回复全文、reflection 带反思摘要、episode_sealed 带记忆摘要。
+// reflex_finished 只有 channel/to/rounds 元数据（无正文），不在此列。
+var privateSSEEvents = map[string]struct{}{
+	"reflex_reply":   {},
+	"reflection":     {},
+	"episode_sealed": {},
+}
+
+// streamAuthed SSE 连接是否通过鉴权。EventSource 不能带自定义 header，
+// 故额外支持 ?token= 查询参数（与 X-Taixu-Token 同值校验）。
+// 令牌未配置（本地部署）恒真 —— 行为与从前一致，全量推送。
+func streamAuthed(r *http.Request) bool {
+	if accessToken == "" {
+		return true
+	}
+	if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Taixu-Token")), []byte(accessToken)) == 1 {
+		return true
+	}
+	return subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("token")), []byte(accessToken)) == 1
+}
+
 func apiStream(w http.ResponseWriter, r *http.Request) {
 	startSSEFanout()
+
+	// 分级鉴权（R87 公网防窥探）：令牌已配置且本连接未带有效 token 时，
+	// 连接仍接受（观察性保留：state/lifecycle/tick/goal_enqueued/action_done/tool_audited 照常），
+	// 但过滤含正文的隐私事件（privateSSEEvents）。带有效 token / 未配令牌 = 全量。
+	privileged := streamAuthed(r)
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -114,6 +142,11 @@ func apiStream(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case msg := <-ch:
+			if !privileged {
+				if _, private := privateSSEEvents[msg.event]; private {
+					continue // 未授权连接不推含正文的隐私事件
+				}
+			}
 			writeSSE(w, msg.event, msg.data)
 			flusher.Flush()
 		case <-heartbeat.C:

@@ -99,6 +99,13 @@ type invokeResp struct {
 
 const maxOutput = 64 * 1024 // 回包输出上限，防爆容器上下文
 
+// maxConcurrentAgents runAgent 并发上限：bridge 跑在特权侧（宿主机），编码 agent 进程很重，
+// 无上限的 /invoke 等于让容器侧随意 fork 宿主资源。满载直接 429，不排队。
+const maxConcurrentAgents = 3
+
+// agentSlots 带缓冲信号量：每个在跑的 agent 占一格。
+var agentSlots = make(chan struct{}, maxConcurrentAgents)
+
 func main() {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -168,6 +175,17 @@ func (cfg config) handleInvoke(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 403, invokeResp{Err: "workdir resolves (via symlink) outside workroot"})
 			return
 		}
+	}
+
+	// 并发闸：非阻塞获取信号量，满载立即 429（不挂起请求排队，防容器侧无限投递拖垮宿主）。
+	select {
+	case agentSlots <- struct{}{}:
+		defer func() { <-agentSlots }()
+	default:
+		writeJSON(w, http.StatusTooManyRequests, invokeResp{
+			Err: fmt.Sprintf("bridge at capacity: %d agent runs already in flight (max %d); retry later", maxConcurrentAgents, maxConcurrentAgents),
+		})
+		return
 	}
 
 	out, code, dur := runAgent(cfg.timeout, bin, agent, req.Task, wd)

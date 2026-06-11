@@ -7,6 +7,7 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"errors"
@@ -75,6 +76,16 @@ func SnapshotInto(path string) error {
 var ErrNoRows = sql.ErrNoRows
 
 // migrate 顺序应用 migrations/*.sql。冪等：用 schema_migrations 跟踪。
+//
+// 原子性（库即生命终身记忆，半写态不可恢复——崩溃后 ALTER 重放撞 duplicate column /
+// 表重建中断 no such table 都是永久启动失败）：每个迁移在 Go 侧单事务执行——
+// BEGIN → 迁移文件全部语句 → INSERT schema_migrations → COMMIT。崩溃则整体回滚，
+// 重启从干净态重放。为此：
+//
+//  1. 迁移文件内自带的 BEGIN;/COMMIT; 在执行前剥除（如 015），避免与外层事务嵌套冲突。
+//  2. PRAGMA foreign_keys 在事务内是 no-op（SQLite 规定）——文件内的该 PRAGMA 一并剥除，
+//     改为在事务外、同一连接上统一 OFF（覆盖 002/003/004/006/007 的表重建），COMMIT 后恢复 ON。
+//  3. 事务与 PRAGMA 必须落在同一物理连接上才有效，故用 db.Conn 钉住单连接执行全程。
 func migrate() error {
 	if _, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -96,9 +107,16 @@ func migrate() error {
 	}
 	sort.Strings(files)
 
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("pin migration connection: %w", err)
+	}
+	defer conn.Close()
+
 	for _, f := range files {
 		var applied int
-		if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE filename = ?`, f).Scan(&applied); err != nil {
+		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE filename = ?`, f).Scan(&applied); err != nil {
 			return fmt.Errorf("check applied %s: %w", f, err)
 		}
 		if applied > 0 {
@@ -108,12 +126,61 @@ func migrate() error {
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", f, err)
 		}
-		if _, err := db.Exec(string(content)); err != nil {
-			return fmt.Errorf("apply migration %s: %w", f, err)
-		}
-		if _, err := db.Exec(`INSERT INTO schema_migrations (filename, applied_at) VALUES (?, strftime('%s','now'))`, f); err != nil {
-			return fmt.Errorf("mark applied %s: %w", f, err)
+		if err := applyMigration(ctx, conn, f, sanitizeMigration(string(content))); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// applyMigration 在钉住的连接上以单事务应用一个迁移并标记 schema_migrations。
+// FK 开关在事务外（事务内 PRAGMA foreign_keys 是 no-op），恢复 ON 用 defer 保证错误路径也复位。
+func applyMigration(ctx context.Context, conn *sql.Conn, name, body string) (retErr error) {
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("fk off for %s: %w", name, err)
+	}
+	defer func() {
+		if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil && retErr == nil {
+			retErr = fmt.Errorf("fk on after %s: %w", name, err)
+		}
+	}()
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin migration %s: %w", name, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, body); err != nil {
+		return fmt.Errorf("apply migration %s: %w", name, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO schema_migrations (filename, applied_at) VALUES (?, strftime('%s','now'))`, name); err != nil {
+		return fmt.Errorf("mark applied %s: %w", name, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration %s: %w", name, err)
+	}
+	return nil
+}
+
+// sanitizeMigration 剥除迁移文件里与「Go 侧外层事务」冲突的整行语句：
+//   - BEGIN; / BEGIN TRANSACTION; / COMMIT; —— 嵌套事务报错（015 自带）。
+//   - PRAGMA foreign_keys ...; —— 事务内是 no-op，由 applyMigration 在事务外统一管理。
+//
+// 只匹配「独占一行且以分号结尾」的语句，CREATE TRIGGER 体内的裸 BEGIN（无分号）不受影响。
+func sanitizeMigration(content string) string {
+	lines := strings.Split(content, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		norm := strings.ToUpper(strings.Join(strings.Fields(line), " "))
+		switch {
+		case norm == "BEGIN;", norm == "BEGIN TRANSACTION;", norm == "COMMIT;":
+			continue
+		case strings.HasPrefix(norm, "PRAGMA FOREIGN_KEYS") && strings.HasSuffix(norm, ";"):
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
 }

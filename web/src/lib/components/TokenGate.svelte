@@ -26,6 +26,10 @@
 		saveToken(v);
 		editing = false;
 		value = '';
+		// SSE 连接在 openStream 时一次性带 ?token=（EventSource 无法中途换鉴权），
+		// 解锁后必须重建连接才能收到隐私事件（reflex_reply/reflection/episode_sealed）。
+		// 最小改动：整页刷新，store 状态会从 localStorage 恢复。
+		location.reload();
 	}
 </script>
 
