@@ -33,7 +33,7 @@
 	<div class="flex flex-col items-center justify-center gap-3 px-4 py-10 text-center">
 		<div class="text-2xl opacity-60">🔒</div>
 		{#if editing}
-			<p class="text-xs text-zinc-500">{$t('access_token_hint')}</p>
+			<p class="text-xs text-dim">{$t('access_token_hint')}</p>
 			<div class="flex w-full max-w-xs gap-2">
 				<!-- svelte-ignore a11y_autofocus -->
 				<input
@@ -44,21 +44,21 @@
 					placeholder={$t('access_token_ph')}
 					oninput={() => (bad = false)}
 					onkeydown={(e) => e.key === 'Enter' && submit()}
-					class="min-w-0 flex-1 rounded border bg-zinc-900 px-2 py-1.5 font-mono text-xs text-zinc-200 outline-none focus:border-violet-500 {bad ? 'border-red-600' : 'border-zinc-700'}"
+					class="min-w-0 flex-1 rounded-md border bg-white/5 px-2 py-1.5 font-mono text-xs text-fog placeholder:text-dim outline-none focus:border-glow/50 {bad ? 'border-[#ff7a96]' : 'border-line'}"
 				/>
 				<button
 					onclick={submit}
 					disabled={checking}
-					class="shrink-0 rounded bg-violet-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-violet-500 disabled:opacity-50"
+					class="shrink-0 rounded-full border border-glow/40 bg-glow/10 px-3 py-1.5 text-xs font-medium text-glow transition hover:bg-glow/20 disabled:opacity-40"
 					>{checking ? '…' : $t('confirm')}</button
 				>
 			</div>
-			{#if bad}<p class="text-xs text-red-400">{$t('access_token_bad')}</p>{/if}
+			{#if bad}<p class="text-xs text-[#ff7a96]">{$t('access_token_bad')}</p>{/if}
 		{:else}
-			<p class="text-sm text-zinc-500">{$t('locked_hint')}</p>
+			<p class="text-sm text-dim">{$t('locked_hint')}</p>
 			<button
 				onclick={() => (editing = true)}
-				class="rounded-full border border-zinc-700 px-4 py-1.5 text-sm text-zinc-300 transition hover:border-violet-500 hover:text-white"
+				class="rounded-full border border-glow/40 bg-glow/10 px-4 py-1.5 text-sm text-glow transition hover:bg-glow/20"
 				>{$t('enter_token')}</button
 			>
 		{/if}

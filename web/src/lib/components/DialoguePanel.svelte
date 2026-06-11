@@ -37,23 +37,23 @@
 
 {#snippet body()}
 	{#if turns.length === 0}
-		<div class="text-sm text-zinc-500">{$t('empty_dialogue')}</div>
+		<div class="tempty">{$t('empty_dialogue')}</div>
 	{:else}
 		<div class="max-h-96 space-y-3 overflow-y-auto text-xs">
 			{#each turns as turn, i (i)}
 				{#if turn.role === 'user'}
 					<!-- 用户（你）：右对齐 -->
 					<div class="flex flex-col items-end">
-						<span class="mb-0.5 text-[10px] text-zinc-500">{$t('speaker_user')}</span>
-						<div class="max-w-[85%] rounded-lg rounded-tr-sm bg-zinc-700/60 px-3 py-1.5 whitespace-pre-wrap text-zinc-100">
+						<span class="mb-0.5 text-[10px] text-dim">{$t('speaker_user')}</span>
+						<div class="max-w-[85%] rounded-lg rounded-tr-sm border border-glowsoft/25 bg-glowsoft/10 px-3 py-1.5 whitespace-pre-wrap text-fog">
 							{turn.content}
 						</div>
 					</div>
 				{:else}
 					<!-- 生命体（它）：左对齐 -->
 					<div class="flex flex-col items-start">
-						<span class="mb-0.5 text-[10px] text-sky-500">{$t('speaker_life')}</span>
-						<div class="max-w-[85%] rounded-lg rounded-tl-sm bg-sky-900/30 px-3 py-1.5 whitespace-pre-wrap text-zinc-100">
+						<span class="mb-0.5 text-[10px] text-glowsoft">{$t('speaker_life')}</span>
+						<div class="max-w-[85%] rounded-lg rounded-tl-sm border border-glow/25 bg-glow/8 px-3 py-1.5 whitespace-pre-wrap text-fog">
 							{turn.content}
 						</div>
 					</div>
@@ -64,9 +64,9 @@
 {/snippet}
 
 <div class="card">
-	<h2 class="mb-3 text-sm font-semibold text-zinc-400">
+	<h2 class="mb-3 text-sm font-semibold text-fog">
 		{$t('dialogue_title')}
-		<span class="ml-1 text-zinc-600">· {$t('dialogue_hint')}</span>
+		<span class="ml-1 text-dim">· {$t('dialogue_hint')}</span>
 	</h2>
 	<TokenGate>{@render body()}</TokenGate>
 </div>

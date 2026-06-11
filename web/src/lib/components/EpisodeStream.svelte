@@ -33,26 +33,26 @@
 
 <div class="card">
 	<div class="mb-3 flex items-center justify-between">
-		<h2 class="text-sm font-semibold text-zinc-400">{$t('episodes_title')}</h2>
+		<h2 class="text-sm font-semibold text-fog">{$t('episodes_title')}</h2>
 		<input
 			type="search"
-			class="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs focus:border-zinc-500 focus:outline-none"
+			class="rounded-md border border-line bg-white/5 px-2 py-1 text-xs outline-none focus:border-glow/50"
 			placeholder={$t('search_placeholder')}
 			bind:value={q}
 			oninput={debouncedSearch}
 		/>
 	</div>
 	{#if loading && episodes.length === 0}
-		<div class="text-sm text-zinc-500">{$t('loading')}</div>
+		<div class="text-sm text-dim">{$t('loading')}</div>
 	{:else if episodes.length === 0}
-		<div class="text-sm text-zinc-500">{$t('empty_episode')}</div>
+		<div class="tempty">{$t('empty_episode')}</div>
 	{:else}
 		<div class="max-h-96 space-y-2 overflow-y-auto">
 			{#each episodes as ep (ep.id)}
-				<div class="border-l-2 border-zinc-700 pl-3">
+				<div class="border-l-2 border-line pl-3">
 					<div class="flex items-baseline justify-between text-xs">
-						<span class="font-mono text-zinc-500">#{ep.id}</span>
-						<span class="text-zinc-500">{unixToDate(ep.started_at, locale)} · {ep.ended_at - ep.started_at}s</span>
+						<span class="font-mono text-dim">#{ep.id}</span>
+						<span class="text-dim">{unixToDate(ep.started_at, locale)} · {ep.ended_at - ep.started_at}s</span>
 					</div>
 					<div class="mt-1 text-sm">{ep.summary}</div>
 				</div>

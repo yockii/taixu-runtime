@@ -37,15 +37,15 @@
 	function kindColor(k: string): string {
 		switch (k) {
 			case 'skill':
-				return 'text-amber-400';
+				return 'text-[#ffc97a]';
 			case 'knowledge':
-				return 'text-cyan-400';
+				return 'text-glowsoft';
 			case 'topic':
-				return 'text-violet-400';
+				return 'text-violet';
 			case 'experience':
-				return 'text-emerald-400';
+				return 'text-glow';
 			default:
-				return 'text-zinc-400';
+				return 'text-fog';
 		}
 	}
 
@@ -53,37 +53,37 @@
 </script>
 
 <div class="card">
-	<h2 class="mb-3 text-sm font-semibold text-zinc-400">{$t('interests_title')}</h2>
+	<h2 class="mb-3 text-sm font-semibold text-fog">{$t('interests_title')}</h2>
 	{#if items.length === 0}
-		<div class="text-sm text-zinc-500">{$t('empty_interest')}</div>
+		<div class="tempty">{$t('empty_interest')}</div>
 	{:else}
 		<div class="max-h-96 space-y-2 overflow-y-auto text-xs">
 			{#each items as i (i.id)}
-				<div class="border-b border-zinc-800 py-1">
+				<div class="border-b border-line py-1">
 					<div class="flex items-baseline gap-2">
-						<span class="font-mono text-zinc-500">#{i.id}</span>
+						<span class="font-mono text-dim">#{i.id}</span>
 						<span class="{kindColor(i.kind)} w-16 shrink-0">{$t('ikind_' + i.kind)}</span>
-						<span class="flex-1 truncate text-zinc-200">{i.content}</span>
-						<span class="shrink-0 text-zinc-500">{$t('explored_n')} {i.explored_count}</span>
+						<span class="flex-1 truncate text-bright">{i.content}</span>
+						<span class="shrink-0 text-dim">{$t('explored_n')} {i.explored_count}</span>
 					</div>
 					<div class="mt-1 flex items-center gap-2">
 						<!-- strength 条（绿）-->
-						<span class="w-12 shrink-0 text-zinc-500">{$t('strength_label')}</span>
-						<div class="h-1.5 flex-1 rounded bg-zinc-800">
-							<div class="h-full rounded bg-emerald-600" style="width:{Math.round(i.strength * 100)}%"></div>
+						<span class="w-12 shrink-0 text-dim">{$t('strength_label')}</span>
+						<div class="h-1.5 flex-1 rounded bg-white/5">
+							<div class="h-full rounded bg-glow" style="width:{Math.round(i.strength * 100)}%"></div>
 						</div>
-						<span class="w-9 shrink-0 text-right tabular-nums text-zinc-400">{i.strength.toFixed(2)}</span>
+						<span class="w-9 shrink-0 text-right tabular-nums text-fog">{i.strength.toFixed(2)}</span>
 					</div>
 					<div class="mt-0.5 flex items-center gap-2">
 						<!-- mastery 条（琥珀）-->
-						<span class="w-12 shrink-0 text-zinc-500">{$t('mastery_label')}</span>
-						<div class="h-1.5 flex-1 rounded bg-zinc-800">
-							<div class="h-full rounded bg-amber-500" style="width:{Math.round(i.mastery * 100)}%"></div>
+						<span class="w-12 shrink-0 text-dim">{$t('mastery_label')}</span>
+						<div class="h-1.5 flex-1 rounded bg-white/5">
+							<div class="h-full rounded bg-[#ffc97a]" style="width:{Math.round(i.mastery * 100)}%"></div>
 						</div>
-						<span class="w-9 shrink-0 text-right tabular-nums text-zinc-400">{i.mastery.toFixed(2)}</span>
+						<span class="w-9 shrink-0 text-right tabular-nums text-fog">{i.mastery.toFixed(2)}</span>
 					</div>
 					{#if i.digest}
-						<div class="mt-1 rounded bg-zinc-900/60 p-1.5 text-zinc-400">{i.digest}</div>
+						<div class="mt-1 rounded bg-white/5 p-1.5 text-fog">{i.digest}</div>
 					{/if}
 				</div>
 			{/each}

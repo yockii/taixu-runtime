@@ -30,18 +30,19 @@
 	function statusColor(s: string): string {
 		switch (s) {
 			case 'pending':
-				return 'text-amber-400';
+				return 'text-[#ffc97a]';
 			case 'active':
-				return 'text-sky-400';
+				return 'text-glow';
 			case 'completed':
-				return 'text-emerald-400';
+				return 'text-glow';
 			case 'rejected':
+				return 'text-[#ff7a96]';
 			case 'expired':
-				return 'text-zinc-500';
+				return 'text-dim';
 			case 'failed':
-				return 'text-rose-400';
+				return 'text-[#ff7a96]';
 			default:
-				return 'text-zinc-300';
+				return 'text-fog';
 		}
 	}
 
@@ -49,21 +50,21 @@
 </script>
 
 <div class="card">
-	<h2 class="mb-3 text-sm font-semibold text-zinc-400">{$t('goals_title')}</h2>
+	<h2 class="mb-3 text-sm font-semibold text-fog">{$t('goals_title')}</h2>
 	{#if loading && goals.length === 0}
-		<div class="text-sm text-zinc-500">{$t('loading')}</div>
+		<div class="text-sm text-dim">{$t('loading')}</div>
 	{:else if goals.length === 0}
-		<div class="text-sm text-zinc-500">{$t('empty_goal')}</div>
+		<div class="tempty">{$t('empty_goal')}</div>
 	{:else}
 		<div class="max-h-96 space-y-1 overflow-y-auto text-xs">
 			{#each goals as g (g.id)}
-				<div class="flex items-baseline gap-2 border-b border-zinc-800 py-1.5">
-					<span class="font-mono text-zinc-500">#{g.id}</span>
+				<div class="flex items-baseline gap-2 border-b border-line py-1.5">
+					<span class="font-mono text-dim">#{g.id}</span>
 					<span class="{statusColor(g.status)} w-20 shrink-0">{$t('status_' + g.status)}</span>
-					<span class="w-32 shrink-0 truncate text-zinc-400">{$t('intent_' + g.intent)}</span>
-					<span class="w-12 shrink-0 text-right tabular-nums text-zinc-300">{g.priority.toFixed(2)}</span>
-					<span class="flex-1 truncate text-zinc-300">{g.payload}</span>
-					<span class="shrink-0 text-zinc-500">{unixToDate(g.created_at, locale)}</span>
+					<span class="w-32 shrink-0 truncate text-fog">{$t('intent_' + g.intent)}</span>
+					<span class="w-12 shrink-0 text-right tabular-nums text-fog">{g.priority.toFixed(2)}</span>
+					<span class="flex-1 truncate text-fog">{g.payload}</span>
+					<span class="shrink-0 text-dim">{unixToDate(g.created_at, locale)}</span>
 				</div>
 			{/each}
 		</div>

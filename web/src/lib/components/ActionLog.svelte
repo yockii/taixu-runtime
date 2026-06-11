@@ -44,7 +44,7 @@
 
 {#snippet body()}
 	{#if items.length === 0}
-		<div class="text-sm text-zinc-500">{emptyMsg}</div>
+		<div class="tempty">{emptyMsg}</div>
 	{:else}
 		<div class="max-h-96 space-y-2 overflow-y-auto text-xs">
 			{#each items as a (a.id)}
@@ -52,33 +52,33 @@
 					<!-- 对话：突出说出口的话（result），敷衍模式标灰 -->
 					<div
 						class="border-l-2 {a.kind === 'reflex_canned'
-							? 'border-zinc-700'
-							: 'border-sky-700'} pl-3"
+							? 'border-line'
+							: 'border-glowsoft'} pl-3"
 					>
 						<div class="flex items-baseline justify-between">
-							<span class="font-mono text-zinc-500">
+							<span class="font-mono text-dim">
 								#{a.id}
 								{#if a.kind === 'reflex_canned'}<span
-										class="ml-1 rounded bg-zinc-800 px-1 text-zinc-400">{$t('canned_tag')}</span
+										class="ml-1 rounded bg-white/5 px-1 text-fog">{$t('canned_tag')}</span
 									>{/if}
 							</span>
-							<span class="text-zinc-500">{unixToDate(a.started_at, locale)}</span>
+							<span class="text-dim">{unixToDate(a.started_at, locale)}</span>
 						</div>
-						<div class="mt-0.5 whitespace-pre-wrap text-zinc-100">{a.result}</div>
+						<div class="mt-0.5 whitespace-pre-wrap text-bright">{a.result}</div>
 					</div>
 				{:else}
 					<!-- 行动：计划 + 执行轨迹 -->
-					<div class="border-l-2 {a.success ? 'border-emerald-700' : 'border-rose-700'} pl-3">
+					<div class="border-l-2 {a.success ? 'border-glow' : 'border-[#ff7a96]'} pl-3">
 						<div class="flex items-baseline justify-between">
-							<span class="font-mono text-zinc-500">
+							<span class="font-mono text-dim">
 								#{a.id}
 								{#if a.cycle_id > 0}· cycle {a.cycle_id}{/if}
 								{#if a.goal_id > 0}· goal {a.goal_id}{/if}
 							</span>
-							<span class="text-zinc-500">{unixToDate(a.started_at, locale)}</span>
+							<span class="text-dim">{unixToDate(a.started_at, locale)}</span>
 						</div>
-						<div class="mt-0.5 font-mono text-zinc-400">{a.action}</div>
-						<div class="mt-0.5 whitespace-pre-wrap text-zinc-200">{a.result}</div>
+						<div class="mt-0.5 font-mono text-fog">{a.action}</div>
+						<div class="mt-0.5 whitespace-pre-wrap text-bright">{a.result}</div>
 					</div>
 				{/if}
 			{/each}
@@ -87,9 +87,9 @@
 {/snippet}
 
 <div class="card">
-	<h2 class="mb-3 text-sm font-semibold text-zinc-400">
+	<h2 class="mb-3 text-sm font-semibold text-fog">
 		{title}
-		{#if isDialogue}<span class="ml-1 text-zinc-600">· {$t('dialogue_hint')}</span>{/if}
+		{#if isDialogue}<span class="ml-1 text-dim">· {$t('dialogue_hint')}</span>{/if}
 	</h2>
 	{#if isDialogue}
 		<TokenGate>{@render body()}</TokenGate>

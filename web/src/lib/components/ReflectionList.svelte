@@ -24,20 +24,20 @@
 </script>
 
 <div class="card">
-	<h2 class="mb-3 text-sm font-semibold text-zinc-400">{$t('reflections_title')}</h2>
+	<h2 class="mb-3 text-sm font-semibold text-fog">{$t('reflections_title')}</h2>
 	{#if items.length === 0}
-		<div class="text-sm text-zinc-500">{$t('empty_reflection')}</div>
+		<div class="tempty">{$t('empty_reflection')}</div>
 	{:else}
 		<div class="max-h-96 space-y-2 overflow-y-auto text-xs">
 			{#each items as r (r.id)}
-				<div class="border-l-2 border-violet-700 pl-3">
+				<div class="border-l-2 border-violet pl-3">
 					<div class="flex items-baseline justify-between">
-						<span class="font-mono text-zinc-500">#{r.id} · {r.kind}</span>
-						<span class="text-zinc-500">{unixToDate(r.created_at, locale)}</span>
+						<span class="font-mono text-dim">#{r.id} · {r.kind}</span>
+						<span class="text-dim">{unixToDate(r.created_at, locale)}</span>
 					</div>
-					<div class="mt-0.5 text-zinc-300">{r.summary}</div>
+					<div class="mt-0.5 text-fog">{r.summary}</div>
 					{#if r.insight}
-						<div class="mt-0.5 text-emerald-400">▶ {r.insight}</div>
+						<div class="mt-0.5 text-glow">▶ {r.insight}</div>
 					{/if}
 				</div>
 			{/each}

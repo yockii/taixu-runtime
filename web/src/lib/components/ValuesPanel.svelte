@@ -11,14 +11,14 @@
 </script>
 
 <div class="card">
-	<h2 class="mb-3 text-sm font-semibold text-zinc-400">{$t('values_title')}</h2>
+	<h2 class="mb-3 text-sm font-semibold text-fog">{$t('values_title')}</h2>
 	{#if sorted.length}
 		<div class="space-y-2">
 			{#each sorted as [name, w]}
-				<Bar label={$t('val_' + name)} value={w} color="bg-cyan-500" />
+				<Bar label={$t('val_' + name)} value={w} color="bg-glowsoft" />
 			{/each}
 		</div>
 	{:else}
-		<div class="text-sm text-zinc-500">{$t('loading')}</div>
+		<div class="text-sm text-dim">{$t('loading')}</div>
 	{/if}
 </div>

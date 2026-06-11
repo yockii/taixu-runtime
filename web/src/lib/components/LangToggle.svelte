@@ -4,7 +4,7 @@
 
 <button
 	type="button"
-	class="rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-400 transition hover:border-zinc-500 hover:text-zinc-200"
+	class="rounded-full border border-glow/40 bg-glow/10 px-2 py-0.5 text-xs text-glow transition hover:bg-glow/20"
 	onclick={toggleLang}
 	title={$lang === 'zh' ? 'Switch to English' : '切换到中文'}
 >

@@ -136,15 +136,15 @@
 	function statusColor(s: string): string {
 		switch (s) {
 			case 'ready':
-				return 'text-emerald-400';
+				return 'text-glow';
 			case 'pending_approval':
-				return 'text-amber-400';
+				return 'text-[#ffc97a]';
 			case 'installing':
-				return 'text-cyan-400';
+				return 'text-glowsoft';
 			case 'failed':
-				return 'text-rose-400';
+				return 'text-[#ff7a96]';
 			default:
-				return 'text-zinc-500';
+				return 'text-dim';
 		}
 	}
 	const locale = $derived($lang === 'zh' ? 'zh-CN' : 'en-US');
@@ -158,7 +158,7 @@
 </script>
 
 <div class="card">
-	<h2 class="mb-3 text-sm font-semibold text-zinc-400">{$t('skills_title')}</h2>
+	<h2 class="mb-3 text-sm font-semibold text-fog">{$t('skills_title')}</h2>
 
 	<!-- 写控件区（装载 / 开关）：未授权时整体替换为「输入令牌」占位 -->
 	<TokenGate>
@@ -171,17 +171,17 @@
 		}}
 	>
 		<textarea
-			class="h-16 w-full resize-none rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs focus:border-zinc-500 focus:outline-none"
+			class="h-16 w-full resize-none rounded-md border border-line bg-white/5 px-2 py-1 text-xs text-fog placeholder:text-dim outline-none focus:border-glow/50"
 			placeholder={$t('skill_load_placeholder')}
 			bind:value={loadText}
 			disabled={busy}
 		></textarea>
 		<div class="flex items-center justify-between">
-			{#if err}<span class="text-xs text-rose-400">{err}</span>{:else}<span class="text-xs text-zinc-600">{$t('skill_dir_hint')}</span>{/if}
+			{#if err}<span class="text-xs text-[#ff7a96]">{err}</span>{:else}<span class="text-xs text-dim">{$t('skill_dir_hint')}</span>{/if}
 			<div class="flex gap-2">
 				<button
 					type="button"
-					class="rounded bg-zinc-700 px-3 py-1 text-xs font-medium hover:bg-zinc-600 disabled:opacity-50"
+					class="rounded-full border border-glow/40 bg-glow/10 px-3 py-1 text-xs font-medium text-glow transition hover:bg-glow/20 disabled:opacity-40"
 					disabled={busy}
 					onclick={rescan}
 				>
@@ -189,7 +189,7 @@
 				</button>
 				<button
 					type="submit"
-					class="rounded bg-emerald-600 px-3 py-1 text-xs font-medium hover:bg-emerald-500 disabled:opacity-50"
+					class="rounded-full border border-glow/40 bg-glow/10 px-3 py-1 text-xs font-medium text-glow transition hover:bg-glow/20 disabled:opacity-40"
 					disabled={busy || !loadText.trim()}
 				>
 					{$t('skill_load_btn')}
@@ -199,42 +199,42 @@
 	</form>
 
 	<!-- dangerous-skip toggle -->
-	<label class="mb-2 flex items-start gap-2 rounded border border-rose-800/50 bg-rose-950/20 p-2 text-xs">
-		<input type="checkbox" checked={autoApprove} onchange={toggleAuto} class="mt-0.5" />
+	<label class="mb-2 flex items-start gap-2 rounded border border-[#ff7a96]/40 bg-[#ff7a96]/10 p-2 text-xs">
+		<input type="checkbox" checked={autoApprove} onchange={toggleAuto} class="mt-0.5 accent-glow" />
 		<span>
-			<span class="font-semibold text-rose-300">{$t('skill_auto_approve')}</span>
-			<span class="block text-rose-400/70">{$t('skill_auto_approve_warn')}</span>
+			<span class="font-semibold text-[#ff7a96]">{$t('skill_auto_approve')}</span>
+			<span class="block text-[#ff7a96]/70">{$t('skill_auto_approve_warn')}</span>
 		</span>
 	</label>
 
 	<!-- proactive IM toggle (B) -->
-		<label class="mb-3 flex items-start gap-2 rounded border border-amber-800/50 bg-amber-950/20 p-2 text-xs">
-			<input type="checkbox" checked={proactiveIM} onchange={toggleProactive} class="mt-0.5" />
+		<label class="mb-3 flex items-start gap-2 rounded border border-[#ffc97a]/40 bg-[#ffc97a]/10 p-2 text-xs">
+			<input type="checkbox" checked={proactiveIM} onchange={toggleProactive} class="mt-0.5 accent-glow" />
 			<span>
-				<span class="font-semibold text-amber-300">{$t('proactive_im')}</span>
-				<span class="block text-amber-400/70">{$t('proactive_im_warn')}</span>
+				<span class="font-semibold text-[#ffc97a]">{$t('proactive_im')}</span>
+				<span class="block text-[#ffc97a]/70">{$t('proactive_im_warn')}</span>
 			</span>
 		</label>
 	</TokenGate>
 
 	<!-- 计数摘要 + 查看全部（避免上百技能铺满面板）-->
 	{#if items.length === 0}
-		<div class="text-sm text-zinc-500">{$t('empty_skill')}</div>
+		<div class="tempty">{$t('empty_skill')}</div>
 	{:else}
 		<button
 			onclick={() => (showModal = true)}
-			class="flex w-full items-center justify-between rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-left text-xs transition hover:border-zinc-700"
+			class="flex w-full items-center justify-between rounded-lg border border-line bg-white/5 px-3 py-2 text-left text-xs transition hover:border-glow/40"
 		>
-			<span class="text-zinc-300">
-				{$t('skills_total')} <span class="font-semibold text-zinc-100">{items.length}</span>
-				<span class="ml-2 text-zinc-500">
+			<span class="text-fog">
+				{$t('skills_total')} <span class="font-semibold text-bright">{items.length}</span>
+				<span class="ml-2 text-dim">
 					ready {readyCount}
 					{#if selfCount > 0}· {$t('skill_self')} {selfCount}{/if}
 					{#if archivedCount > 0}· {$t('skill_status_archived')} {archivedCount}{/if}
 				</span>
 			</span>
-			<span class="text-zinc-500">
-				{#if pendingCount > 0}<span class="mr-2 text-amber-400">{pendingCount} {$t('skill_status_pending_approval')}</span>{/if}
+			<span class="text-dim">
+				{#if pendingCount > 0}<span class="mr-2 text-[#ffc97a]">{pendingCount} {$t('skill_status_pending_approval')}</span>{/if}
 				{$t('view_all')} →
 			</span>
 		</button>
@@ -256,32 +256,32 @@
 			onclick={(e) => e.stopPropagation()}
 		>
 			<div class="mb-3 flex items-center justify-between">
-				<h2 class="text-sm font-semibold text-zinc-300">{$t('skills_title')} · {items.length}</h2>
-				<button onclick={() => (showModal = false)} class="text-zinc-500 hover:text-zinc-200">✕</button>
+				<h2 class="text-sm font-semibold text-fog">{$t('skills_title')} · {items.length}</h2>
+				<button onclick={() => (showModal = false)} class="text-dim hover:text-bright">✕</button>
 			</div>
 			<div class="max-h-[68vh] space-y-2 overflow-y-auto text-xs">
 				{#each items as s (s.id)}
-					<div class="border-b border-zinc-800 py-1">
+					<div class="border-b border-line py-1">
 					<div class="flex items-baseline gap-2">
-						<span class="font-medium text-zinc-200">{s.name}</span>
+						<span class="font-medium text-bright">{s.name}</span>
 						{#if s.authored_from}
-							<span class="shrink-0 rounded bg-violet-900/50 px-1 text-violet-300" title={s.authored_from}>{$t('skill_self')}</span>
+							<span class="shrink-0 rounded bg-violet/20 px-1 text-violet" title={s.authored_from}>{$t('skill_self')}</span>
 						{/if}
 						<span class="{statusColor(s.status)} shrink-0">{$t('skill_status_' + s.status)}</span>
 						<span class="flex-1"></span>
-						<span class="text-zinc-500">m{s.mastery?.toFixed?.(2) ?? '0.00'} · {$t('skill_used')} {s.used_count}</span>
+						<span class="text-dim">m{s.mastery?.toFixed?.(2) ?? '0.00'} · {$t('skill_used')} {s.used_count}</span>
 					</div>
 					{#if s.description}
-						<div class="mt-0.5 truncate text-zinc-400">{s.description}</div>
+						<div class="mt-0.5 truncate text-fog">{s.description}</div>
 					{/if}
 					{#if s.status === 'pending_approval'}
-						<div class="mt-1 rounded bg-zinc-900/60 p-1.5">
-							<div class="mb-1 text-amber-300">{$t('skill_pending_deps')}</div>
+						<div class="mt-1 rounded bg-white/5 p-1.5">
+							<div class="mb-1 text-[#ffc97a]">{$t('skill_pending_deps')}</div>
 							{#each parseDeps(s.pending_deps) as d}
-								<div class="font-mono text-zinc-300">
+								<div class="font-mono text-fog">
 									· {d.runtime}: {d.package}
 									<a
-										class="ml-1 text-cyan-500 hover:underline"
+										class="ml-1 text-glowsoft hover:underline"
 										href={d.runtime === 'python'
 											? `https://pypi.org/project/${d.package.split(/[<>=~[]/)[0]}/`
 											: `https://www.npmjs.com/package/${d.package.split(/[<>=~]/)[0]}`}
@@ -292,16 +292,16 @@
 							{/each}
 							<div class="mt-1.5 flex items-center gap-2">
 								{#if busyIds[s.id]}
-									<span class="italic text-cyan-400">{busyIds[s.id]}</span>
+									<span class="italic text-glowsoft">{busyIds[s.id]}</span>
 								{:else if $locked}
-									<span class="text-zinc-600">🔒 {$t('locked_hint')}</span>
+									<span class="text-dim">🔒 {$t('locked_hint')}</span>
 								{:else}
 									<button
-										class="rounded bg-emerald-600 px-2 py-0.5 hover:bg-emerald-500"
+										class="rounded-full border border-glow/40 bg-glow/10 px-2 py-0.5 text-glow transition hover:bg-glow/20"
 										onclick={() => approve(s.id)}>{$t('skill_approve')}</button
 									>
 									<button
-										class="rounded bg-zinc-700 px-2 py-0.5 hover:bg-zinc-600"
+										class="rounded-full border border-[#ff7a96]/40 bg-[#ff7a96]/10 px-2 py-0.5 text-[#ff7a96] transition hover:bg-[#ff7a96]/20"
 										onclick={() => reject(s.id)}>{$t('skill_reject')}</button
 									>
 								{/if}

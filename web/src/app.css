@@ -1,12 +1,27 @@
 @import 'tailwindcss';
 
+/* ============ 太虚主题 token（与 platform-web 深海生物荧光同语言） ============ */
+@theme {
+	--color-ink: #06090d; /* 页面底色：深海墨黑 */
+	--color-abyss: #0b1218; /* 卡片/面板底 */
+	--color-line: #1a2730; /* 分隔线/边框 */
+	--color-bright: #eafff8; /* 标题/强调文字 */
+	--color-fog: #aac3bc; /* 正文 */
+	--color-dim: #5f7672; /* 次要文字 */
+	--color-glow: #3df5c8; /* 荧光青：生命/活跃 */
+	--color-glowsoft: #5fd0ff; /* 冷蓝：信息 */
+	--color-warm: #ff8a5c; /* 暖橙：出生/陪伴 */
+	--color-violet: #be96ff; /* 紫：反思/记忆 */
+}
+
 :root {
 	color-scheme: dark;
+	--ease-out: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 html,
 body {
-	@apply bg-zinc-950 text-zinc-100 antialiased;
+	@apply bg-ink text-fog antialiased;
 	font-family:
 		ui-sans-serif,
 		system-ui,
@@ -18,15 +33,144 @@ body {
 		sans-serif;
 }
 
-/* 节制视觉：薄边框 + 微透明 */
-.card {
-	@apply rounded-lg border border-zinc-800 bg-zinc-900/40 p-4;
+/* 深海氛围底：顶部一缕荧光潮 + 微噪点由纯色渐变近似（无图片资源） */
+body {
+	background:
+		radial-gradient(1100px 480px at 70% -10%, rgba(61, 245, 200, 0.06), transparent 64%),
+		radial-gradient(900px 420px at 10% 110%, rgba(95, 208, 255, 0.04), transparent 60%),
+		#06090d;
+	background-attachment: fixed;
 }
 
+/* ============ 卡片：玻璃质感（platform-web 同款五层 inset 简化版） ============ */
+.card {
+	@apply rounded-xl p-4;
+	border: 1px solid rgba(255, 255, 255, 0.08);
+	background: linear-gradient(180deg, rgba(13, 24, 32, 0.62), rgba(8, 14, 20, 0.5));
+	box-shadow:
+		inset 0 1px 0 rgba(255, 255, 255, 0.05),
+		0 8px 24px -16px rgba(0, 0, 0, 0.7);
+}
+
+/* 资源条（state/genome/values 等沿用） */
 .bar {
-	@apply h-2 w-full overflow-hidden rounded-full bg-zinc-800;
+	@apply h-2 w-full overflow-hidden rounded-full;
+	background: rgba(255, 255, 255, 0.06);
+	box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);
 }
 
 .bar-fill {
 	@apply h-full rounded-full transition-all duration-500;
+}
+
+/* ============ 入场编排 ============ */
+.reveal {
+	animation: rise 0.5s var(--ease-out) both;
+	animation-delay: calc(var(--i, 0) * 40ms);
+}
+@keyframes rise {
+	from { opacity: 0; transform: translateY(12px); }
+	to { opacity: 1; transform: none; }
+}
+
+/* ============ 标签页（主区切换） ============ */
+.ttabs {
+	@apply flex flex-wrap gap-1.5;
+}
+.ttab {
+	@apply cursor-pointer rounded-full px-3.5 py-1 text-xs transition;
+	color: var(--color-dim);
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	font-variant-numeric: tabular-nums;
+}
+.ttab:hover:not(.on) {
+	color: var(--color-glow);
+	border-color: rgba(61, 245, 200, 0.45);
+	transform: translateY(-1px);
+}
+.ttab.on {
+	color: #04110c;
+	background: var(--color-glow);
+	border-color: var(--color-glow);
+	box-shadow: 0 0 16px -5px rgba(61, 245, 200, 0.7);
+}
+.ttab .cnt {
+	@apply ml-1.5 opacity-70;
+	font-size: 0.64rem;
+}
+
+/* ============ 右栏手风琴（details 原生展开） ============ */
+.acc {
+	@apply rounded-xl;
+	border: 1px solid rgba(255, 255, 255, 0.08);
+	background: linear-gradient(180deg, rgba(13, 24, 32, 0.55), rgba(8, 14, 20, 0.45));
+	overflow: hidden;
+}
+.acc > summary {
+	@apply flex cursor-pointer items-center justify-between px-4 py-3 text-xs font-semibold select-none;
+	color: var(--color-fog);
+	list-style: none;
+	transition: color 0.25s, background 0.25s;
+}
+.acc > summary::-webkit-details-marker { display: none; }
+.acc > summary::after {
+	content: '▾';
+	color: var(--color-dim);
+	transition: transform 0.3s var(--ease-out);
+}
+.acc[open] > summary { color: var(--color-glow); }
+.acc[open] > summary::after { transform: rotate(180deg); color: var(--color-glow); }
+.acc > summary:hover { background: rgba(61, 245, 200, 0.04); }
+.acc > .acc-body { @apply px-4 pb-4; }
+/* 手风琴内嵌的旧面板卡片：去重边框（外壳已有）+ 隐藏面板自带标题（summary 已示） */
+.acc .card { border: none; background: none; box-shadow: none; padding: 0; }
+.acc .card > h2 { display: none; }
+
+/* ============ 微件 ============ */
+/* 生命体征迷你条（VitalsBar 用，比 .bar 细） */
+.vbar {
+	@apply h-1 w-full overflow-hidden rounded-full;
+	background: rgba(255, 255, 255, 0.07);
+}
+.vbar-fill { @apply h-full rounded-full; transition: width 0.6s var(--ease-out), background 0.6s; }
+
+/* 呼吸灯（生命状态点） */
+.pulse-dot {
+	@apply inline-block h-2 w-2 rounded-full;
+	background: var(--color-glow);
+	box-shadow: 0 0 8px rgba(61, 245, 200, 0.8);
+	animation: pulse-soft 2.4s ease-in-out infinite;
+}
+.pulse-dot.off { background: var(--color-dim); box-shadow: none; animation: none; }
+@keyframes pulse-soft {
+	0%, 100% { opacity: 1; box-shadow: 0 0 8px rgba(61, 245, 200, 0.8); }
+	50% { opacity: 0.55; box-shadow: 0 0 3px rgba(61, 245, 200, 0.4); }
+}
+
+/* 空态 */
+.tempty {
+	@apply rounded-xl py-8 text-center text-xs;
+	color: var(--color-dim);
+	border: 1px dashed rgba(61, 245, 200, 0.16);
+}
+.tempty::before {
+	content: '◌';
+	@apply block text-2xl;
+	margin-bottom: 8px;
+	color: rgba(61, 245, 200, 0.5);
+	animation: breathe-soft 3.2s ease-in-out infinite;
+}
+@keyframes breathe-soft { 0%, 100% { opacity: 0.4; } 50% { opacity: 0.9; } }
+
+/* 实况流事件类型左缘色 */
+.fev { border-left: 2px solid var(--color-line); }
+.fev.glow { border-left-color: var(--color-glow); }
+.fev.cool { border-left-color: var(--color-glowsoft); }
+.fev.violet { border-left-color: var(--color-violet); }
+.fev.warm { border-left-color: var(--color-warm); }
+.fev.dim { border-left-color: var(--color-line); }
+
+@media (prefers-reduced-motion: reduce) {
+	.reveal { animation: none; opacity: 1; }
+	.pulse-dot, .tempty::before { animation: none; }
 }
