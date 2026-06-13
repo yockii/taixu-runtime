@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api';
+	import { saveToken } from '$lib/auth';
 
 	// 宇宙基调诞生页：裸 runtime 未配置时显示。母语 + LLM + 守护令牌 → 测连通 → 孕育 → 星核坍缩动画 → 进观测台。
 	// 平台账号不在此填（诞生后在观测台「认领」）。
@@ -93,6 +94,8 @@
 				abortBirth('✗ ' + (r.error || '孕育失败'));
 				return;
 			}
+			// 把守护令牌带进观测台 auth → 配置面板自动解锁（免再输一次）。
+			saveToken(token.trim());
 		} catch (e) {
 			abortBirth('✗ ' + (e as Error).message);
 			return;

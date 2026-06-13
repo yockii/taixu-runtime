@@ -28,7 +28,25 @@ const (
 	// KeyControlToken 生命本地控制令牌：守卫 httpapi 写端点（改配置/审批/注入/对话）。
 	// 诞生时强制设（随机预填可改）。复用 httpapi 既有 accessToken 机制（config 优先、env TAIXU_ACCESS_TOKEN 兜底）。
 	KeyControlToken = "control_token"
+
+	// 飞书凭据：界面手填 / 一键扫码创建后落库（config 优先、env FEISHU_* 兜底）。改后重启生效。
+	KeyFeishuAppID  = "feishu_app_id"
+	KeyFeishuSecret = "feishu_app_secret"
 )
+
+// FeishuConfig 飞书 app_id/secret：sqlite config 优先、env 兜底。两者皆非空才算配齐。
+func FeishuConfig() (appID, secret string) {
+	return cfgOrEnv(KeyFeishuAppID, "FEISHU_APP_ID", ""),
+		cfgOrEnv(KeyFeishuSecret, "FEISHU_APP_SECRET", "")
+}
+
+// SetFeishuConfig 落库飞书凭据（手填 / 一键创建成功后写）。重启生效。
+func SetFeishuConfig(appID, secret string) error {
+	if err := storage.SetConfigString(KeyFeishuAppID, appID); err != nil {
+		return err
+	}
+	return storage.SetConfigString(KeyFeishuSecret, secret)
+}
 
 // ControlToken 守卫令牌：sqlite config 优先、env TAIXU_ACCESS_TOKEN 兜底。空=未设(不鉴权)。
 func ControlToken() string {

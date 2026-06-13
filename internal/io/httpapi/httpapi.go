@@ -113,6 +113,12 @@ func Start(ctx context.Context, addr string) *http.Server {
 	// 界面换 LLM（受 withAuth 写守卫：设了 control_token 则需 X-Taixu-Token）。
 	mux.HandleFunc("/api/config/llm", apiLLMConfig)
 	mux.HandleFunc("/api/config/llm/test", apiLLMTest)
+	// 飞书接入：一键创建（扫码）+ 手填。凭据落库重启生效。
+	mux.HandleFunc("/api/feishu/register/start", apiFeishuRegisterStart)
+	mux.HandleFunc("/api/feishu/register/status", apiFeishuRegisterStatus)
+	mux.HandleFunc("/api/feishu/config", apiFeishuConfig)
+	// 自助重启（飞书等需重启生效的配置改后调用；监管自动拉起）。
+	mux.HandleFunc("/api/restart", apiRestart)
 	mux.HandleFunc("/api/dialogue", apiDialogue)
 	mux.HandleFunc("/api/stream", apiStream)
 	mux.HandleFunc("/api/external-request", apiExternalRequest)
@@ -383,9 +389,11 @@ func apiConfig(w http.ResponseWriter, r *http.Request) {
 			"temperature": llmTemp,
 			"api_key":     maskSecret(storage.GetConfigString("llm_api_key", os.Getenv("LLM_API_KEY"))),
 		}
+		fsID, fsSecret := lifecfg.FeishuConfig()
 		resp["feishu"] = map[string]any{
-			"app_id":     os.Getenv("FEISHU_APP_ID"),
-			"app_secret": maskSecret(os.Getenv("FEISHU_APP_SECRET")),
+			"app_id":     fsID,
+			"app_secret": maskSecret(fsSecret),
+			"configured": fsID != "" && fsSecret != "",
 		}
 		resp["skill_auto_approve_deps"] = storage.GetConfigBool("skill_auto_approve_deps", false)
 		resp["proactive_im"] = storage.GetConfigBool("proactive_im", false)

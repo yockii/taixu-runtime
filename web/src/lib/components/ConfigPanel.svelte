@@ -134,6 +134,107 @@
 		}
 	}
 
+	// —— 飞书接入：一键创建（扫码 OAuth 设备授权）+ 手填。凭据落库重启生效。——
+	let fStatus = $state(''); // ''|starting|waiting|done|failed
+	let fQrUrl = $state('');
+	let fQrImg = $state(''); // 二维码 data-url
+	let fErr = $state('');
+	let fPolling = false;
+	let fAppId = $state('');
+	let fSecret = $state('');
+	let fSaveMsg = $state('');
+	let fSaveOk = $state<boolean | null>(null);
+	let fRestarting = $state(false);
+
+	// 绑定成功 → 自助重启（监管自动拉起，读新飞书配置接通）→ 轮询重连后 reload。
+	async function feishuDoneRestart() {
+		if (fRestarting) return;
+		fRestarting = true;
+		try {
+			await api.restart();
+		} catch {
+			/* 无监管时返回 ok:false，下方轮询兜底；用户可手动重启 */
+		}
+		await new Promise((r) => setTimeout(r, 2500)); // 等进程退出
+		for (let i = 0; i < 60; i++) {
+			try {
+				const t = (await (await fetch('/healthz')).text()).trim();
+				if (t === 'ok') {
+					location.reload();
+					return;
+				}
+			} catch {
+				/* 重启中短暂不可达 */
+			}
+			await new Promise((r) => setTimeout(r, 1500));
+		}
+		location.reload();
+	}
+
+	async function feishuOneClick() {
+		fErr = '';
+		fStatus = 'starting';
+		fQrImg = '';
+		fQrUrl = '';
+		try {
+			await api.feishuRegisterStart();
+			pollFeishu();
+		} catch (e) {
+			fStatus = 'failed';
+			fErr = (e as Error).message;
+		}
+	}
+	async function pollFeishu() {
+		if (fPolling) return;
+		fPolling = true;
+		try {
+			const QRCode = (await import('qrcode')).default;
+			for (let i = 0; i < 280; i++) {
+				const r = await api.feishuRegisterStatus();
+				fStatus = r.status;
+				fErr = r.error || '';
+				if (r.qr_url && r.qr_url !== fQrUrl) {
+					fQrUrl = r.qr_url;
+					try {
+						fQrImg = await QRCode.toDataURL(r.qr_url, { margin: 1, width: 200 });
+					} catch {
+						/* 渲染失败仍可点链接 */
+					}
+				}
+				if (r.status === 'done') {
+					feishuDoneRestart(); // 自动重启接入
+					break;
+				}
+				if (r.status === 'failed') break;
+				await new Promise((res) => setTimeout(res, 1500));
+			}
+		} finally {
+			fPolling = false;
+		}
+	}
+	async function feishuSaveManual() {
+		fSaveMsg = '';
+		fSaveOk = null;
+		if (!fAppId.trim() || !fSecret.trim()) {
+			fSaveOk = false;
+			fSaveMsg = '请填 app_id 与 app_secret';
+			return;
+		}
+		try {
+			const r = await api.feishuConfig({ app_id: fAppId.trim(), app_secret: fSecret.trim() });
+			fSaveOk = r.ok;
+			if (r.ok) {
+				fSaveMsg = '✓ 已保存，正在自动重启接入…';
+				feishuDoneRestart();
+			} else {
+				fSaveMsg = '✗ ' + (r.error || '保存失败');
+			}
+		} catch (e) {
+			fSaveOk = false;
+			fSaveMsg = '✗ ' + (e as Error).message;
+		}
+	}
+
 	async function saveToken() {
 		const v = token.trim();
 		if (!v || tokenChecking) return;
@@ -278,12 +379,66 @@
 				</div>
 			{/if}
 			{#if cfg.feishu}
-				<div>
+				<div class="rounded-lg border border-line bg-white/5 p-3">
 					<div class="font-semibold text-fog">{$t('feishu_section')}</div>
-					<div class="mt-1 grid grid-cols-2 gap-1 text-fog">
-						<span class="text-dim">app_id</span><span class="font-mono break-all">{cfg.feishu.app_id}</span>
-						<span class="text-dim">app_secret</span><span class="font-mono break-all">{cfg.feishu.app_secret}</span>
-					</div>
+					{#if cfg.feishu.configured}
+						<p class="mt-1 text-glow">✓ 已绑定 · app_id <span class="font-mono break-all">{cfg.feishu.app_id}</span></p>
+						<p class="mt-1 text-[10px] text-dim">如需更换，重新一键创建或手填后重启生效。</p>
+					{:else}
+						<p class="mt-1 mb-2 text-fog">让生命体经飞书与你对话——推荐一键创建，扫码即绑，无需手动建应用。</p>
+					{/if}
+
+					<!-- 一键创建（扫码） -->
+					<button
+						onclick={feishuOneClick}
+						disabled={fStatus === 'starting' || fStatus === 'waiting'}
+						class="mt-2 rounded-full border border-glow/40 bg-glow/10 px-3 py-1 font-medium text-glow transition hover:bg-glow/20 disabled:opacity-40"
+					>
+						{fStatus === 'waiting' ? '扫码授权中…' : fStatus === 'starting' ? '启动中…' : '🔗 一键创建飞书智能体（扫码）'}
+					</button>
+
+					{#if fStatus === 'waiting' && fQrImg}
+						<div class="mt-2 flex flex-col items-center gap-1">
+							<img src={fQrImg} alt="飞书授权二维码" class="rounded-lg bg-white p-1" width="180" height="180" />
+							<p class="text-[10px] text-dim">
+								用飞书 App 扫码授权；或 <a class="text-glowsoft underline" href={fQrUrl} target="_blank" rel="noopener">点此打开</a>
+							</p>
+						</div>
+					{/if}
+					{#if fStatus === 'done'}
+						<p class="mt-2 text-glow">
+							✓ 绑定成功！{fRestarting ? '正在自动重启接入飞书，请稍候…' : '飞书通道即将生效。'}
+						</p>
+					{/if}
+					{#if fStatus === 'failed'}
+						<p class="mt-2 text-[#ff7a96]">✗ {fErr || '创建失败'}</p>
+					{/if}
+
+					<!-- 手填（备选） -->
+					<details class="mt-2">
+						<summary class="cursor-pointer text-dim">或手填 app_id / app_secret</summary>
+						<div class="mt-2 space-y-1.5">
+							<input
+								bind:value={fAppId}
+								placeholder="app_id"
+								class="w-full rounded-md border border-line bg-white/5 px-2 py-1 font-mono text-fog placeholder:text-dim outline-none focus:border-glow/50"
+							/>
+							<input
+								type="password"
+								bind:value={fSecret}
+								placeholder="app_secret"
+								class="w-full rounded-md border border-line bg-white/5 px-2 py-1 font-mono text-fog placeholder:text-dim outline-none focus:border-glow/50"
+							/>
+							<div class="flex items-center gap-2">
+								<button
+									onclick={feishuSaveManual}
+									class="rounded-full border border-line bg-white/5 px-3 py-1 font-medium text-fog transition hover:border-glow/50"
+									>保存（重启生效）</button
+								>
+								{#if fSaveMsg}<span class={fSaveOk ? 'text-glow' : 'text-[#ff7a96]'}>{fSaveMsg}</span>{/if}
+							</div>
+						</div>
+					</details>
 				</div>
 			{/if}
 			{#if cfg.auth_required && !cfg.llm}

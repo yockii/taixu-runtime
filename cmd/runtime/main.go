@@ -718,14 +718,15 @@ func approveSkillAsync(skillID string) {
 }
 
 func wireLark(ctx context.Context, lifeID string) {
-	appID := os.Getenv("FEISHU_APP_ID")
-	if appID == "" {
-		slog.Info("feishu not configured; skip")
+	// 配置优先（界面手填 / 一键扫码落库）、env 兜底。两者皆空则不接飞书。
+	appID, appSecret := lifecfg.FeishuConfig()
+	if appID == "" || appSecret == "" {
+		slog.Info("feishu not configured; skip (可在观察台一键创建或手填)")
 		return
 	}
 	if err := lark.Init(lark.Config{
 		AppID:     appID,
-		AppSecret: os.Getenv("FEISHU_APP_SECRET"),
+		AppSecret: appSecret,
 		InboxDir:  filepath.Join(envOr("TAIXU_SANDBOX", "/workspace/sandbox"), "inbox"),
 	}); err != nil {
 		slog.Error("lark init", "err", err)

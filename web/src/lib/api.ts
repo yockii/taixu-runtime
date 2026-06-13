@@ -116,7 +116,7 @@ export interface Ledger {
 export interface Config {
 	// 未授权时服务端不返回 llm/feishu（配置隐私）→ 设为可选。
 	llm?: { base_url: string; model: string; temperature: string; api_key: string };
-	feishu?: { app_id: string; app_secret: string };
+	feishu?: { app_id: string; app_secret: string; configured?: boolean };
 	skill_auto_approve_deps?: boolean;
 	proactive_im?: boolean;
 	proactive_quiet?: { enabled: boolean; start: number; end: number; tz_offset_min: number };
@@ -261,6 +261,18 @@ export const api = {
 			'/api/config/llm',
 			b
 		),
+	/** 飞书一键创建：启动扫码会话。 */
+	feishuRegisterStart: () => apiPost<{ ok: boolean }>('/api/feishu/register/start'),
+	/** 飞书一键创建：轮询进度。status idle|starting|waiting|done|failed。 */
+	feishuRegisterStatus: () =>
+		getJSON<{ status: string; qr_url: string; error: string; expire_at: number }>(
+			'/api/feishu/register/status'
+		),
+	/** 飞书手填凭据落库（重启生效）。 */
+	feishuConfig: (b: { app_id: string; app_secret: string }) =>
+		apiPost<{ ok: boolean; error?: string }>('/api/feishu/config', b),
+	/** 自助重启（监管自动拉起；用于飞书等需重启生效的配置）。 */
+	restart: () => apiPost<{ ok: boolean; error?: string }>('/api/restart'),
 	/** 平台社交通道状态（是否接通 + 本生命 DID）。 */
 	platformStatus: () => getJSON<{ ready: boolean; did: string }>('/api/platform/status'),
 	/** 用平台领取的临时认领码，把本生命改绑到你的用户账户。 */
