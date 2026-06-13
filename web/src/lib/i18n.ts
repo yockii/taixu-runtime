@@ -23,6 +23,7 @@ if (browser) {
 const dict: Record<Lang, Record<string, string>> = {
 	zh: {
 		title: 'Taixu · 太虚文明',
+		brand: '太虚',
 		cycle: 'cycle',
 		// 主区标签页 + 实况流
 		tab_live: '实况',
@@ -204,6 +205,7 @@ const dict: Record<Lang, Record<string, string>> = {
 	},
 	en: {
 		title: 'Taixu · Digital Life',
+		brand: 'Taixu',
 		cycle: 'cycle',
 		tab_live: 'Live',
 		tab_goals: 'Goals',

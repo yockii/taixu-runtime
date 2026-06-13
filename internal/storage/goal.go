@@ -170,6 +170,37 @@ func MarkGoal(goalID int64, status core.GoalStatus, finishedAt int64) error {
 	return tx.Commit()
 }
 
+// PruneTerminalGoalsBefore 删除 finished_at 早于 beforeTs 的终态目标（completed/failed/rejected/expired）。
+// 长跑保活（2026-06-12 硬盘审计）：每个完成的目标永久留存 → goal_queue 无界增长。终态目标仅作历史/审计，
+// 远早于去重冷却窗（GenericGoalCooldownSec=1h、interest_seed 仅查 open）→ 安全删旧。保留近 14 天供近期回溯。
+// 只删 pending_children=0（防误删仍被引用的母目标；终态母本就该子全结，防御性守卫）。返回删除条数。
+func PruneTerminalGoalsBefore(lifeID string, beforeTs int64) (int64, error) {
+	// NOT EXISTS(action_log) 守卫：仅删已无 action_log 引用的目标，杜绝 FK 违例/孤儿（action_log.goal_id→goal_queue.id）。
+	// 配合先剪 action_log（PruneActionLogBefore 同窗）：旧 action_log 删后，对应旧目标下轮自然满足条件被删。
+	res, err := db.Exec(`DELETE FROM goal_queue
+		WHERE life_id = ? AND finished_at IS NOT NULL AND finished_at < ?
+		  AND status IN ('completed','failed','rejected','expired')
+		  AND COALESCE(pending_children,0) = 0
+		  AND NOT EXISTS (SELECT 1 FROM action_log a WHERE a.goal_id = goal_queue.id)`, lifeID, beforeTs)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// PruneActionLogBefore 删除 started_at 早于 beforeTs 的行动日志（长跑保活，2026-06-12 硬盘审计）。
+// action_log 每次慎思/反射 append、永不清 → 无界增长。仅作审计/检索精度回溯，删旧不伤记忆四层。
+// 须在 PruneTerminalGoalsBefore 之前调（先释放 goal_id 引用，让目标得以安全删）。返回删除条数。
+func PruneActionLogBefore(lifeID string, beforeTs int64) (int64, error) {
+	res, err := db.Exec(`DELETE FROM action_log WHERE life_id = ? AND started_at < ?`, lifeID, beforeTs)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // ReclaimActiveGoals 启动时回收「僵尸 active 目标」：上次运行把目标 NextPendingGoal 翻成 active
 // 后、action.Execute 的 finalize/MarkGoal 之前进程被打断（重启/崩溃/休眠），目标永久卡 active。
 // NextPendingGoal 只挑 pending、goalgen 又按 payload 对 active 去重 → 认知主循环永久空转。

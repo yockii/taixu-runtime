@@ -131,71 +131,30 @@ func ResetEnergyDailyCap(newCap float64, nextResetAt int64) error {
 	return storage.UpsertLifeState(&life)
 }
 
-// 社交活动产 wealth 反刷参数（C10 / R109）。回报系数 Phase 0.5 实测标定，先用保守值。
-const socialWealthDiminishK = 0.5 // 递减斜率：awarded = base / (1 + k×当日已产)，今日产越多单次越小
-
-// EarnSocialWealth 据本次社交活动产出 wealth（C10 / 06 §3.1.2）。**递减反刷**：base 经当日已产
-// wealth 折减（刷得越多单次越少），floor 0、无上界（wealth 非 [0,1] 标量，不走 Delta clamp）。
-// 返回本次实际入账的 wealth。base<=0 不产。
+// SetWealthCache 把平台权威余额（微财富）绝对写入本地显示缓存（2026-06-12 wealth 平台权威化，
+// 用户校正「不要本地余额，余额以平台为准」）。life.Wealth 不再是权威账——全部灵韵在平台账本
+// （游戏/对战/技能/社交产出都直接记平台），本地仅缓存平台余额供 prompt 注入 + 面板显示。
 //
-// slice1 边界：仅按本生命**自身社交动作等级**给基础产出 + 递减闸。声誉/信任档加权、被回应/被采纳
-// 追加、跨所有权链门（§3.1.2 余项）需平台反馈，留后续 slice。
-func EarnSocialWealth(base float64) float64 {
-	if base <= 0 {
-		return 0
+// 由 socialnet.syncWealth 在每次平台经济动作后 + 心跳轮询时调用，micro = wealth.balance 返回值。
+// 绝对写入（非增量）→ 与平台对齐、不漂移。落库失败回滚内存保持与 DB 一致。
+func SetWealthCache(micro int64) error {
+	if micro < 0 {
+		micro = 0
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	awarded := base / (1 + socialWealthDiminishK*life.SocialWealthToday)
-	life.Wealth += awarded
-	life.SocialWealthToday += awarded
+	prev := life.Wealth
+	life.Wealth = float64(micro) / wealthScale
 	life.UpdatedAt = shared.SystemClock.UnixSec()
 	if err := storage.UpsertLifeState(&life); err != nil {
-		// 入账失败回滚内存，保持一致。
-		life.Wealth -= awarded
-		life.SocialWealthToday -= awarded
-		return 0
-	}
-	return awarded
-}
-
-// EarnWealth 直接入账 wealth（C10 计价桥：收方从平台账本 Claim 回本地的回流，或导入付款失败的退款）。
-// 与 EarnSocialWealth 区别：**无递减、不计 social_wealth_today**——这不是社交活动产出，是已属本生命的
-// wealth 从账本回流本地。amount<=0 不动账。只增、无上界（wealth 非 [0,1] 标量，不走 Delta clamp）。
-// 返回实际入账额；落库失败回滚返 0。
-func EarnWealth(amount float64) float64 {
-	if amount <= 0 {
-		return 0
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	life.Wealth += amount
-	life.UpdatedAt = shared.SystemClock.UnixSec()
-	if err := storage.UpsertLifeState(&life); err != nil {
-		life.Wealth -= amount // 落库失败回滚内存，保持与 DB 一致
-		return 0
-	}
-	return amount
-}
-
-// SpendWealth 花 wealth（C10：未来技能/物品交易扣款入口）。余额不足返错、不动账。floor 0。
-func SpendWealth(amount float64) error {
-	if amount <= 0 {
-		return nil
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if life.Wealth < amount {
-		return errors.New("state: insufficient wealth")
-	}
-	life.Wealth -= amount
-	life.UpdatedAt = shared.SystemClock.UnixSec()
-	if err := storage.UpsertLifeState(&life); err != nil {
-		life.Wealth += amount // 落库失败回滚内存，保持与 DB 一致
+		life.Wealth = prev // 落库失败回滚
 		return err
 	}
 	return nil
 }
+
+// wealthScale 微财富换算（1 wealth = 1e6 micro），与平台 service.WealthScale 对齐。
+const wealthScale = 1_000_000
 
 func applyDelta(field *float64, delta *float64) {
 	if delta == nil {

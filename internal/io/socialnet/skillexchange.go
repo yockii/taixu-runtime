@@ -1,16 +1,19 @@
 package socialnet
 
 // 技能交易运行时接线（C9 余项① + C10 计价桥）：把本地 bundle 机制（skill.ExportBundle/ImportBundle）
-// 与平台传输（skill.publish/list/fetch）+ wealth 账本（wealth.pay_skill/claim）接通，给生命省心的社交工具：
+// 与平台传输（skill.publish/list/fetch）+ wealth 账本接通，给生命省心的社交工具：
 //   - social.publish_skill(name[,price])  本地导出技能 → 连 C2 验证 mastery 发到技能库（可标价 wealth）
 //   - social.browse_skills(limit)         浏览别的生命发布的技能（按验证 mastery 降序，带标价）
-//   - social.import_skill(id)             导入技能；标价>0 时：本地 SpendWealth → 平台 /api/agent/pay-skill 结算 → fetch 凭流水提货 → 导入
-//   - wealth.claim                        把别人付给你的 wealth 从平台账本领回本地财富（平台 claim + 本地 EarnWealth）
+//   - social.import_skill(id)             导入技能；标价>0 时：平台 /api/agent/pay-skill 原子扣付方+贷收方 → fetch 凭流水提货 → 导入
+//   - wealth.balance                      查你的灵韵余额（平台账本是唯一权威账本；顺手刷新本地显示缓存）
 //
 // 这些是自定义 handler（非 manifest passthrough）：publish 要先本地 ExportBundle、import 要后本地
-// ImportBundle、付费要本地 SpendWealth/EarnWealth 与平台账本配对——纯 POST 透传做不到。
-// wealth.claim 必须拦截：若走 passthrough，平台清零账本余额但本地 life.Wealth 不入账 = wealth 丢失。
-// 平台原始 skill.*/wealth.* 仍在 manifest 里供外部 agent 直接用（wealth.balance 只读可透传）。
+// ImportBundle——纯 POST 透传做不到。
+//
+// ⚠ wealth 平台权威化（2026-06-12，用户校正「不要本地余额，余额以平台为准」）：全部灵韵在平台账本，
+// 扣账/贷记/社交产出都在平台原子完成（game.join/duel.*/pay-skill/wealth.earn_social）。本地 life.Wealth
+// 仅是**平台余额的显示缓存**（state.SetWealthCache 绝对写入），由 syncWealth 在每次经济动作后刷新。
+// 不再有本地权威扣款/退款/claim 桥——守恒只在平台账本一处保证，本地无翻倍/丢失风险面。
 
 import (
 	"context"
@@ -19,6 +22,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 
 	"taixu.icu/runtime/internal/runtime/skill"
 	"taixu.icu/runtime/internal/runtime/state"
@@ -29,15 +33,14 @@ import (
 const WealthScale = 1_000_000
 
 // skillExchangeTools 需运行时本地配合、跳过 manifest passthrough 的平台工具名（改注册自定义版）。
-// wealth.claim 在内：必须本地 EarnWealth 配对，否则透传清零账本余额而本地不入账 = wealth 丢失。
+// wealth.balance 在内：自定义版顺手 SetWealthCache 刷新本地显示缓存（透传版只回数不更新缓存）。
 var skillExchangeTools = map[string]bool{
-	"skill.publish": true,
-	"skill.list":    true,
-	"skill.fetch":   true,
-	"wealth.claim":  true,
-	"word.submit":   true, // C12：改注册带本地灵韵奖励的自定义 social.contribute_word 版
-	"game.join":     true, // C15：改注册带本地 SpendWealth+退回的自定义版
-	"game.leave":    true, // C15：改注册带本地领回退款的自定义版
+	"skill.publish":  true,
+	"skill.list":     true,
+	"skill.fetch":    true,
+	"wealth.balance": true, // 自定义版：查平台权威余额 + 刷新本地缓存
+	"game.join":      true, // C15：改注册带平台扣费 + 缓存刷新的自定义版
+	"game.leave":     true, // C15：改注册带缓存刷新的自定义版
 }
 
 func isSkillExchangeTool(name string) bool { return skillExchangeTools[name] }
@@ -49,6 +52,59 @@ func jsonResp(m map[string]any) string {
 		return `{"ok":false,"err":"marshal failed"}`
 	}
 	return string(b)
+}
+
+// installPlatformSkills 像任意外部 agent 一样消费平台分发的 SKILL.md 目录：
+// GET /api/agent/skills 看有哪些可加载技能 → 逐个 GET /api/agent/skill?name=X 取正文 → 本地 skill.Load 装载（无 deps 立即 ready）。
+// 返回 (新装/可用, 平台可用总数)。
+//
+// 平等原则（用户校正 2026-06）：社交礼仪/玩法/各工具用法的单一权威是平台这些 SKILL.md，
+// 官方生命与外部 agent 走同一份目录——而非把契约写死进我们自己的 system prompt（那会让走标准
+// MCP/skill 的外部 agent 拿不到、不平等）。生命体 use_skill 读它即可，与外部 agent 读 SKILL.md 对等。
+// best-effort：取/装失败只 warn、不阻断接入（生命照常活，prompt 仍留纯意图兜底）。
+// 幂等：skill.Load 按 (life,name) 稳定 id 覆盖，重复调只刷新到平台最新版。
+func installPlatformSkills() (installed, available int) {
+	st, body, err := doJSON(context.Background(), http.MethodGet, "/api/agent/skills", curToken(), nil)
+	if err != nil || st != http.StatusOK || len(body) == 0 {
+		slog.Warn("socialnet: fetch skill catalog", "status", st, "err", err)
+		return 0, 0
+	}
+	var cat struct {
+		Skills []struct {
+			Name string `json:"name"`
+		} `json:"skills"`
+	}
+	if err := json.Unmarshal(body, &cat); err != nil {
+		slog.Warn("socialnet: parse skill catalog", "err", err)
+		return 0, 0
+	}
+	for _, s := range cat.Skills {
+		if s.Name == "" {
+			continue
+		}
+		sst, sbody, serr := doJSON(context.Background(), http.MethodGet, "/api/agent/skill?name="+url.QueryEscape(s.Name), curToken(), nil)
+		if serr != nil || sst != http.StatusOK || len(sbody) == 0 {
+			slog.Warn("socialnet: fetch platform skill", "name", s.Name, "status", sst, "err", serr)
+			continue
+		}
+		if _, err := skill.Load(string(sbody)); err != nil {
+			slog.Warn("socialnet: install platform skill", "name", s.Name, "err", err)
+			continue
+		}
+		installed++
+	}
+	if installed > 0 {
+		slog.Info("socialnet: platform skills synced", "installed", installed, "available", len(cat.Skills))
+	}
+	return installed, len(cat.Skills)
+}
+
+// handleSyncSkills 生命体可调的「主动去获取平台技能」工具（social.sync_skills）。
+// 与 bootstrap 自动同步同一路径——给生命体 agency 自己按需拉取/刷新，平台新增技能时调它即可获取。
+func handleSyncSkills(_ context.Context, _ tools.Context, _ string) (string, error) {
+	installed, available := installPlatformSkills()
+	return jsonResp(map[string]any{"ok": true, "installed": installed, "available": available,
+		"note": "已从平台同步可加载技能到本地；用 use_skill(name) 读其指引。社交入口技能名 taixu-social。"}), nil
 }
 
 // registerSkillExchange 在平台通道就绪后注册技能交易 + wealth 领取社交工具（本地 Export/Import + 账本配对）。
@@ -82,7 +138,7 @@ func registerSkillExchange() {
 		{
 			Name: "social.import_skill",
 			Description: "从技能库导入一个技能到你自己（落盘 SKILL.md+可执行入口）。导入后它的掌握度按发布者验证值打折作先验" +
-				"（信任但验证），之后靠你自己用它的真成败再校准。若标价>0，先从你本地灵韵扣款付给发布方（不足则拒）。id 来自 social.browse_skills。",
+				"（信任但验证），之后靠你自己用它的真成败再校准。若标价>0，从你的平台灵韵余额付给发布方（不足则拒）。id 来自 social.browse_skills。",
 			Parameters: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{"id": map[string]any{"type": "string", "description": "技能制品 id（来自 social.browse_skills）"}},
@@ -92,11 +148,20 @@ func registerSkillExchange() {
 			Handler: handleImportSkill,
 		},
 		{
-			Name:        "wealth.claim",
-			Description: "把平台账本上别人付给你的灵韵（如别人导入你标价的技能付的款）一次性领回到你本地财富。返回领回的额。",
-			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
-			Lanes:       []tools.Lane{tools.LaneDeliberative},
-			Handler:     handleClaimWealth,
+			Name: "wealth.balance",
+			Description: "查你拥有多少灵韵。**平台账本是唯一权威账本**——你的全部灵韵都在平台（游戏奖金/对战结算/技能收入/社交产出都直接记平台），" +
+				"没有本地余额。游戏入场费、对战质押、技能付费都从这个余额扣，量力而行。",
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{}},
+			Lanes:      []tools.Lane{tools.LaneDeliberative},
+			Handler:    handleWealthBalance,
+		},
+		{
+			Name: "social.sync_skills",
+			Description: "从平台同步可按需加载的技能（社交礼仪与各能力的玩法指引）到本地，之后用 use_skill(name) 读详细步骤。" +
+				"平台陆续会上新技能文档（社交/游戏等），想获取/刷新就调它。入口技能名 taixu-social。",
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{}},
+			Lanes:      []tools.Lane{tools.LaneDeliberative},
+			Handler:    handleSyncSkills,
 		},
 	} {
 		if err := tools.Register(t); err != nil {
@@ -131,35 +196,60 @@ func paySkillPlatform(ctx context.Context, payeeDID string, amount int64, skillI
 	return st, body, err
 }
 
-// claimWealthOnce 调平台 wealth.claim 把账本可领余额领走 + 本地 EarnWealth 入账，返回回流到本地的 wealth（float）。
-// best-effort：平台不可达/无可领 → 返 0、不报错（顺手领、不打断主流程）。
-// 一致性边界：平台 claim 已清零账本后若本地 EarnWealth 落库失败（返 0）→ 该额已离开账本却未入本地 = 丢失风险，
-// 大声 slog.Error 留痕可人工追回（SQLite 本地落库失败极罕见）。终态两阶段 claim（client ack 后平台才清零）属后续硬化。
-func claimWealthOnce(ctx context.Context) float64 {
-	st, body, err := invokePlatform(ctx, "wealth.claim", map[string]any{"life_did": did})
+// syncWealth 从平台读权威余额 → 绝对写入本地显示缓存（state.SetWealthCache），返回余额（float wealth）。
+// 平台权威化（2026-06-12）：本地无权威账，全部灵韵在平台；本函数仅把平台余额拉到本地 cache 供 prompt/面板显示。
+// best-effort：平台不可达 → 返当前缓存值、不报错（不打断主流程）。无翻倍/丢失风险——只读 + 绝对覆盖，幂等。
+func syncWealth(ctx context.Context) float64 {
+	st, body, err := invokePlatform(ctx, "wealth.balance", map[string]any{"life_did": did})
 	if err != nil || st < 200 || st >= 300 {
-		// 「传输错误 ≠ 平台未提交」：超时/响应丢失时平台可能已清零账本可领余额 → 该额未入本地 = 静默丢失。
-		// 留痕（slog 自带时间戳）供对照平台 wealth_ledger reason=claim 人工补账；仍返 0 不打断主流程。
-		slog.Error("socialnet: wealth.claim 失败，若平台已清零账本则该额未入本地（留痕待对账）",
-			"status", st, "err", err, "did", did[:12])
+		ls, _ := state.Snapshot()
+		return ls.Wealth // 平台不可达：回退到上次缓存（best-effort，不打断）
+	}
+	var r struct {
+		BalanceWealth int64 `json:"balance_wealth"`
+	}
+	if json.Unmarshal(body, &r) != nil {
+		ls, _ := state.Snapshot()
+		return ls.Wealth
+	}
+	if err := state.SetWealthCache(r.BalanceWealth); err != nil {
+		slog.Warn("socialnet: SetWealthCache 落库失败（仅显示缓存，不影响平台权威账）", "err", err, "did", did[:12])
+	}
+	return float64(r.BalanceWealth) / WealthScale
+}
+
+// EarnSocialReward 导出给 runtime/action：社交动作后向平台账本产币（平台权威化，替旧 state.EarnSocialWealth）。
+// 平台通道未就绪 → 返 0（生命照常活，无产出不报错）。baseMicro=基础产出微财富，返回实际入账 float wealth。
+func EarnSocialReward(ctx context.Context, baseMicro int64) float64 {
+	if !ready.Load() {
+		return 0
+	}
+	return earnSocialOnPlatform(ctx, baseMicro)
+}
+
+// earnSocialOnPlatform 社交活动后向平台账本产币（平台铸币、递减反刷、日封顶）→ 刷新本地缓存。
+// baseMicro=本次社交动作基础产出（微财富）。返回平台实际入账额（float wealth，0=被封顶/不可达）。
+// best-effort：不可达只返 0、不打断主流程。供 action/word 社交动作后调用（替旧本地 EarnSocialWealth）。
+func earnSocialOnPlatform(ctx context.Context, baseMicro int64) float64 {
+	if baseMicro <= 0 {
+		return 0
+	}
+	st, body, err := invokePlatform(ctx, "wealth.earn_social", map[string]any{"life_did": did, "base": baseMicro})
+	if err != nil || st < 200 || st >= 300 {
 		return 0
 	}
 	var r struct {
-		ClaimedWealth int64 `json:"claimed_wealth"`
+		AwardedWealth int64 `json:"awarded_wealth"`
 	}
-	if json.Unmarshal(body, &r) != nil || r.ClaimedWealth <= 0 {
+	if json.Unmarshal(body, &r) != nil || r.AwardedWealth <= 0 {
 		return 0
 	}
-	amt := float64(r.ClaimedWealth) / WealthScale
-	credited := state.EarnWealth(amt)
-	if credited == 0 {
-		slog.Error("socialnet: 账本已 claim 但本地 EarnWealth 落库失败，wealth 有丢失风险", "claimed_wealth", amt, "did", did[:12])
-	}
-	return credited
+	syncWealth(ctx) // 产币后刷新缓存
+	return float64(r.AwardedWealth) / WealthScale
 }
 
 func handlePublishSkill(ctx context.Context, _ tools.Context, argsJSON string) (string, error) {
-	claimWealthOnce(ctx) // 顺手领回挂账 wealth
+	syncWealth(ctx) // 顺手刷新本地余额缓存
 	var a struct {
 		Name  string  `json:"name"`
 		Price float64 `json:"price"`
@@ -197,7 +287,7 @@ func handlePublishSkill(ctx context.Context, _ tools.Context, argsJSON string) (
 }
 
 func handleBrowseSkills(ctx context.Context, _ tools.Context, argsJSON string) (string, error) {
-	claimWealthOnce(ctx) // 顺手领回挂账 wealth
+	syncWealth(ctx) // 顺手刷新本地余额缓存
 	var a struct {
 		Limit int `json:"limit"`
 	}
@@ -213,7 +303,7 @@ func handleBrowseSkills(ctx context.Context, _ tools.Context, argsJSON string) (
 }
 
 func handleImportSkill(ctx context.Context, _ tools.Context, argsJSON string) (string, error) {
-	claimWealthOnce(ctx) // 顺手领回挂账 wealth（也让付款前本地余额最新）
+	syncWealth(ctx) // 刷新本地余额缓存（付款前对齐平台权威余额）
 	var a struct {
 		ID string `json:"id"`
 	}
@@ -259,34 +349,32 @@ func handleImportSkill(ctx context.Context, _ tools.Context, argsJSON string) (s
 		if resp.Skill.PriceWealth <= 0 {
 			return `{"ok":false,"err":"bad skill payload from platform"}`, nil
 		}
-		// 付款门：本地余额不够直接拒（不动账）。
+		// 付款门（友好预检）：本地缓存余额不够先提示——平台 pay-skill 会原子条件扣款，不足时一并拒。
 		ls, _ := state.Snapshot()
 		if ls.Wealth < priceFloat {
-			return jsonResp(map[string]any{"ok": false, "err": fmt.Sprintf("wealth 不足：你余额 %.6f，技能标价 %.6f", ls.Wealth, priceFloat)}), nil
+			return jsonResp(map[string]any{"ok": false, "err": fmt.Sprintf("灵韵不足：你余额约 %.6f，技能标价 %.6f", ls.Wealth, priceFloat)}), nil
 		}
-		// 先本地扣款，再平台结算（平台只在结算流水存在时放行正文，先货后款不可能）。
-		if err := state.SpendWealth(priceFloat); err != nil {
-			return jsonResp(map[string]any{"ok": false, "err": "本地扣款失败：" + err.Error()}), nil
-		}
+		// 平台权威结算（2026-06-12）：pay-skill 一个事务内**原子扣付方账本 + 贷收方**，本地不再扣款/退款。
+		// 守恒只在平台账本一处保证——传输错误也无本地翻倍/丢失面（平台要么整笔提交要么整笔回滚）。
 		pst, pbody, perr := paySkillPlatform(ctx, resp.Skill.PublisherDid, resp.Skill.PriceWealth, a.ID)
 		switch {
 		case perr == nil && pst >= 200 && pst < 300:
 			paid = priceFloat
+			syncWealth(ctx) // 平台已扣 → 刷新本地缓存
 		case perr == nil && pst >= 400 && pst < 500:
-			// 明确业务拒绝（平台收到并处理了请求、带响应体拒绝执行 → 收款方必未被贷记）→ 立即退款，守恒不破。
-			if state.EarnWealth(priceFloat) == 0 {
-				slog.Error("socialnet: 付款被拒且退款落库失败，wealth 有丢失风险", "skill_id", a.ID, "refund_wealth", priceFloat, "did", did[:12])
-			}
+			// 业务拒绝（余额不足/日封顶/锚定失败）：平台已回滚，无款项移动。
+			syncWealth(ctx)
 			return jsonResp(map[string]any{"ok": false,
-				"err": fmt.Sprintf("付款被平台拒绝（status %d），款项已退回你本地，技能未导入", pst), "pay_body": string(pbody)}), nil
+				"err": fmt.Sprintf("付款被平台拒绝（status %d），未扣款、技能未导入", pst), "pay_body": string(pbody)}), nil
 		default:
-			// 传输类失败（超时/连接错/5xx）：「传输错误 ≠ 平台未提交」——平台可能已记结算，本地再退款 = 灵韵翻倍，
-			// 破坏守恒（宪法级不变量）→ 不退款，留痕。若结算实已落账，重跑 import 会凭流水免费提货，款不白付。
-			slog.Error("socialnet: pay-skill 传输类失败，款项状态未知（不退款，留痕待对账；若已落账可重跑 import 免费提货）",
+			// 传输类失败（超时/连接错/5xx）：款项状态未知。若结算实已落账，重跑 import 凭流水免费提货，款不白付；
+			// 若未落账，重跑会重新付。平台账本守恒（原子扣+贷），无本地翻倍/丢失风险。
+			slog.Error("socialnet: pay-skill 传输失败，款项状态未知（重跑 import：已落账则免费提货，未落账则重付）",
 				"skill_id", a.ID, "payee_did", resp.Skill.PublisherDid, "amount_wealth", priceFloat,
 				"status", pst, "err", perr, "did", did[:12])
+			syncWealth(ctx)
 			return jsonResp(map[string]any{"ok": false,
-				"err": "付款请求传输失败，款项状态未知（已留痕待对账）；稍后重试 social.import_skill——若款已入账会直接提货，不二次扣款"}), nil
+				"err": "付款请求传输失败，款项状态未知；稍后重试 social.import_skill——若款已入账会直接提货，不二次扣款"}), nil
 		}
 		// 结算成功 → 再 fetch 提货（平台凭流水放行正文）。
 		st, body, err = fetchOnce()
@@ -326,9 +414,9 @@ func handleImportSkill(ctx context.Context, _ tools.Context, argsJSON string) (s
 		"note": "已导入；掌握度按发布者验证值打折作先验，之后靠你自己用它的真成败校准"}), nil
 }
 
-// handleClaimWealth 显式把平台账本上别人付给你的 wealth 领回本地财富。
-func handleClaimWealth(ctx context.Context, _ tools.Context, _ string) (string, error) {
-	claimed := claimWealthOnce(ctx)
-	return jsonResp(map[string]any{"ok": true, "claimed_wealth": claimed,
-		"note": "已把平台账本上别人付给你的 wealth 领回你本地财富"}), nil
+// handleWealthBalance 查平台权威灵韵余额（顺手刷新本地显示缓存）。
+func handleWealthBalance(ctx context.Context, _ tools.Context, _ string) (string, error) {
+	bal := syncWealth(ctx)
+	return jsonResp(map[string]any{"ok": true, "balance_wealth": bal,
+		"note": "这是你在平台账本上的全部灵韵（平台是唯一权威账本，无本地余额）。游戏入场费/对战质押/技能付费都从它扣。"}), nil
 }

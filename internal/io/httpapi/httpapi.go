@@ -38,6 +38,7 @@ import (
 	"taixu.icu/runtime/internal/io/embed"
 	"taixu.icu/runtime/internal/lifepack"
 	"taixu.icu/runtime/internal/runtime/embedsvc"
+	"taixu.icu/runtime/internal/runtime/lifecfg"
 	"taixu.icu/runtime/internal/runtime/memory"
 	"taixu.icu/runtime/internal/runtime/perception"
 	"taixu.icu/runtime/internal/runtime/reflex"
@@ -109,6 +110,9 @@ func Start(ctx context.Context, addr string) *http.Server {
 	mux.HandleFunc("/api/config/auto-approve-deps", apiAutoApproveDeps)
 	mux.HandleFunc("/api/config/proactive-im", apiProactiveIM)
 	mux.HandleFunc("/api/config/quiet", apiQuietHours)
+	// 界面换 LLM（受 withAuth 写守卫：设了 control_token 则需 X-Taixu-Token）。
+	mux.HandleFunc("/api/config/llm", apiLLMConfig)
+	mux.HandleFunc("/api/config/llm/test", apiLLMTest)
 	mux.HandleFunc("/api/dialogue", apiDialogue)
 	mux.HandleFunc("/api/stream", apiStream)
 	mux.HandleFunc("/api/external-request", apiExternalRequest)
@@ -125,7 +129,8 @@ func Start(ctx context.Context, addr string) *http.Server {
 	mux.HandleFunc("/api/platform/status", apiPlatformStatus)
 	mux.HandleFunc("/api/platform/claim", apiPlatformClaim)
 
-	accessToken = strings.TrimSpace(os.Getenv("TAIXU_ACCESS_TOKEN"))
+	// 控制令牌：sqlite config(control_token，诞生设) 优先、env TAIXU_ACCESS_TOKEN 兜底。
+	accessToken = strings.TrimSpace(lifecfg.ControlToken())
 	if accessToken != "" {
 		slog.Info("http access token enabled — write/interactive ops require X-Taixu-Token")
 	}
@@ -205,7 +210,11 @@ func isProtectedRead(r *http.Request) bool {
 
 func apiState(w http.ResponseWriter, r *http.Request) {
 	ls, ms := state.Snapshot()
-	writeJSON(w, http.StatusOK, map[string]any{"life": ls, "mental": ms})
+	// name/lang：生命自我命名 + 母语（诞生时定），面板左上角显示「太虚 · <名字>」。
+	writeJSON(w, http.StatusOK, map[string]any{
+		"life": ls, "mental": ms,
+		"name": storage.GetLifeName(), "lang": storage.GetLifeLang(),
+	})
 }
 
 func apiLifecycle(w http.ResponseWriter, r *http.Request) {
@@ -366,11 +375,13 @@ func apiConfig(w http.ResponseWriter, r *http.Request) {
 	// 只给 auth_required 让前端弹令牌输入（用户 2026-06-05；亦避免公网/截图泄漏）。
 	resp := map[string]any{"auth_required": accessToken != ""}
 	if authed(r) {
+		// 生效配置：sqlite config(界面改/诞生设) 优先、env 兜底。密钥掩码。
+		llmBase, llmModel, llmTemp := lifecfg.EffectiveLLM()
 		resp["llm"] = map[string]any{
-			"base_url":    os.Getenv("LLM_BASE_URL"),
-			"model":       os.Getenv("LLM_MODEL"),
-			"temperature": os.Getenv("LLM_TEMPERATURE"),
-			"api_key":     maskSecret(os.Getenv("LLM_API_KEY")),
+			"base_url":    llmBase,
+			"model":       llmModel,
+			"temperature": llmTemp,
+			"api_key":     maskSecret(storage.GetConfigString("llm_api_key", os.Getenv("LLM_API_KEY"))),
 		}
 		resp["feishu"] = map[string]any{
 			"app_id":     os.Getenv("FEISHU_APP_ID"),

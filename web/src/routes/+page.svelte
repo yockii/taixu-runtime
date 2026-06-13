@@ -15,6 +15,7 @@
 		pushVitalFrame
 	} from '$lib/stores';
 	import { t } from '$lib/i18n';
+	import { scale } from 'svelte/transition';
 	import { authRequired } from '$lib/auth';
 	import VitalsBar from '$lib/components/VitalsBar.svelte';
 	import LiveFeed from '$lib/components/LiveFeed.svelte';
@@ -31,6 +32,7 @@
 	import InterestPanel from '$lib/components/InterestPanel.svelte';
 	import SkillPanel from '$lib/components/SkillPanel.svelte';
 	import LangToggle from '$lib/components/LangToggle.svelte';
+	import Genesis from '$lib/components/Genesis.svelte';
 
 	let life = $state<LifeState | null>(null);
 	let mental = $state<MentalState | null>(null);
@@ -52,10 +54,24 @@
 		{ id: 'tools', label: 'tab_tools' }
 	];
 
+	// 诞生门控：裸 runtime 未配置时后端只 serve 诞生端点。先探 /api/genesis/status：
+	// needs_config=true → 渲染宇宙诞生页；false 或正常模式下该端点 404(catch) → 进观测台。
+	let genesisMode = $state<boolean | null>(null);
+	let justBorn = $state(false); // 仅诞生→观测台首切放大特效；普通刷新不放
+	let lifeName = $state(''); // 生命自我命名，左上角显示
 	$effect(() => {
+		api
+			.genesisStatus()
+			.then((s) => (genesisMode = s.needs_config))
+			.catch(() => (genesisMode = false));
+	});
+
+	$effect(() => {
+		if (genesisMode !== false) return; // 诞生模式 / 探测中：不拉观测数据
 		api.state().then((s) => {
 			life = s.life;
 			mental = s.mental;
+			if (s.name) lifeName = s.name;
 			pushVitalFrame({
 				energy: s.life.energy,
 				stress: s.life.stress,
@@ -74,6 +90,7 @@
 	const clip = (s: string, n = 240) => (s && s.length > n ? s.slice(0, n) + '…' : (s ?? ''));
 
 	$effect(() => {
+		if (genesisMode !== false) return; // 诞生模式：不开实况流
 		const close = openStream((ev) => {
 			switch (ev.type) {
 				case 'state':
@@ -132,8 +149,14 @@
 	});
 </script>
 
+{#if genesisMode}
+	<Genesis onborn={() => { justBorn = true; genesisMode = false; }} />
+{:else if genesisMode === false}
+<div class="born-in" in:scale={{ start: justBorn ? 0.5 : 1, opacity: justBorn ? 0 : 1, duration: justBorn ? 880 : 0, delay: justBorn ? 80 : 0 }}>
 <header class="mb-5 flex items-baseline justify-between gap-4">
-	<h1 class="text-xl font-bold text-bright">{$t('title')}</h1>
+	<h1 class="text-xl font-bold text-bright">
+		{#if lifeName}<span class="text-sm font-normal text-dim">{$t('brand')} · </span>{lifeName}{:else}{$t('title')}{/if}
+	</h1>
 	<LangToggle />
 </header>
 
@@ -189,3 +212,5 @@
 		</details>
 	</div>
 </div>
+</div>
+{/if}

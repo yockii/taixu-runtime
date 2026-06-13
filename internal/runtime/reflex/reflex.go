@@ -30,6 +30,7 @@ import (
 	"taixu.icu/runtime/internal/bus"
 	"taixu.icu/runtime/internal/core"
 	"taixu.icu/runtime/internal/io/llm"
+	"taixu.icu/runtime/internal/runtime/contextasm"
 	"taixu.icu/runtime/internal/runtime/ledger"
 	"taixu.icu/runtime/internal/runtime/memory"
 	"taixu.icu/runtime/internal/runtime/state"
@@ -185,8 +186,13 @@ const MaxHistoryCharsPerTurn = 600
 
 func runAgent(req IncomingRequest, mode Mode) {
 	system := buildSystemPrompt(mode, req.ChatType, req.Channel, req.From)
-	msgs := make([]llm.Message, 0, MaxHistoryTurns+2)
+	msgs := make([]llm.Message, 0, MaxHistoryTurns+3)
 	msgs = append(msgs, llm.Message{Role: "system", Content: system})
+	// ContextAssembler 精简经历块（C，2026-06-12）：跨域近期显著经历作 assistant 历史消息注入，让对话也连贯
+	//（如刚玩完一局游戏能在聊天里自然提及）。reflex 是对话快路径 → 小预算(~600 字 top-3)。空则不插。
+	if exp := contextasm.RecentExperience(lifeID, 600, 3); exp != "" {
+		msgs = append(msgs, llm.Message{Role: "assistant", Content: exp})
+	}
 	msgs = append(msgs, dialogueHistory(req.Content, req.Channel, req.From)...)
 	msgs = append(msgs, llm.Message{Role: "user", Content: req.Content})
 	reflexTools := tools.ListLLMTools(tools.LaneReflex)
@@ -341,7 +347,8 @@ func buildSystemPrompt(mode Mode, chatType, channel, peer string) string {
 	case ModeEnthusiastic:
 		hint = "\n你现在状态很好，对感兴趣的话题可以多说几句，主动追问。"
 	}
-	return base + hint
+	// 语言桥：追加母语指令（与慎思层一致），让生命用 life_lang 思考与表达。
+	return base + hint + core.LanguageDirective(storage.GetLifeLang())
 }
 
 // conversationContext 让生命体知道"此刻在哪个渠道、单聊还是群聊、和谁会话"（用户 2026-06-05）。

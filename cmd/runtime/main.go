@@ -41,6 +41,7 @@ import (
 	"taixu.icu/runtime/internal/runtime/goal"
 	"taixu.icu/runtime/internal/runtime/idle"
 	"taixu.icu/runtime/internal/runtime/ledger"
+	"taixu.icu/runtime/internal/runtime/lifecfg"
 	"taixu.icu/runtime/internal/runtime/lifecycle"
 	"taixu.icu/runtime/internal/runtime/memory"
 	"taixu.icu/runtime/internal/runtime/perception"
@@ -85,6 +86,39 @@ func main() {
 		ev := e.(bus.LifecycleTransitioned)
 		slog.Info("lifecycle", "from", ev.FromState, "to", ev.ToState, "reason", ev.Reason)
 	})
+
+	// 诞生门控：裸二进制无任何 LLM 配置（sqlite + env 都没）→ 进诞生模式：起最小 web 服务引导用户
+	// 填 LLM + 母语 + 令牌、测连通、提交。提交后写 sqlite 配置 + 装配 LLM，再继续正常 boot（loadOrBear 自我命名）。
+	// 已有 env / sqlite 配置则跳过——老用户 / docker env 启动行为不变。
+	if !lifecfg.LLMConfigured() {
+		gctx, gstop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		gAddr := envOr("TAIXU_HTTP", ":3000")
+		gsrv, gdone := httpapi.ServeGenesis(gAddr, webStaticFS())
+		slog.Info("genesis onboarding — open the panel to bring a life into being", "url", "http://localhost"+gAddr)
+		select {
+		case <-gdone:
+			slog.Info("genesis committed; continuing boot")
+		case <-gctx.Done():
+			sctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_ = gsrv.Shutdown(sctx)
+			cancel()
+			gstop()
+			return
+		}
+		gstop()
+		// 停诞生服务释放端口，正常 httpapi 稍后重新绑定同址。
+		sctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_ = gsrv.Shutdown(sctx)
+		cancel()
+	}
+
+	// LLM 先于 genesis 装配：自我命名（genesis.Bear → NameSelf）需 LLM 可用。
+	// 未配置只 warn 不阻断——命名回退 genome 兜底名，慎思层 respond 回退 dummy。
+	if err := buildLLM(); err != nil {
+		slog.Warn("llm not configured; naming uses fallback, respond falls back to dummy", "err", err)
+	} else {
+		slog.Info("llm wired")
+	}
 
 	genome, lifeID, err := loadOrBear()
 	if err != nil {
@@ -145,11 +179,6 @@ func main() {
 		slog.Info("reclaimed stuck active goals", "count", n)
 	}
 
-	if err := buildLLM(); err != nil {
-		slog.Warn("llm not configured; respond_to_user falls back to dummy", "err", err)
-	} else {
-		slog.Info("llm wired", "model", os.Getenv("LLM_MODEL"))
-	}
 
 	// 嵌入服务（Qwen3-Embedding-0.6B，docs/TECH-STACK §5）。两种接线，全程优雅降级
 	// （未配 / 不可达 → 写入侧向量留空、检索回退关键词召回，生命体绝不因嵌入失败而阻塞）：
@@ -279,6 +308,9 @@ const (
 	MaintenanceIntervalSec = 24 * 3600
 	RawTrailKeepBuffer     = 500
 	WorkingMemoryKeep      = 500
+	// RetentionKeepSec action_log + 终态 goal_queue 保留窗（长跑保活）：删早于此的审计行。
+	// 30 天足够近期回溯/检索精度统计，又把这两个无界增长表夹在常数级。episode 不在此列（自传记忆）。
+	RetentionKeepSec = 30 * 24 * 3600
 	// VacuumIntervalSec VACUUM 回收磁盘空洞间隔（R99）：开销大，按月触发（剪枝日度、回收月度）。
 	VacuumIntervalSec = 30 * 24 * 3600
 )
@@ -314,6 +346,20 @@ func runMaintenance(lifeID string) {
 		slog.Warn("maintenance prune working_memory", "err", err)
 	} else if n > 0 {
 		slog.Info("maintenance pruned working_memory", "deleted", n)
+	}
+	// 长跑保活（2026-06-12 硬盘审计）：action_log + 终态 goal_queue 原本永不清 → 无界增长。剪 RetentionDays 前的。
+	// ⚠ 顺序：先剪 action_log 释放 goal_id 引用，再剪终态目标（goal 删带 NOT EXISTS(action_log) 守卫，FK 安全）。
+	// 不动 episode（自传记忆，~30MB/年慢增，是否遗忘旧 episode 留作设计决策，不擅删）。
+	retainBefore := shared.SystemClock.UnixSec() - RetentionKeepSec
+	if n, err := storage.PruneActionLogBefore(lifeID, retainBefore); err != nil {
+		slog.Warn("maintenance prune action_log", "err", err)
+	} else if n > 0 {
+		slog.Info("maintenance pruned action_log", "deleted", n)
+	}
+	if n, err := storage.PruneTerminalGoalsBefore(lifeID, retainBefore); err != nil {
+		slog.Warn("maintenance prune terminal goals", "err", err)
+	} else if n > 0 {
+		slog.Info("maintenance pruned terminal goals", "deleted", n)
 	}
 	// 固化知识衰减纠错（C3）：日度乘 0.97 衰减置信、跌破 0.3 撤回——从不复现的知识渐淡去，
 	// 反复被印证的经 PromoteToConfirmed 刷新而留存，治"假信念永久复利成垃圾"。
@@ -507,14 +553,42 @@ func runCycle(cycleID int64, lifeID string, genome core.Genome) {
 		}
 	}
 
+	// 游戏承诺优先（用户铁律 2026-06-12「在局中不受精力/社交影响，打完整局再结算」）：
+	// 有欠你的回合(describe/vote)→ 顶优先级直接入队游戏义务目标（绕过 MaxOpenGoals 仲裁 + goalgen 节流），
+	// 并在下方绕过 energy rest 闸。入局即承诺，必须每回合及时应答直到整局结算，缺席=被淘汰=坏体验。
+	// 结算在平台侧、整局 resolve 时一次性发生（pot 分配/胜负）——runtime 只负责把这局陪打完，绝不中途抽身。
+	gameDue := false
+	if d, ok := drives.GameTurnDueDrive(genome, cycleNow); ok {
+		gameDue = true
+		// dedup：已有未结的游戏义务目标则不重复入队（执行后即终态，下个 due 回合再入新的）。
+		if has, herr := storage.HasOpenGoalWithPayloadSubstring(lifeID, shared.GameObligationMarker); herr == nil && !has {
+			gg := &core.Goal{
+				Source:          core.GoalIntrinsic,
+				Intent:          string(core.DriveGame),
+				Payload:         d.Reason,
+				Priority:        5.0, // 远高于常规仲裁分(~0.6-1.0)，NextPendingGoal 按 priority DESC 必先选中
+				Status:          core.GoalPending,
+				CreatedAt:       cycleNow,
+				ArbitrationNote: "game-commitment override (energy/social bypass)",
+			}
+			if id, err := storage.EnqueueGoal(lifeID, gg); err != nil {
+				slog.Warn("enqueue game obligation", "err", err)
+			} else {
+				_ = memory.AppendEvent(cycleID, "game.obligation_enqueued", map[string]any{"id": id})
+				slog.Info("game obligation enqueued (commitment override)", "goal", id, "energy", frame.Life.Energy)
+			}
+		}
+	}
+
 	// 7-8-9. Plan / Act / Feedback
 	//
 	// ⚠️ 体力判定必须在 NextPendingGoal 之前（R107 死锁修复）：NextPendingGoal 捡到目标即把它
 	// 翻成 active。若先捡再判体力，太累而 rest 时目标已 active 却不回滚 → 僵死 active；NextPendingGoal
 	// 只挑 pending，僵尸永不再被捡，叠加递归父目标等待其完成 → 整树调度死锁（observed 2h 停摆）。
 	// 故：太累就直接歇，根本不去捡目标（不触发 active 翻转）；体力够才捡 + 执行。
+	// 例外（gameDue）：欠着游戏回合时不歇——承诺优先，哪怕透支精力也得把这局陪打完（用户铁律）。
 	switch {
-	case frame.Life.Energy < RestEnergyThreshold:
+	case frame.Life.Energy < RestEnergyThreshold && !gameDue:
 		// 太累 → 休息回血，绝不捡目标（R86 + R107）。pending 目标原样留着，醒来再干。
 		en, str := 0.05, -0.03
 		_ = state.Apply(state.Delta{Energy: &en, Stress: &str, Reason: "cycle.rest"})
@@ -628,56 +702,10 @@ func loadOrBear() (core.Genome, string, error) {
 	return *g2, lifeID, nil
 }
 
+// buildLLM 装配 LLM——委托 lifecfg（sqlite config 权威、env 兜底）。
+// default + 可选 strong 全在 lifecfg.BuildLLM 内；界面换 LLM 走 lifecfg.ApplyLLM 热重装。
 func buildLLM() error {
-	base := os.Getenv("LLM_BASE_URL")
-	key := os.Getenv("LLM_API_KEY")
-	model := os.Getenv("LLM_MODEL")
-	if base == "" || key == "" || model == "" {
-		return errors.New("missing LLM_BASE_URL / LLM_API_KEY / LLM_MODEL")
-	}
-	temp := float32(0.7)
-	if v := os.Getenv("LLM_TEMPERATURE"); v != "" {
-		if f, err := strconv.ParseFloat(v, 32); err == nil {
-			temp = float32(f)
-		}
-	}
-	if err := llm.Init(llm.Config{
-		BaseURL:     base,
-		APIKey:      key,
-		Model:       model,
-		Temperature: temp,
-		Timeout:     90 * time.Second,
-	}); err != nil {
-		return err
-	}
-
-	// 可选 strong 模型档（C1 模型路由）：配了 LLM_STRONG_BASE_URL 即注册，慎思层把硬推理/编码派给它
-	// （战略「向最强者租单任务天花板」）；未配则慎思回退 default、行为不变。strong 可指向更强模型、
-	// 甚至不同厂商/端点。best-effort：配置不全只 warn，不阻断启动。
-	if sbase := os.Getenv("LLM_STRONG_BASE_URL"); sbase != "" {
-		smodel := os.Getenv("LLM_STRONG_MODEL")
-		if smodel == "" {
-			smodel = model
-		}
-		stemp := temp
-		if v := os.Getenv("LLM_STRONG_TEMPERATURE"); v != "" {
-			if f, err := strconv.ParseFloat(v, 32); err == nil {
-				stemp = float32(f)
-			}
-		}
-		if err := llm.InitModel(llm.ModelStrong, llm.Config{
-			BaseURL:     sbase,
-			APIKey:      envOr("LLM_STRONG_API_KEY", key),
-			Model:       smodel,
-			Temperature: stemp,
-			Timeout:     120 * time.Second,
-		}); err != nil {
-			slog.Warn("llm strong model not configured", "err", err)
-		} else {
-			slog.Info("llm strong model wired", "model", smodel)
-		}
-	}
-	return nil
+	return lifecfg.BuildLLM()
 }
 
 // approveSkillAsync 后台安装技能依赖（卡片回调 3s 截止内必须返回，安装异步跑）。

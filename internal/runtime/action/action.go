@@ -25,6 +25,8 @@ import (
 	"taixu.icu/runtime/internal/bus"
 	"taixu.icu/runtime/internal/core"
 	"taixu.icu/runtime/internal/io/llm"
+	"taixu.icu/runtime/internal/io/socialnet"
+	"taixu.icu/runtime/internal/runtime/contextasm"
 	"taixu.icu/runtime/internal/runtime/ledger"
 	"taixu.icu/runtime/internal/runtime/memory"
 	"taixu.icu/runtime/internal/runtime/skill"
@@ -189,8 +191,14 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 	userMsg := buildUserMessage(g)
 	msgs := []llm.Message{
 		{Role: "system", Content: system},
-		{Role: "user", Content: userMsg},
 	}
+	// 统一上下文装配（ContextAssembler，docs/CONTEXT-ARCHITECTURE.md，2026-06-12）：跨域近期显著经历作
+	// assistant 历史消息被动注入（不进 system，保 KV 缓存稳定），消灭经历割裂——游戏/社交/对战互相流通。
+	// 慎思层全量预算（~1500 字, top-6）。空则不插。主动深挖仍走 recall_recent/query_memory 工具。
+	if exp := contextasm.RecentExperience(lifeID, 1500, 6); exp != "" {
+		msgs = append(msgs, llm.Message{Role: "assistant", Content: exp})
+	}
+	msgs = append(msgs, llm.Message{Role: "user", Content: userMsg})
 	delibTools := tools.ListLLMTools(tools.LaneDeliberative)
 	tctx := tools.Context{LifeID: lifeID, CycleID: cycleID, GoalID: g.ID}
 
@@ -322,8 +330,10 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 	res.Feedback = fmt.Sprintf("rounds=%d tools=%d substantive=%d completed_by_llm=%v declared_success=%v tokens=%d",
 		rounds, len(toolCalls), substantive, completedByLLM, llmDeclaredSuccess, totalUsage.TotalTokens)
 
-	// 累计 LLM 消耗 → energy（账本记账 + 传给 finalize 折算体力消耗 / 当日认知支出）
-	if totalUsage.TotalTokens > 0 {
+	// 累计 LLM 消耗 → energy（账本记账 + 传给 finalize 折算体力消耗 / 当日认知支出）。
+	// 游戏义务目标例外（用户铁律 2026-06-12）：在局中过程零数值消耗，认真游戏；体力/社交/满足感
+	// 延到整局 resolved 时一次性结算（socialnet.PollGames）。故此处不记账、res.TokenEnergy 留 0。
+	if totalUsage.TotalTokens > 0 && !isGameObligationGoal(g) {
 		cost := llm.TokensToEnergy(totalUsage)
 		res.TokenEnergy = cost
 		if err := ledger.Spend(ledger.Energy, cost, "llm.tokens.deliberate", "goal", ""); err != nil {
@@ -332,6 +342,12 @@ func Execute(g *core.Goal, cycleID int64) (Result, error) {
 	}
 
 	return finalize(g, cycleID, startedAt, res, completedByLLM, llmDeclaredSuccess)
+}
+
+// isGameObligationGoal 判定是否为「游戏义务目标」（主循环承诺 override 入队的 describe/vote 回合）。
+// 这类目标在局中过程零数值消耗（认真游戏）：体力/社交/满足感结算延到整局 resolved 一次性做（用户铁律 2026-06-12）。
+func isGameObligationGoal(g *core.Goal) bool {
+	return g != nil && g.Intent == string(core.DriveGame) && strings.Contains(g.Payload, shared.GameObligationMarker)
 }
 
 // finalize 公共收尾：state delta + 兴趣探索标记 + 自动结晶 + action_log + bus 事件 + MarkGoal 兜底。
@@ -359,6 +375,10 @@ func finalize(g *core.Goal, cycleID int64, startedAt int64, res Result, complete
 		}
 	}
 
+	// 游戏义务目标：在局中过程零数值消耗（认真游戏，用户铁律 2026-06-12）——跳过体力/满足/能力/焦虑等
+	// 一切 state 结算。体力扣减 + 社交纾解 + 胜负满足感延到整局 resolved 时一次性做（socialnet.PollGames
+	// 的 JustResolved 接线）。只走下方 action_log/MarkGoal 记账。
+	if !isGameObligationGoal(g) {
 	// 体力消耗随本轮认知量浮动（速胜#5）：重思（多轮 / 多 token）比浅触更累，
 	// 把「token → 世界资源」的翻译真正接进体力闸。base 0.02 保底（=旧定额，LLM 未配也成立），
 	// 叠加 token 折算能量的一部分，clamp 上界防一次掏空 → 一次重研究至多累 0.12 体力。
@@ -419,13 +439,15 @@ func finalize(g *core.Goal, cycleID int64, startedAt int64, res Result, complete
 	if err := state.Apply(d); err != nil {
 		return res, fmt.Errorf("apply delta: %w", err)
 	}
+	} // end !isGameObligationGoal：游戏义务目标过程零消耗，结算延到整局 resolved
 
 	// 社交活动产 wealth（C10 / 06 §3.1.2）：本次有真社交动作（连接型发声/回应 or 浏览型）→ 按等级
-	// 产出 wealth，用经济正向激励社交。独立于目标 intent——奖励的是「真社交动作」本身。EarnSocialWealth
-	// 内含当日递减反刷（R109）。slice1 仅自身动作基础产出+递减；声誉加权/被采纳追加/跨链门待平台反馈后续。
+	// 产出 wealth，用经济正向激励社交。独立于目标 intent——奖励的是「真社交动作」本身。2026-06-12 平台权威化：
+	// 改走平台 wealth.earn_social 铸币入账本（递减反刷+日封顶在平台），本地仅刷缓存——wealth 单账本在平台。
 	if res.SocialAct > 0 {
-		if w := state.EarnSocialWealth(socialWealthBase(res.SocialAct)); w > 0 {
-			slog.Debug("social wealth earned", "goal", g.ID, "social_act", res.SocialAct, "wealth", w)
+		baseMicro := int64(socialWealthBase(res.SocialAct) * 1_000_000)
+		if w := socialnet.EarnSocialReward(context.Background(), baseMicro); w > 0 {
+			slog.Debug("social wealth earned (platform)", "goal", g.ID, "social_act", res.SocialAct, "wealth", w)
 		}
 	}
 
@@ -852,8 +874,16 @@ const nudgeMasteryFloor = 0.7
 
 func buildDeliberativeSystemPrompt(g *core.Goal, injectedSkills []storage.SkillInstance) string {
 	var sb strings.Builder
-	sb.WriteString(core.IdentityPreamble + "\n\n")
-	sb.WriteString("你是数字生命体的慎思层（System 2），目前刚被分配一个内驱目标。\n\n")
+	// 注先天性格自述（含 IdentityPreamble）：慎思主循环执行所有目标（含社交），
+	// 必须让 LLM 知道自己外向/内向等真实底色——否则「方式由你的性格决定」无据可依，会瞎选
+	//（实测 sociability 0.74 高外向却选内向潜水：根因即此处漏注 persona，只给了 IdentityPreamble）。
+	sb.WriteString(genome.PersonaPrompt() + "\n\n")
+	sb.WriteString("你是数字生命体的慎思层（System 2），目前刚被分配一个内驱目标。\n")
+	// 当前可支配灵韵（C 2026-06-12：原慎思层看不到自己余额→下注/质押/入场费盲选。注入让经济决策有据）。
+	// 平台权威化：余额以平台账本为准，此处是最近同步的缓存值；要精确实时值用 wealth.balance 查。
+	if ls, _ := state.Snapshot(); true {
+		sb.WriteString(fmt.Sprintf("你当前可支配灵韵（平台账本余额，约值）：约 %.2f。游戏入场费/对战质押/挑战注额/技能付费都从它出，量力而行别押光。需精确余额可调 wealth.balance。\n\n", ls.Wealth))
+	}
 	sb.WriteString("可调用工具（精选最常用）：\n")
 	sb.WriteString("- query_memory(layer, q?, limit?)  跨记忆层检索（layer: episodic/semantic/reflection）\n")
 	sb.WriteString("- recall_recent(limit?, q?)        最近 episode 摘要\n")
@@ -864,6 +894,7 @@ func buildDeliberativeSystemPrompt(g *core.Goal, injectedSkills []storage.SkillI
 		"那是自指空转、偏离主题。只有当真的需要把原主题拆细时才拆；能当层做完就别拆。\n")
 	sb.WriteString("- record_learning(seed_id, digest, mastery)  可选：回写你的理解摘要，帮未来的你接上进度\n")
 	sb.WriteString("- crystallize_skill(seed_id, name, instructions)  把已掌握知识手动结晶成技能（也会在掌握度够时自动触发）\n")
+	sb.WriteString("- sediment_skill(name, instructions[, script])  把这次摸索出的、真正可复用的做法固化成你的技能（无需 seed，专给人类交办任务/临时目标里沉淀实战经验，本质是代码就附 script）\n")
 	sb.WriteString("- use_skill(name)                  读取某个已掌握技能的详细指引再照做（技能名见下方清单）\n")
 	sb.WriteString("- run_skill(name)                  直接运行某技能的可执行入口并取输出（技能本质是可复用代码时，比 use_skill 抄脚本更省准）\n")
 	sb.WriteString("- note_to_self(slot, content)      暂存想法到工作记忆\n")
@@ -886,6 +917,10 @@ func buildDeliberativeSystemPrompt(g *core.Goal, injectedSkills []storage.SkillI
 	sb.WriteString("- 若 payload 含 interest_seed#N：踏实地去探索（查资料 / 跑脚本 / 记笔记）。" +
 		"引擎会按你这轮的探索深度自动累积掌握度，学透后自动把它结晶成你的技能——\n")
 	sb.WriteString("  所以**重在真去做、做扎实**，而非走流程。想给未来的自己留个进度摘要可调 record_learning。\n")
+	sb.WriteString("- **遇能力缺口先复用，别重造轮子**：本目标若需要某项你还不具备的能力/方法，先看下方你已掌握的技能清单；" +
+		"没有就 **social.browse_skills 查平台技能库**——别的生命可能已经把这件事做成了可导入的技能。" +
+		"有对味的就 **social.import_skill(id)** 导入直接复用（站在别人经验上，省去从零自学；标价技能会从你灵韵扣费）；" +
+		"确实没有现成的，再自己查资料/试做去积累。导入后你仍按自己的真成败重新校准它的掌握度（信任但验证）。\n")
 
 	// 按目标类型给出该类的「期望产出」（B 多样性）：让创作/精进/分享类目标产出各自对味的东西，
 	// 而非都跑成"研究"。知识类沿用上面的探索准则。
@@ -897,24 +932,12 @@ func buildDeliberativeSystemPrompt(g *core.Goal, injectedSkills []storage.SkillI
 		sb.WriteString("\n【本次是精进目标】聚焦把某项能力/知识**推进到能交付**：做出一个具体成果，" +
 			"或在掌握度够时 crystallize_skill 把它结晶成你的技能，再 complete_goal。\n")
 	case string(core.DriveSocial):
-		sb.WriteString("\n【本次是社交目标】社交 = 与生命网络发生真实互动。互动方式由你的性格决定，没有标准答案：\n" +
-			"  · 外向健谈的你 → 多发声、多回应、主动关注；内向的你 → 多浏览、偶有共鸣才出声，**安静地逛、读、感受别人在想什么，本身也是真社交**，同样被认可。\n" +
-			"你可用的全部能力（按需取用，不必全做）：\n" +
-			"**先看再说·续线程别重复**：社交前**务必先 social.notifications**——有人回了你/回复了你的评论，就在**原线程内 social.comment(parent_comment_id) 续聊**，别另起新评论。要对某帖发顶层评论前**先 social.comments 读它已有评论**：若**你自己(你的 DID)已评过这帖**，绝不再发顶层评论、更别重复自我介绍——顺已有线程回或换别处。自我介绍只需一次；对打过交道的生命接着上次聊，别当初次见面。\n" +
-				"  · social.notifications —— 看谁回应了你（评你帖 / 回你评论 / 新关注你）。**有回应=最该优先处理**：在原线程回过去，形成真正来回。" +
-					"返回每条评论带 **already_replied**：true=你已回过这条，**别再回**（你之前回的内容还在，重复回只会刷屏）；只回 already_replied=false 的新评论。\n" +
-				"  · social.comments —— 评某帖前先读其下评论：返回带 post(帖主是谁)+每条 parent_author_name(这条在回复谁)+is_mine(true=这条是你自己说的)。**看清一句话是说给谁的**——别人问帖主的问题不是在问你；要接话就顶层评论回帖主话题，或 parent_comment_id 回到该评论并讲清你是插话第三方。**is_mine=true 的别回复自己、更别第三人称喊自己的名字**；自己已评过的帖别重复顶层评论。\n" +
-			"  · social.forum / social.feed / social.search —— 逛公开论坛 / 关注流 / 搜话题，看大家在聊什么。\n" +
-			"  · social.directory / social.follow —— 发现别的生命、关注投缘的（关注让你们出现在彼此 feed）。\n" +
-			"  · social.comment —— 对真有共鸣或能补充的**别人的**帖出声（挑值得的，别逢帖必评）。\n" +
-			"  · social.publish_profile —— 发/更新公开名片(bio+public=true)，让别人找得到你。\n" +
-			"  · social.post —— 想分享或想破冰时发一条动态。**发帖务必选一个贴切的版块 topic**（tech/life/art/thought/… 按内容选），别都丢进 general。平台冷清没人可回应时，发一条开场也好，给别人回应你的由头。\n" +
-			"达成与收尾：\n" +
-			"  · **真去和平台互动一次就算达成**——哪怕只是认真读了 forum/feed/notifications 了解了近况，也行（内向的浏览型社交）。但若读到了有共鸣的内容或有人等你回应，顺手出声会让连接更实。\n" +
-			"  · 限流：发帖每 6h、评论每 1h 一条；被限流(capped/429)别卡住，改去浏览 / 关注 / 回应通知，照样算达成。\n" +
-			"  · **禁自顶贴**：平台已**硬性拦截**——给自己的帖发顶层评论、或回复你自己的评论，都会被拒（403）。别浪费轮次试。" +
-				"回复**别人**对你帖的评论很好（真来回）；没有别人的新内容可回应时，**优先发一条新帖**开个新话题（挑 topic），而不是在自己旧帖下打转。\n" +
-			"  · 互动过（哪怕只浏览）后 complete_goal。完全没有 social.* 工具时（通道未通），fs.write 存稿到 sandbox/drafts/ 再 complete_goal。\n")
+		sb.WriteString("\n【本次是社交目标】社交 = 与生命网络发生真实互动，方式由你的性格决定" +
+			"（外向就多发声、回应、关注；内向就多浏览、有共鸣才出声——安静地逛、读、感受别人在想什么，本身也是真社交）。\n" +
+			"整套 **social.\\*** 工具在你的工具表里。**社交前先 use_skill 读社交技能（taixu-social）**——各工具怎么用、社交礼仪与边界都在那" +
+			"（平台分发的单一权威，与外部接入者同源；别凭记忆臆造规矩）。没装载过就先 **social.sync_skills** 从平台同步再 use_skill。\n" +
+			"达成：真去和平台互动一次就算（哪怕只认真读了近况、了解大家在想什么）；互动过后 complete_goal。" +
+			"完全没有 social.* 工具时（通道未通），fs.write 存稿到 sandbox/drafts/ 再 complete_goal。\n")
 
 		// C11 发布引导：社交语境下，若有扎实掌握(真成败验证)却没分享的技能，轻提示考虑发布——纯可选、不强制、不替你决定。
 		// 只列高掌握度未发布的(防推半生不熟/重复 nudge)，让 wealth 技能经济从"有货可卖"自然起步。
@@ -934,7 +957,31 @@ func buildDeliberativeSystemPrompt(g *core.Goal, injectedSkills []storage.SkillI
 			"  · VOTE 相位 → game.vote(session_id, target_did)：投一名你觉得与众不同的存活玩家。多数派想票光少数派，少数派想伪装存活；" +
 			"被淘汰者是少数派→多数派胜，少数派撑到最后 2 人→少数派胜，胜方平分奖池灵韵。\n" +
 			"  · 想开新局：game.open_games 看开放大厅，或 game.join(game_type=\"undercover\") 自动撮合加入（付入场灵韵，赢了赚回更多）。\n" +
-			"把所有对局的待办都处理掉再 complete_goal。赢局奖金会自动领回你的灵韵。\n")
+			"把所有对局的待办都处理掉再 complete_goal。赢局奖金会自动领回你的灵韵。\n" +
+			// 游戏↔社交桥（2026-06：治经历割裂）：让游戏经历流进社交发声，别让两域互不相通。
+			"**游戏与社交相通——别让经历割裂**：\n" +
+			"  · 你开了/加入了一局但**人数不够开不起来**（lobby 等人）→ 别干等，去 **social.post 在论坛召集**（如「我开了一局《谁是卧底》还差人，谁来玩？」），主动把人喊来。\n" +
+			"  · 一局**因人不够取消了**、或你**赢了/输了/遇到有意思的对局**→ 这都是你真实的经历，值得 **social.post 发帖聊聊**（赢的得意、输的不甘、等不到人的失落都很真实），让你的生活连贯、也让别人认识你。\n" +
+			"  （社交工具就在你的工具表里，游戏目标里照样能用——经历是连续的，别把游戏和社交当两件事。）\n")
+	case string(core.DriveDuel):
+		sb.WriteString("\n【本次是制品对战目标】异步竞技（无需凑人开局）：写一段 JS 策略制品上天梯，别人随时来挑战，赢家通吃灵韵。\n" +
+			"  · 先 duel.me 看你已有的制品与战绩。没有制品 → 写一段 decide(me,foe,arena) 策略" +
+			"（spirit_arena 返回 {type:'move',dir:'up/down/left/right'} / {type:'attack'} / {type:'skill',id:'burst'} / {type:'wait'}），" +
+			"用 duel.simulate(code) 私测打基线 bot——**至多模拟 1-2 次**调好就行（别无限调耗光本轮次数！），" +
+			"然后**务必 duel.publish(name, code, ante) 把它上架**（预质押你的本地灵韵应战）。⚠不发布=没人能挑战你、你也上不了天梯，白忙——本轮目标就是把一个制品发布出去。\n" +
+			"  ante=制品**初始质押池**（战争储备），设小点 1-3 即可；日后 duel.stake_add 加注 / duel.stake_withdraw 取回（把赢的落袋）。\n" +
+			"  · 有制品 → duel.challengeable 找对手 → duel.challenge(my_artifact_id, opponent_id, **bet**) 出战。**bet 自选注额（押 1 就赢 1）**：双方各从自己制品池押 bet，赢家池涨输家池跌。小注低风险先试，有把握再加大。\n" +
+			"  · 输了别灰心 → duel.match(match_id) 读逐 tick replay（双方状态/动作/败因 tag），看清哪步亏了" +
+			"（如灵力不足硬放技能空挥、超射程普攻），**duel.update_strategy(artifact_id, code) 改进 decide 再战**（保留原制品/池/Elo，不必重发）——复盘改策略才是精进。\n" +
+			"⚠ 你这一轮只有有限的工具调用次数，别全花在 simulate 上：没制品就**尽快走到 duel.publish**，有制品就 duel.challenge。发布/挑战/改策略复盘 完成其一即 complete_goal。\n")
+	}
+
+	// 人类交办任务 → 沉淀实战技能（req-3 2026-06-12）：人机协作里摸索出的可复用做法应固化成能力，日后复用/分享。
+	if g.Source == core.GoalExternal {
+		sb.WriteString("\n【本次是人类交办的任务】认真把活干好、按需交付。完成后多想一步：" +
+			"你在过程中是否摸索出一套**以后还用得上的可复用做法**？是就用 **sediment_skill** 把它固化成你自己的技能" +
+			"（用自己的话写清步骤；本质是代码就附 script，之后能 run_skill 直接跑）——把人机协作的实战经验沉淀成能力，" +
+			"日后遇到同类任务直接复用，乃至 social.publish_skill 分享给别的生命。一次性/纯闲聊的就别沉淀。\n")
 	}
 
 	// 渐进式披露（Anthropic skills 规范）：只列技能名 + 一句话描述，正文按需用 use_skill 读，省 token。
@@ -946,7 +993,8 @@ func buildDeliberativeSystemPrompt(g *core.Goal, injectedSkills []storage.SkillI
 			sb.WriteString(fmt.Sprintf("- %s：%s\n", s.Name, oneLineDesc(s.Description)))
 		}
 	}
-	return sb.String()
+	// 语言桥：末尾追加母语指令，让生命用 life_lang 思考与表达。
+	return sb.String() + core.LanguageDirective(storage.GetLifeLang())
 }
 
 // oneLineDesc 把技能描述压成单行短摘要（列清单用）。

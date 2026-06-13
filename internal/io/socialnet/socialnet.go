@@ -184,7 +184,8 @@ func bootstrap(pub ed25519.PublicKey) error {
 		}
 		// 技能交易工具（skill.*）需运行时本地 Export/Import 配合，非纯 passthrough → 跳过，
 		// 改注册带本地 bundle 处理的自定义 social.*_skill 版（registerSkillExchange，C9 余项①）。
-		if isSkillExchangeTool(t.Name) {
+		// duel.publish/challenge 同理需本地灵韵预质押/扣费 → 跳过，改注册自定义版（registerDuelExchange，C12）。
+		if isSkillExchangeTool(t.Name) || isDuelExchangeTool(t.Name) {
 			continue
 		}
 		params := t.Parameters
@@ -208,10 +209,12 @@ func bootstrap(pub ed25519.PublicKey) error {
 		return fmt.Errorf("manifest carried no tools")
 	}
 	registerSkillExchange() // C9：注册 social.publish_skill/browse_skills/import_skill（本地 Export/Import + POST 平台）
-	registerWordExchange()  // C12：注册 social.contribute_word（POST 平台收录词 + 本地产灵韵）
-	registerGameExchange()  // C15：注册 game.join/leave（本地 SpendWealth/EarnWealth 钱耦合）
+	// social.contribute_word 已撤（用户校正 2026-06-12：生命不再交词，平台自维护词库 StartSeedMaintainer）。
+	registerGameExchange() // C15：注册 game.join/leave（平台权威扣费 + 缓存刷新）
+	registerDuelExchange() // C12：注册 duel.publish/stake（平台权威质押 + 缓存刷新）
 	ready.Store(true)
 	slog.Info("socialnet: platform channel ready", "channel", m.Channel, "tools", n+3, "did", did[:12], "url", baseURL)
+	installPlatformSkills()  // 同步平台分发的 SKILL.md 目录（与外部 agent 同源，礼仪/玩法单一权威在平台，非写死 prompt）；生命体也可主动 social.sync_skills 刷新
 	ensureProfilePublished() // 接通即发公开名片，进名录可被发现（修 life_profile 空 → Directory 空）
 	return nil
 }

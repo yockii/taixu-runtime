@@ -242,10 +242,42 @@ func AuthorFromKnowledge(seedID int64, name, description, instructions string, a
 	if name == "" {
 		name = seed.Content
 	}
+	return authorSkill(name, description, instructions, allowedTools, ep, fmt.Sprintf("interest_seed#%d", seedID), seed.Mastery)
+}
+
+// AuthorFromTask seedless 结晶（req-3 2026-06-12）：把外部人类任务 / 非 seed 目标中做出的、真正实用可复用的
+// procedure 沉淀成自创技能，供日后 use_skill/run_skill 复用、乃至 publish 分享。
+//
+// 与 AuthorFromKnowledge 的唯一差异：不绑 interest_seed、不强 0.8 门——外部任务掌握度来源不同（非"反复探索
+// 累积"，而是"这次真把活干成了"的完成质量信号），由调用方据 res.Substantive+validated 给初始 mastery（钳[0,1]）。
+// 其余 SKILL.md 落盘/装载/可执行入口/血缘标记与 seed 路完全一致，R82 衰减同样起算。
+func AuthorFromTask(name, description, instructions string, allowedTools []string, ep *Entrypoint, authoredFrom string, mastery float64) (*storage.SkillInstance, error) {
+	if strings.TrimSpace(name) == "" {
+		return nil, fmt.Errorf("skill: empty name")
+	}
+	if strings.TrimSpace(instructions) == "" {
+		return nil, fmt.Errorf("skill: empty instructions")
+	}
+	if authoredFrom == "" {
+		authoredFrom = "task"
+	}
+	if mastery < 0 {
+		mastery = 0
+	} else if mastery > 1 {
+		mastery = 1
+	}
+	return authorSkill(name, description, instructions, allowedTools, ep, authoredFrom, mastery)
+}
+
+// authorSkill 结晶基元：组装 SKILL.md（含血缘 frontmatter）+ 落盘装载 + 可选可执行入口 + 标血缘/初始掌握度。
+// 供 seed 路（AuthorFromKnowledge）与 task 路（AuthorFromTask）复用——唯一差异在 authoredFrom 与 mastery 来源。
+func authorSkill(name, description, instructions string, allowedTools []string, ep *Entrypoint, authoredFrom string, mastery float64) (*storage.SkillInstance, error) {
+	if name == "" {
+		name = "untitled-skill"
+	}
 	if len(allowedTools) == 0 {
 		allowedTools = []string{"web.fetch", "script.python"}
 	}
-
 	atJSON, _ := json.Marshal(allowedTools)
 	var atYaml string
 	{
@@ -255,7 +287,6 @@ func AuthorFromKnowledge(seedID int64, name, description, instructions string, a
 			atYaml += "\n  - " + t
 		}
 	}
-	authoredFrom := fmt.Sprintf("interest_seed#%d", seedID)
 	content := fmt.Sprintf(`---
 name: %s
 description: |
@@ -287,11 +318,11 @@ authored_from: "%s"
 			slog.Warn("skill entrypoint unknown lang, skipped", "id", inst.ID, "lang", ep.Lang)
 		}
 	}
-	// 标记血缘 + 以来源兴趣的掌握度初始化技能 mastery（结晶时已学透，R82 遗忘衰减从此起算）。
+	// 标记血缘 + 初始化技能 mastery（R82 遗忘衰减从此起算）。
 	if err := storage.SetSkillAuthoredFrom(inst.ID, authoredFrom); err != nil {
 		slog.Warn("skill set authored_from", "err", err, "id", inst.ID)
 	}
-	if err := storage.SetSkillMastery(inst.ID, seed.Mastery); err != nil {
+	if err := storage.SetSkillMastery(inst.ID, mastery); err != nil {
 		slog.Warn("skill set mastery", "err", err, "id", inst.ID)
 	}
 	return storage.GetSkillInstance(inst.ID)

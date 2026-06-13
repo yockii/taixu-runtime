@@ -1,0 +1,85 @@
+name: release
+
+# 推 tag v* 出跨平台单二进制（Win/macOS/Linux × amd64/arm64）。
+# runtime 纯 Go（modernc sqlite + goja，CGO_ENABLED=0）→ 单 ubuntu runner 交叉编译全平台。
+# llama.cpp(嵌入) / chromium(浏览器) 是 Docker 镜像的附加；裸二进制缺它们时优雅降级，
+# 诞生 / 感知 / 社交 / 游戏等核心不受影响。手动触发也可（workflow_dispatch）。
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write # 创建 Release + 上传产物
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # —— 前端：构建 SPA 并拷进 Go embed 目录 ——
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Build web SPA
+        working-directory: web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+      - name: Embed SPA into Go build dir
+        run: |
+          rm -f cmd/runtime/webbuild/.gitkeep
+          cp -r web/build/. cmd/runtime/webbuild/
+
+      # —— Go：交叉编译矩阵 ——
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - name: Cross-compile
+        run: |
+          set -eu
+          mkdir -p dist
+          VER="${GITHUB_REF_NAME:-dev}"
+          targets="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64"
+          for t in $targets; do
+            os="${t%/*}"; arch="${t#*/}"
+            ext=""; [ "$os" = "windows" ] && ext=".exe"
+            out="build/${os}_${arch}"
+            mkdir -p "$out"
+            echo "==> $os/$arch"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+              go build -ldflags="-s -w -X main.version=$VER" -trimpath \
+              -o "$out/taixu$ext" ./cmd/runtime
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+              go build -ldflags="-s -w" -trimpath \
+              -o "$out/taixu-setup$ext" ./cmd/setup
+            cp README.md "$out/" 2>/dev/null || true
+            if [ "$os" = "windows" ]; then
+              (cd "$out" && zip -q -r "../../dist/taixu_${VER}_${os}_${arch}.zip" .)
+            else
+              tar -C "$out" -czf "dist/taixu_${VER}_${os}_${arch}.tar.gz" .
+            fi
+          done
+          (cd dist && sha256sum * > SHA256SUMS.txt)
+          ls -la dist
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: dist/*
+          generate_release_notes: true
+
+      - name: Upload artifacts (manual runs)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: taixu-binaries
+          path: dist/*

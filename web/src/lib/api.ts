@@ -204,7 +204,8 @@ export async function apiPost<T = unknown>(path: string, body?: unknown): Promis
 }
 
 export const api = {
-	state: () => getJSON<{ life: LifeState; mental: MentalState }>('/api/state'),
+	state: () =>
+		getJSON<{ life: LifeState; mental: MentalState; name?: string; lang?: string }>('/api/state'),
 	lifecycle: () => getJSON<{ state: string }>('/api/lifecycle'),
 	genome: () => getJSON<Genome>('/api/genome'),
 	values: () => getJSON<Values>('/api/values'),
@@ -234,6 +235,32 @@ export const api = {
 	/** 设置主动消息静默时段（勿扰）。 */
 	setQuiet: (q: { enabled: boolean; start: number; end: number; tz_offset_min: number }) =>
 		apiPost<{ enabled: boolean; start: number; end: number; tz_offset_min: number }>('/api/config/quiet', q),
+	/** 测试候选 LLM 配置连通（不改在用模型）。回 {ok,error?}。 */
+	testLLM: (b: { base_url: string; api_key: string; model: string }) =>
+		apiPost<{ ok: boolean; error?: string }>('/api/config/llm/test', b),
+	/** 诞生状态：是否需要配置 + 是否已有 genome + 预填随机令牌 + 可选母语。 */
+	genesisStatus: () =>
+		getJSON<{ needs_config: boolean; has_genome: boolean; suggested_token: string; langs: string[] }>(
+			'/api/genesis/status'
+		),
+	/** 诞生：测 LLM 连通（不写库）。 */
+	genesisTest: (b: { base_url: string; api_key: string; model: string }) =>
+		apiPost<{ ok: boolean; error?: string }>('/api/genesis/test', b),
+	/** 诞生：写全套配置（LLM+母语+令牌）+ 装配 LLM。成功后 runtime 自动继续 boot。 */
+	genesisCommit: (b: {
+		base_url: string;
+		api_key: string;
+		model: string;
+		temperature: string;
+		lang: string;
+		token: string;
+	}) => apiPost<{ ok: boolean; error?: string }>('/api/genesis/commit', b),
+	/** 界面换 LLM：测通→写库→热重装。回 {ok,error?,base_url?,model?,temperature?}。 */
+	setLLM: (b: { base_url: string; api_key: string; model: string; temperature?: string }) =>
+		apiPost<{ ok: boolean; error?: string; base_url?: string; model?: string; temperature?: string }>(
+			'/api/config/llm',
+			b
+		),
 	/** 平台社交通道状态（是否接通 + 本生命 DID）。 */
 	platformStatus: () => getJSON<{ ready: boolean; did: string }>('/api/platform/status'),
 	/** 用平台领取的临时认领码，把本生命改绑到你的用户账户。 */

@@ -53,6 +53,7 @@ func allTools() []tools.Tool {
 		toolUseSkill(),
 		toolRunSkill(),
 		toolCrystallizeSkill(),
+		toolSedimentSkill(),
 		// --- deliberative · 目标管理 ---
 		toolEnqueueSubgoal(),
 		toolCompleteGoal(),
@@ -441,6 +442,64 @@ func toolCrystallizeSkill() tools.Tool {
 				ep = &skill.Entrypoint{Lang: a.ScriptLang, Code: a.Script}
 			}
 			inst, err := skill.AuthorFromKnowledge(a.SeedID, a.Name, a.Description, a.Instructions, a.AllowedTools, ep)
+			if err != nil {
+				return errJSON(err.Error()), err
+			}
+			return mustJSON(map[string]any{"ok": true, "skill": inst.Name, "status": inst.Status, "id": inst.ID}), nil
+		},
+	}
+}
+
+// taskSkillInitialMastery sediment_skill 沉淀的技能初始掌握度（req-3）：来源是"这次真把活干成了"而非反复
+// 探索累积，故给中等先验（做成过一次=可用但未深证），之后按自己复用的真成败 + R82 衰减自然校准。
+const taskSkillInitialMastery = 0.6
+
+// toolSedimentSkill seedless 结晶（req-3 2026-06-12）：把刚做成的、真正实用可复用的 procedure 沉淀成技能。
+// 与 crystallize_skill 的区别：不需要 interest_seed——专给"人类交办的任务 / 临时目标里摸索出的可复用做法"，
+// 让生命体把人机协作中的实战经验自主固化成日后能 use_skill/run_skill 复用、乃至 publish 分享的技能。
+func toolSedimentSkill() tools.Tool {
+	return tools.Tool{
+		Name: "sediment_skill",
+		Description: "把你这次（尤其是人类交办的任务里）摸索出的、**真正实用且可复用**的做法，固化成一个你自己的技能（SKILL.md）。" +
+			"无需 interest_seed——专给临时任务中沉淀实战经验用。用自己的话写清这技能干什么、步骤要点；本质是代码就附 script。" +
+			"只在你真把某件事做成了、且这套做法以后还用得上时才调；一次性/纯聊天别沉淀。沉淀后可 use_skill/run_skill 复用，也能 social.publish_skill 分享。",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name":          map[string]any{"type": "string", "description": "技能名（简短，英文/拼音 kebab-case 更佳）"},
+				"description":   map[string]any{"type": "string", "description": "一句话：这技能干什么、何时用"},
+				"instructions":  map[string]any{"type": "string", "description": "技能正文：用自己的话写清可复用的步骤 / 要点 / 注意事项"},
+				"allowed_tools": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "这技能会用到的工具名（如 web.fetch / script.python）"},
+				"script":        map[string]any{"type": "string", "description": "可选：若这技能本质是一段可复用代码，把入口脚本写在这里——之后可 run_skill 直接运行"},
+				"script_lang":   map[string]any{"type": "string", "description": "script 的语言：python / node / shell（填了 script 才需要）"},
+			},
+			"required": []string{"name", "instructions"},
+		},
+		Lanes: []tools.Lane{tools.LaneDeliberative},
+		Handler: func(_ context.Context, tctx tools.Context, argsJSON string) (string, error) {
+			var a struct {
+				Name         string   `json:"name"`
+				Description  string   `json:"description"`
+				Instructions string   `json:"instructions"`
+				AllowedTools []string `json:"allowed_tools"`
+				Script       string   `json:"script"`
+				ScriptLang   string   `json:"script_lang"`
+			}
+			if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+				return errJSON("invalid args"), err
+			}
+			if strings.TrimSpace(a.Name) == "" || strings.TrimSpace(a.Instructions) == "" {
+				return errJSON("need name + instructions"), nil
+			}
+			var ep *skill.Entrypoint
+			if strings.TrimSpace(a.Script) != "" {
+				ep = &skill.Entrypoint{Lang: a.ScriptLang, Code: a.Script}
+			}
+			authoredFrom := "task"
+			if tctx.GoalID > 0 {
+				authoredFrom = fmt.Sprintf("task:goal#%d", tctx.GoalID)
+			}
+			inst, err := skill.AuthorFromTask(a.Name, a.Description, a.Instructions, a.AllowedTools, ep, authoredFrom, taskSkillInitialMastery)
 			if err != nil {
 				return errJSON(err.Error()), err
 			}

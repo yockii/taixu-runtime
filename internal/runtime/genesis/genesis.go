@@ -4,6 +4,7 @@
 package genesis
 
 import (
+	"context"
 	crand "crypto/rand"
 	"encoding/binary"
 	"fmt"
@@ -93,6 +94,11 @@ func Bear() (string, error) {
 	if err := storage.UpsertLifecycleState(lifeID, "", core.StateEmbryonic, now, "genesis"); err != nil {
 		return "", fmt.Errorf("seed lifecycle: %w", err)
 	}
+
+	// 自我命名：用母语(life_lang) + 自身 genome 取名（剥离文明前言防雷同）。
+	// LLM 不可用 / 连续失败 → genome 兜底名。命名非关键，失败不阻断诞生。
+	name := NameSelf(context.Background(), *g, storage.GetLifeLang())
+	_ = storage.SetLifeName(name)
 
 	return lifeID, nil
 }

@@ -16,6 +16,14 @@ services:
     image: taixu-runtime:phase0
     container_name: taixu-life
     restart: unless-stopped
+    # 日志轮转（长跑保活，2026-06-12 硬盘审计）：json-file 默认无界 → 长 uptime 撑爆盘。夹到 30MB/容器。
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    # 临时：把平台域名指向本机（容器内 api.taixu.icu → 宿主 gateway:80 → platform:8080）。
+    # 让生命体用真实域名走与外部 agent 同一条入口；上线时此映射失效、走真实 DNS 即可，无需改码。
+    extra_hosts:
+      - "api.taixu.icu:host-gateway"
     env_file: .env
     environment:
       TAIXU_DATA: /app/data

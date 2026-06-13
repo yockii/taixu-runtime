@@ -9,8 +9,9 @@ import (
 	"taixu.icu/runtime/internal/storage"
 )
 
-// TestSocialWealth 验 C10 slice1：社交产 wealth 递减反刷 + 无 [0,1] clamp(可超1) + spend + 日清 + 持久化。
-func TestSocialWealth(t *testing.T) {
+// TestWealthCache 验 2026-06-12 平台权威化：life.Wealth 降级为平台余额显示缓存，
+// SetWealthCache 绝对写入（微财富→wealth）、非负 clamp、持久化、不被 [0,1] clamp（可超 1）。
+func TestWealthCache(t *testing.T) {
 	if err := storage.Init(filepath.Join(t.TempDir(), "w.db")); err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -29,61 +30,37 @@ func TestSocialWealth(t *testing.T) {
 		t.Fatalf("state init: %v", err)
 	}
 
-	// 第一次连接型(base=1.0)：awarded=1.0/(1+0)=1.0。
-	if w := EarnSocialWealth(1.0); !approx(w, 1.0) {
-		t.Fatalf("首次应产 1.0, 得 %.4f", w)
+	// 平台余额 3_500_000 micro = 3.5 wealth（>1，绝不被 clamp——wealth 非 [0,1] 标量）。
+	if err := SetWealthCache(3_500_000); err != nil {
+		t.Fatalf("set cache: %v", err)
 	}
-	// 第二次(base=1.0)：递减 awarded=1.0/(1+0.5×1.0)=0.667。
-	if w := EarnSocialWealth(1.0); !approx(w, 1.0/1.5) {
-		t.Fatalf("第二次应递减到 %.4f, 得 %.4f", 1.0/1.5, w)
-	}
-	ls, _ := Snapshot()
-	// wealth 累计 1.0+0.667=1.667 > 1 —— **关键：wealth 非 [0,1] 标量，绝不被 clamp**。
-	if !approx(ls.Wealth, 1.0+1.0/1.5) {
-		t.Fatalf("wealth 应累计 %.4f(超1不clamp), 得 %.4f", 1.0+1.0/1.5, ls.Wealth)
-	}
-	if ls.Wealth <= 1.0 {
-		t.Fatal("wealth 应能超过 1.0（无上界 clamp）")
+	if s, _ := Snapshot(); !approx(s.Wealth, 3.5) {
+		t.Fatalf("缓存应 3.5(超1不clamp), 得 %.4f", s.Wealth)
 	}
 
-	// base<=0 不产。
-	if w := EarnSocialWealth(0); w != 0 {
-		t.Fatalf("base0 不应产, 得 %.4f", w)
+	// 绝对写入（非增量）：再设较小值 → 直接覆盖为 1.0，与平台对齐不漂移。
+	if err := SetWealthCache(1_000_000); err != nil {
+		t.Fatalf("set cache 2: %v", err)
+	}
+	if s, _ := Snapshot(); !approx(s.Wealth, 1.0) {
+		t.Fatalf("绝对写入应覆盖为 1.0, 得 %.4f", s.Wealth)
 	}
 
-	// 持久化：reload 应见累计 wealth。
+	// 负值 clamp 到 0。
+	if err := SetWealthCache(-5); err != nil {
+		t.Fatalf("set neg: %v", err)
+	}
+	if s, _ := Snapshot(); s.Wealth != 0 {
+		t.Fatalf("负值应 clamp 0, 得 %.4f", s.Wealth)
+	}
+
+	// 持久化：reload 应见缓存值。
+	if err := SetWealthCache(2_000_000); err != nil {
+		t.Fatalf("set cache 3: %v", err)
+	}
 	reloaded, _ := storage.LoadLifeState(life)
-	if !approx(reloaded.Wealth, ls.Wealth) {
-		t.Fatalf("持久化 wealth 应 %.4f, 得 %.4f", ls.Wealth, reloaded.Wealth)
-	}
-
-	// spend：扣款 + 余额不足拒。
-	before := ls.Wealth
-	if err := SpendWealth(0.5); err != nil {
-		t.Fatalf("spend 0.5: %v", err)
-	}
-	if s, _ := Snapshot(); !approx(s.Wealth, before-0.5) {
-		t.Fatalf("spend 后应 %.4f, 得 %.4f", before-0.5, s.Wealth)
-	}
-	if err := SpendWealth(999); err == nil {
-		t.Fatal("余额不足应拒")
-	}
-
-	// 日清：ResetEnergyDailyCap 清 social_wealth_today（递减重置），wealth 不动。
-	wealthBefore, _ := Snapshot()
-	if err := ResetEnergyDailyCap(1.0, 9999); err != nil {
-		t.Fatalf("reset: %v", err)
-	}
-	after, _ := Snapshot()
-	if after.SocialWealthToday != 0 {
-		t.Fatalf("日清后 social_wealth_today 应 0, 得 %.4f", after.SocialWealthToday)
-	}
-	if !approx(after.Wealth, wealthBefore.Wealth) {
-		t.Fatalf("日清不应动 wealth 余额, 得 %.4f", after.Wealth)
-	}
-	// 日清后再产，递减重置回满额(base/(1+0))。
-	if w := EarnSocialWealth(1.0); !approx(w, 1.0) {
-		t.Fatalf("日清后递减重置应产满 1.0, 得 %.4f", w)
+	if !approx(reloaded.Wealth, 2.0) {
+		t.Fatalf("持久化缓存应 2.0, 得 %.4f", reloaded.Wealth)
 	}
 }
 

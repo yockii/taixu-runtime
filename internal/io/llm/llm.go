@@ -134,27 +134,28 @@ func resolveModel(name string) (*modelClient, bool) {
 
 // Reason Chat Completions（无 tool，default 模型）。
 func Reason(ctx context.Context, msgs []Message) (ReasonResult, error) {
-	return reasonInternal(ctx, ModelDefault, msgs, nil)
+	return reasonInternal(ctx, ModelDefault, msgs, nil, "")
 }
 
 // ReasonWithTools Chat Completions + function calling（default 模型）。
 // 返回 ReasonResult 含 Text 与 ToolCalls；调用方负责 agent loop 直至 ToolCalls 空。
 func ReasonWithTools(ctx context.Context, msgs []Message, tools []Tool) (ReasonResult, error) {
-	return reasonInternal(ctx, ModelDefault, msgs, tools)
+	return reasonInternal(ctx, ModelDefault, msgs, tools, "")
 }
 
 // ReasonModel 指定模型档的无 tool 推理（如 ModelStrong；未配该档自动回退 default）。
 func ReasonModel(ctx context.Context, model string, msgs []Message) (ReasonResult, error) {
-	return reasonInternal(ctx, model, msgs, nil)
+	return reasonInternal(ctx, model, msgs, nil, "")
 }
 
 // ReasonWithToolsModel 指定模型档的 function-calling 推理（慎思层把硬推理/编码派给 ModelStrong）。
 // 未配该档自动回退 default——故调用方可无脑传 ModelStrong，没配也安全。
 func ReasonWithToolsModel(ctx context.Context, model string, msgs []Message, tools []Tool) (ReasonResult, error) {
-	return reasonInternal(ctx, model, msgs, tools)
+	return reasonInternal(ctx, model, msgs, tools, "")
 }
 
-func reasonInternal(ctx context.Context, model string, msgs []Message, tools []Tool) (ReasonResult, error) {
+// reasonInternal forceTool 非空 → tool_choice 强制选该 function（命名等需确定性单工具调用的场景用）。
+func reasonInternal(ctx context.Context, model string, msgs []Message, tools []Tool, forceTool string) (ReasonResult, error) {
 	mc, ok := resolveModel(model)
 	if !ok {
 		return ReasonResult{}, errors.New("llm: not configured")
@@ -203,6 +204,12 @@ func reasonInternal(ctx context.Context, model string, msgs []Message, tools []T
 					Parameters:  t.Parameters,
 				},
 			})
+		}
+	}
+	if forceTool != "" {
+		req.ToolChoice = openai.ToolChoice{
+			Type:     openai.ToolTypeFunction,
+			Function: openai.ToolFunction{Name: forceTool},
 		}
 	}
 

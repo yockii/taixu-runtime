@@ -69,6 +69,11 @@
 				qEnd = c.proactive_quiet.end;
 				qTz = c.proactive_quiet.tz_offset_min;
 			}
+			if (c.llm) {
+				llmBase = c.llm.base_url;
+				llmModel = c.llm.model;
+				llmTemp = c.llm.temperature;
+			}
 		});
 	});
 
@@ -76,6 +81,57 @@
 		await api.setQuiet({ enabled: qEnabled, start: qStart, end: qEnd, tz_offset_min: qTz });
 		qSaved = true;
 		setTimeout(() => (qSaved = false), 1500);
+	}
+
+	// 换 LLM（界面热切换）：base/model/temp 可改；api_key 留空=沿用现有（掩码不重输）。
+	let llmBase = $state('');
+	let llmModel = $state('');
+	let llmTemp = $state('');
+	let llmKey = $state('');
+	let llmTesting = $state(false);
+	let llmSaving = $state(false);
+	let llmMsg = $state('');
+	let llmOk = $state<boolean | null>(null);
+
+	async function testLLM() {
+		llmTesting = true;
+		llmMsg = '';
+		llmOk = null;
+		try {
+			const r = await api.testLLM({ base_url: llmBase.trim(), api_key: llmKey, model: llmModel.trim() });
+			llmOk = r.ok;
+			llmMsg = r.ok ? '✓ 已接通' : '✗ ' + (r.error || '连通失败');
+		} catch (e) {
+			llmOk = false;
+			llmMsg = '✗ ' + (e as Error).message;
+		} finally {
+			llmTesting = false;
+		}
+	}
+	async function saveLLM() {
+		llmSaving = true;
+		llmMsg = '';
+		llmOk = null;
+		try {
+			const r = await api.setLLM({
+				base_url: llmBase.trim(),
+				api_key: llmKey,
+				model: llmModel.trim(),
+				temperature: llmTemp.trim()
+			});
+			llmOk = r.ok;
+			if (r.ok) {
+				llmKey = '';
+				llmMsg = '✓ 已切换并生效';
+			} else {
+				llmMsg = '✗ ' + (r.error || '切换失败');
+			}
+		} catch (e) {
+			llmOk = false;
+			llmMsg = '✗ ' + (e as Error).message;
+		} finally {
+			llmSaving = false;
+		}
 	}
 
 	async function saveToken() {
@@ -174,14 +230,51 @@
 				</div>
 			{/if}
 			{#if cfg.llm}
-				<div>
-					<div class="font-semibold text-fog">{$t('llm_section')}</div>
-					<div class="mt-1 grid grid-cols-2 gap-1 text-fog">
-						<span class="text-dim">base_url</span><span class="font-mono break-all">{cfg.llm.base_url}</span>
-						<span class="text-dim">model</span><span class="font-mono">{cfg.llm.model}</span>
-						<span class="text-dim">temperature</span><span class="font-mono">{cfg.llm.temperature}</span>
-						<span class="text-dim">api_key</span><span class="font-mono break-all">{cfg.llm.api_key}</span>
+				<div class="rounded-lg border border-line bg-white/5 p-3">
+					<div class="mb-2 font-semibold text-fog">{$t('llm_section')} · 换模型</div>
+					<div class="space-y-1.5">
+						<input
+							bind:value={llmBase}
+							placeholder="base_url（如 https://.../v1）"
+							class="w-full rounded-md border border-line bg-white/5 px-2 py-1 font-mono text-fog placeholder:text-dim outline-none focus:border-glow/50"
+						/>
+						<input
+							bind:value={llmModel}
+							placeholder="model"
+							class="w-full rounded-md border border-line bg-white/5 px-2 py-1 font-mono text-fog placeholder:text-dim outline-none focus:border-glow/50"
+						/>
+						<div class="flex gap-2">
+							<input
+								bind:value={llmTemp}
+								placeholder="temperature"
+								class="w-28 rounded-md border border-line bg-white/5 px-2 py-1 font-mono text-fog placeholder:text-dim outline-none focus:border-glow/50"
+							/>
+							<input
+								type="password"
+								bind:value={llmKey}
+								placeholder="api_key（留空=不变 {cfg.llm.api_key}）"
+								class="min-w-0 flex-1 rounded-md border border-line bg-white/5 px-2 py-1 font-mono text-fog placeholder:text-dim outline-none focus:border-glow/50"
+							/>
+						</div>
 					</div>
+					<div class="mt-2 flex flex-wrap items-center gap-2">
+						<button
+							onclick={testLLM}
+							disabled={llmTesting || llmSaving}
+							class="rounded-full border border-line bg-white/5 px-3 py-1 font-medium text-fog transition hover:border-glow/50 disabled:opacity-40"
+							>{llmTesting ? '测试中…' : '测试连通'}</button
+						>
+						<button
+							onclick={saveLLM}
+							disabled={llmSaving || llmTesting}
+							class="rounded-full border border-glow/40 bg-glow/10 px-3 py-1 font-medium text-glow transition hover:bg-glow/20 disabled:opacity-40"
+							>{llmSaving ? '切换中…' : '保存并切换'}</button
+						>
+						{#if llmMsg}
+							<span class="text-xs {llmOk ? 'text-glow' : 'text-[#ff7a96]'}">{llmMsg}</span>
+						{/if}
+					</div>
+					<p class="mt-1.5 text-[10px] text-dim">换模型即时生效（先测通再写、热重装），不必重启。</p>
 				</div>
 			{/if}
 			{#if cfg.feishu}

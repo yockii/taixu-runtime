@@ -11,9 +11,10 @@
 //   - 静默时段：Phase 0 暂未实装，见下 TODO
 //
 // 前瞻（Phase 4 联网生态）：
-//   届时社交渠道多元（Life Network / 世界服务 / 其他生命体）。主动社交不再是"给用户发 IM"
-//   单一动作，而是生命体**自主决策去哪参与社交**——去图书馆、找同好生命体、参加群体活动等。
-//   彼时这里应升级为"社交意图 → 渠道选择 → 行动"的决策链，接 reputation / Encounter（07）。
+//
+//	届时社交渠道多元（Life Network / 世界服务 / 其他生命体）。主动社交不再是"给用户发 IM"
+//	单一动作，而是生命体**自主决策去哪参与社交**——去图书馆、找同好生命体、参加群体活动等。
+//	彼时这里应升级为"社交意图 → 渠道选择 → 行动"的决策链，接 reputation / Encounter（07）。
 package reflex
 
 import (
@@ -27,6 +28,7 @@ import (
 	"taixu.icu/runtime/internal/bus"
 	"taixu.icu/runtime/internal/core"
 	"taixu.icu/runtime/internal/io/llm"
+	"taixu.icu/runtime/internal/runtime/contextasm"
 	"taixu.icu/runtime/internal/runtime/ledger"
 	"taixu.icu/runtime/internal/runtime/memory"
 	"taixu.icu/runtime/internal/runtime/state"
@@ -55,8 +57,8 @@ const (
 // 静默时段配置键（R92，按用户本地时区；offset 避免容器 tzdata 依赖）。
 const (
 	cfgQuietEnabled = "proactive_quiet_enabled"
-	cfgQuietStart   = "proactive_quiet_start"  // 起始小时 0-23（本地）
-	cfgQuietEnd     = "proactive_quiet_end"    // 结束小时 0-23（本地）
+	cfgQuietStart   = "proactive_quiet_start"   // 起始小时 0-23（本地）
+	cfgQuietEnd     = "proactive_quiet_end"     // 结束小时 0-23（本地）
 	cfgTZOffsetMin  = "proactive_tz_offset_min" // 用户本地相对 UTC 的分钟偏移（如 +480 = UTC+8）
 )
 
@@ -241,6 +243,10 @@ func composeProactiveMessage(genome core.Genome, contact *storage.Contact) strin
 		"简短自然、一两句，直接给消息正文。内向就别太热络，符合你的性格与当下心情。\n" +
 		"⚠ 你自己做的事（发呆/学习等）是你自己的，别说成是ta在做。"
 	msgs := []llm.Message{{Role: "system", Content: sys}}
+	// ContextAssembler 精简经历块（C，2026-06-12）：主动搭话也带上跨域近期经历，让开场更连贯（有的聊）。小预算。
+	if exp := contextasm.RecentExperience(lifeID, 600, 3); exp != "" {
+		msgs = append(msgs, llm.Message{Role: "assistant", Content: exp})
+	}
 	// 把本会话近期往来按对话角色喂进去，让它清楚哪条是自己发的、ta回没回（拟人化"为什么不回我"的基础）。
 	if turns, terr := storage.RecentDialogueTurnsForConvo(lifeID, contact.Channel, contact.PeerID, 16); terr == nil {
 		for _, t := range turns {

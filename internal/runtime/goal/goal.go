@@ -76,6 +76,16 @@ func CollectCandidates(frame perception.Frame, drives []core.Drive) []Candidate 
 			c.MatchedValues = []string{core.ValueCreativity}
 		case core.DriveStability:
 			c.MatchedValues = []string{core.ValueSafety}
+		case core.DriveDuel:
+			// 制品对战=精进竞技策略+尝试新解法：匹配 growth(成长)+exploration(探索)。
+			// 同 DriveGame 修「无价值对齐→永不胜出」：必须在此登记 MatchedValues，否则 strength 再高也系统性输。
+			c.MatchedValues = []string{core.ValueGrowth, core.ValueExploration}
+		case core.DriveGame:
+			// 游戏=与别的生命同场博弈+精进策略：匹配 friendship(社交)+growth(成长)。
+			// 修「游戏永不胜出」根因(2026-06-12)：原 switch 无 DriveGame 分支 → 无价值对齐加成 →
+			// 即便 strength 0.8 也只 score≈0.86，系统性输给被 friendship/growth 放大的社交/成就(≈1.05)。
+			// 前几轮调 strength 全治标；补价值匹配才是治本。
+			c.MatchedValues = []string{core.ValueFriendship, core.ValueGrowth}
 		}
 		out = append(out, c)
 	}

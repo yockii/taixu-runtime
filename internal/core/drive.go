@@ -20,4 +20,5 @@ const (
 	DriveCreativity  DriveKind = "creativity"
 	DriveStability   DriveKind = "stability"
 	DriveGame        DriveKind = "game" // C15：参与平台游戏（有进行中对局待办时强驱动去处理欠的回合）
+	DriveDuel        DriveKind = "duel" // C12：制品对战（异步竞技；低频去精进策略/发起挑战，赚灵韵+爬天梯）
 )

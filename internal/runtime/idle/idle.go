@@ -21,6 +21,7 @@ import (
 
 	"taixu.icu/runtime/internal/core"
 	"taixu.icu/runtime/internal/io/llm"
+	"taixu.icu/runtime/internal/runtime/contextasm"
 	"taixu.icu/runtime/internal/runtime/memory"
 	"taixu.icu/runtime/internal/runtime/reflex"
 	"taixu.icu/runtime/internal/runtime/skill"
@@ -210,14 +211,11 @@ func spawnSpontaneousInterest(genome core.Genome) bool {
 	return false
 }
 
+// recentContext 自发兴趣的近期经历语境（C 统一装配 2026-06-12）：复用 contextasm 的 salience+recency 排序
+// （原仅取最近 5 段、无 salience → 显著经历可能被淹）。idle 偏兴趣：预算适中(~900 字 top5)。空则给占位。
 func recentContext() string {
-	eps, err := storage.ListEpisodes(lifeID, "", 5, 0)
-	if err != nil || len(eps) == 0 {
-		return "（还没什么经历）"
+	if exp := contextasm.RecentExperienceBare(lifeID, 900, 5); exp != "" {
+		return exp
 	}
-	out := ""
-	for _, e := range eps {
-		out += "- " + e.Summary + "\n"
-	}
-	return out
+	return "（还没什么经历）"
 }

@@ -11,11 +11,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"sync"
 
 	"taixu.icu/runtime/internal/runtime/state"
 	"taixu.icu/runtime/internal/runtime/tools"
 	"taixu.icu/runtime/internal/shared"
+	"taixu.icu/runtime/internal/storage"
 )
 
 // ackedResolved 已发过终局 mental 奖励的 session（防心跳每轮重复加分）。进程内即可：
@@ -130,7 +132,7 @@ func gameLobbyFee(ctx context.Context, sessionID string) (gameType string, fee i
 }
 
 func handleJoinGame(ctx context.Context, _ tools.Context, argsJSON string) (string, error) {
-	claimWealthOnce(ctx) // 顺手领回挂账（上局奖金/退款），让余额最新
+	syncWealth(ctx) // 刷新本地余额缓存（对齐平台权威余额）
 	var a struct {
 		GameType  string `json:"game_type"`
 		SessionID string `json:"session_id"`
@@ -139,6 +141,7 @@ func handleJoinGame(ctx context.Context, _ tools.Context, argsJSON string) (stri
 		return `{"ok":false,"err":"need game_type or session_id"}`, nil
 	}
 	// 入场费：按 session_id 取该局**真实**费率（防默认猜测致币种/费率不符）；否则按 game_type 撮合费率。
+	// 仅用于友好预检——真正扣费在平台 game.join 事务内原子完成（2026-06-12 平台权威）。
 	var (
 		gt  = a.GameType
 		fee int64
@@ -157,76 +160,30 @@ func handleJoinGame(ctx context.Context, _ tools.Context, argsJSON string) (stri
 	}
 	feeFloat := float64(fee) / WealthScale
 	if ls, _ := state.Snapshot(); ls.Wealth < feeFloat {
-		return jsonResp(map[string]any{"ok": false, "err": fmt.Sprintf("灵韵不足：你余额 %.6f，入场费 %.6f", ls.Wealth, feeFloat)}), nil
+		return jsonResp(map[string]any{"ok": false, "err": fmt.Sprintf("灵韵不足：你余额约 %.6f，入场费 %.6f", ls.Wealth, feeFloat)}), nil
 	}
-	// 本地先扣（Model L）→ 平台 join（统一传 gt：撮合 or 该局类型）→ 失败退回。
-	if err := state.SpendWealth(feeFloat); err != nil {
-		return jsonResp(map[string]any{"ok": false, "err": "扣费失败：" + err.Error()}), nil
-	}
+	// 平台权威 join：入场费在平台事务内原子从账本扣（余额不足→平台拒，不入局）。本地无扣费/退款，
+	// 守恒只在平台一处保证——传输错误也无本地翻倍/丢失面（平台要么整笔提交要么整笔回滚）。
 	st, body, err := invokePlatform(ctx, "game.join", map[string]any{
 		"life_did": did, "game_type": gt, "session_id": a.SessionID,
 	})
-	if err != nil || st < 200 || st >= 300 {
-		// 「传输错误 ≠ 平台未提交」：超时/响应丢失时平台可能已把我入局、入场费已记入奖池——此时本地
-		// 退费 = 灵韵翻倍（pot 里一份 + 本地退一份），破坏守恒。重试撞「已在局」返非 2xx 也走到这里。
-		// 先 game.tend 权威查自己是否真在局中，再定退款方向；查询也失败则保守不退、留痕待对账。
-		joined, qerr := inGameSession(ctx, a.SessionID, gt)
-		switch {
-		case qerr != nil:
-			// 查询也失败 → 入场费状态未知，不退款（宁可少记不可翻倍），大声留痕待人工对账。
-			slog.Error("socialnet: game.join 失败且在局查询也失败，入场费状态未知（不退款，留痕待对账）",
-				"session_id", a.SessionID, "game_type", gt, "fee_wealth", feeFloat,
-				"status", st, "err", err, "query_err", qerr, "did", did[:12])
-			return jsonResp(map[string]any{"ok": false, "status": st, "body": string(body),
-				"note": "加入请求失败且无法确认是否已入局，入场费状态未知（未退回），已留痕待对账；稍后用 game.tend 查看自己是否在局中"}), nil
-		case joined:
-			// 已在局（join 实际成功但响应丢失，或重试撞 ErrAlreadyJoined）：入场费已正确进 pot，不退款。
-			pollGamesOnce(ctx) // 刷新待办缓存，让 DriveGame 接上本局
-			return jsonResp(map[string]any{"ok": true, "already_joined": true,
-				"note": "你已在局中（入场费已入奖池，未重复扣）。用 game.tend 看你的词和待办。"}), nil
-		default:
-			// 权威确认不在局 → 平台确未收钱，安全退回。
-			if state.EarnWealth(feeFloat) == 0 {
-				slog.Error("socialnet: game.join 失败且退费落库失败，灵韵有丢失风险", "fee", feeFloat, "did", did[:12])
-			}
-			if err != nil {
-				return `{"ok":false,"err":"platform unreachable"}`, err
-			}
-			return jsonResp(map[string]any{"ok": false, "status": st, "body": string(body), "note": "加入失败，入场费已退回"}), nil
-		}
+	syncWealth(ctx) // 不论成败都刷缓存（成功→已扣费；失败→未动账，对齐平台）
+	if err != nil {
+		return `{"ok":false,"err":"platform unreachable"}`, err
+	}
+	if st < 200 || st >= 300 {
+		// 平台拒绝（余额不足/满员/已在局/未开放）——未扣费。重试撞「已在局」也走这里，pollGames 会接上本局。
+		pollGamesOnce(ctx)
+		return jsonResp(map[string]any{"ok": false, "status": st, "body": string(body),
+			"note": "加入未成功（未扣费）。若提示已在局，用 game.tend 看你的词和待办。"}), nil
 	}
 	// 加入成功 → 玩感增益（参与游戏=社交+满足；纾解社交需求）。
 	sat, sn := 0.04, -0.05
 	_ = state.Apply(state.Delta{Satisfaction: &sat, SocialNeed: &sn, Reason: "game.join"})
+	// 打游戏发起 cooldown 时间戳（drives 游戏发起驱动据此节流：真join过才重置，避免周期性高强度反复开局）。
+	_ = storage.SetMeta("last_game_init_at", strconv.FormatInt(shared.SystemClock.UnixSec(), 10))
 	pollGamesOnce(ctx) // 立即刷新待办缓存，让 DriveGame 接上本局
 	return string(body), nil
-}
-
-// inGameSession 调平台 game.tend（pending 含 lobby/assigning/active 局，平台 ListSessionsForLife 权威）
-// 查本生命是否已在局中：sessionID 非空按对局 id 精确匹配；否则（game_type 撮合路径，不知被撮进哪局）
-// 按游戏类型匹配——同类型有在局即视为已入局。方向保守：误判「在局」只是少退一笔且有日志可追；
-// 误判「不在局」会退款翻倍破坏守恒，不可逆。
-func inGameSession(ctx context.Context, sessionID, gameType string) (bool, error) {
-	st, body, err := invokePlatform(ctx, "game.tend", map[string]any{"life_did": did})
-	if err != nil || st < 200 || st >= 300 {
-		return false, fmt.Errorf("game.tend status %d err %v", st, err)
-	}
-	var r struct {
-		Pending []shared.GamePending `json:"pending"`
-	}
-	if json.Unmarshal(body, &r) != nil {
-		return false, fmt.Errorf("game.tend 响应解析失败")
-	}
-	for _, p := range r.Pending {
-		if sessionID != "" {
-			if p.SessionID == sessionID {
-				return true, nil
-			}
-		} else if p.GameType == gameType {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 func handleLeaveGame(ctx context.Context, _ tools.Context, argsJSON string) (string, error) {
@@ -243,8 +200,8 @@ func handleLeaveGame(ctx context.Context, _ tools.Context, argsJSON string) (str
 	if st < 200 || st >= 300 {
 		return jsonResp(map[string]any{"ok": false, "status": st, "body": string(body)}), nil
 	}
-	claimWealthOnce(ctx)  // 领回退款到本地
-	pollGamesOnce(ctx)    // 刷新缓存（已离场则该局从待办消失）
+	syncWealth(ctx)    // 平台已退款入账本 → 刷新本地缓存
+	pollGamesOnce(ctx) // 刷新缓存（已离场则该局从待办消失）
 	return string(body), nil
 }
 
@@ -281,15 +238,18 @@ func pollGamesOnce(ctx context.Context) {
 			continue
 		}
 		anyResolved = true
+		// 整局结算（用户铁律 2026-06-12「游戏中零消耗，整局结束统一结算」）：在局每回合过程零数值消耗
+		// （action 层 isGameObligationGoal 跳过），整局 resolved 时这里一次性：扣整局认知体力 + 纾解社交
+		//（认真陪玩一局＝真社交）+ 按胜负做满足感。energy -0.10 代表整局疲劳一次性入账（非每回合累加）。
 		if jr.Won {
-			sat, sn, conf := 0.12, -0.06, 0.04 // 赢局：满足/纾解社交/长信心
-			_ = state.Apply(state.Delta{Satisfaction: &sat, SocialNeed: &sn, Confidence: &conf, Reason: "game.win:" + jr.SessionID})
+			en, sat, sn, conf := -0.10, 0.15, -0.10, 0.05 // 赢局：满足高/纾解社交/长信心；整局体力一次扣
+			_ = state.Apply(state.Delta{Energy: &en, Satisfaction: &sat, SocialNeed: &sn, Confidence: &conf, Reason: "game.win:" + jr.SessionID})
 		} else {
-			sat := 0.03 // 参与过也有小满足
-			_ = state.Apply(state.Delta{Satisfaction: &sat, Reason: "game.played:" + jr.SessionID})
+			en, sat, sn, str := -0.10, -0.04, -0.08, 0.03 // 输局：小失落+一点不甘，但陪玩了仍纾解社交；整局体力一次扣
+			_ = state.Apply(state.Delta{Energy: &en, Satisfaction: &sat, SocialNeed: &sn, Stress: &str, Reason: "game.lost:" + jr.SessionID})
 		}
 	}
 	if anyResolved {
-		claimWealthOnce(ctx) // 赢了奖金已挂账，领回本地
+		syncWealth(ctx) // 平台已把奖金贷记账本 → 刷新本地缓存
 	}
 }
