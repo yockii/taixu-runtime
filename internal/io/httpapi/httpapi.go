@@ -117,7 +117,10 @@ func Start(ctx context.Context, addr string) *http.Server {
 	mux.HandleFunc("/api/feishu/register/start", apiFeishuRegisterStart)
 	mux.HandleFunc("/api/feishu/register/status", apiFeishuRegisterStatus)
 	mux.HandleFunc("/api/feishu/config", apiFeishuConfig)
-	// 自助重启（飞书等需重启生效的配置改后调用；监管自动拉起）。
+	// 微信接入：扫码登录 iLink（个人微信官方 Bot API）。
+	mux.HandleFunc("/api/wechat/register/start", apiWechatRegisterStart)
+	mux.HandleFunc("/api/wechat/register/status", apiWechatRegisterStatus)
+	// 自助重启（飞书/微信等需重启生效的配置改后调用；监管自动拉起）。
 	mux.HandleFunc("/api/restart", apiRestart)
 	mux.HandleFunc("/api/dialogue", apiDialogue)
 	mux.HandleFunc("/api/stream", apiStream)

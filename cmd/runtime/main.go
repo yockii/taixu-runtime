@@ -32,6 +32,7 @@ import (
 	"taixu.icu/runtime/internal/io/lark"
 	"taixu.icu/runtime/internal/io/llm"
 	"taixu.icu/runtime/internal/io/socialnet"
+	"taixu.icu/runtime/internal/io/wechat"
 	"taixu.icu/runtime/internal/lifepack"
 	"taixu.icu/runtime/internal/runtime/action"
 	"taixu.icu/runtime/internal/runtime/browser"
@@ -242,6 +243,7 @@ func main() {
 	egress.StartDispatcher()
 
 	wireLark(ctx, lifeID)
+	wireWechat(ctx)
 
 	// 历史回填（有界 best-effort，不阻塞主循环）：给空向量的历史记忆补 doc 向量。
 	// 嵌入服务不可用就跳过；每层限量、可重入，多次启动逐步补齐。也可经
@@ -715,6 +717,23 @@ func approveSkillAsync(skillID string) {
 		return
 	}
 	slog.Info("card approved skill", "skill", skillID)
+}
+
+// wireWechat 接个人微信 iLink（config 优先、env 兜底）。有 bot_token 则 Init + 起长轮询收消息 + 注册出站。
+// 未配置则跳过（观察台扫码登录后落库、重启生效）。
+func wireWechat(ctx context.Context) {
+	tok := lifecfg.WechatBotToken()
+	if tok == "" {
+		slog.Info("wechat not configured; skip (可在观察台扫码登录)")
+		return
+	}
+	if err := wechat.Init(wechat.Config{BotToken: tok}); err != nil {
+		slog.Error("wechat init", "err", err)
+		return
+	}
+	wechat.RegisterEgress()
+	go wechat.Start(ctx)
+	slog.Info("wechat wired (iLink)")
 }
 
 func wireLark(ctx context.Context, lifeID string) {

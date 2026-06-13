@@ -32,7 +32,20 @@ const (
 	// 飞书凭据：界面手填 / 一键扫码创建后落库（config 优先、env FEISHU_* 兜底）。改后重启生效。
 	KeyFeishuAppID  = "feishu_app_id"
 	KeyFeishuSecret = "feishu_app_secret"
+
+	// 微信 iLink bot_token：扫码登录后落库（config 优先、env WECHAT_BOT_TOKEN 兜底）。持久长效。
+	KeyWechatBotToken = "wechat_bot_token"
 )
+
+// WechatBotToken 微信 iLink bot_token：sqlite config 优先、env 兜底。空=未登录。
+func WechatBotToken() string {
+	return cfgOrEnv(KeyWechatBotToken, "WECHAT_BOT_TOKEN", "")
+}
+
+// SetWechatBotToken 落库微信 bot_token（扫码成功后写）。重启生效。
+func SetWechatBotToken(token string) error {
+	return storage.SetConfigString(KeyWechatBotToken, token)
+}
 
 // FeishuConfig 飞书 app_id/secret：sqlite config 优先、env 兜底。两者皆非空才算配齐。
 func FeishuConfig() (appID, secret string) {

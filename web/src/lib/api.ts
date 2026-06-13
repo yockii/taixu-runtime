@@ -271,7 +271,14 @@ export const api = {
 	/** 飞书手填凭据落库（重启生效）。 */
 	feishuConfig: (b: { app_id: string; app_secret: string }) =>
 		apiPost<{ ok: boolean; error?: string }>('/api/feishu/config', b),
-	/** 自助重启（监管自动拉起；用于飞书等需重启生效的配置）。 */
+	/** 微信扫码登录(iLink)：启动会话。 */
+	wechatRegisterStart: () => apiPost<{ ok: boolean }>('/api/wechat/register/start'),
+	/** 微信扫码：轮询进度。status idle|starting|waiting|done|failed；qr_img base64 图；qr_url 备用。 */
+	wechatRegisterStatus: () =>
+		getJSON<{ status: string; qr_img: string; qr_url: string; error: string }>(
+			'/api/wechat/register/status'
+		),
+	/** 自助重启（监管自动拉起；用于飞书/微信等需重启生效的配置）。 */
 	restart: () => apiPost<{ ok: boolean; error?: string }>('/api/restart'),
 	/** 平台社交通道状态（是否接通 + 本生命 DID）。 */
 	platformStatus: () => getJSON<{ ready: boolean; did: string }>('/api/platform/status'),

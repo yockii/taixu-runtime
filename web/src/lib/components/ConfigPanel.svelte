@@ -235,6 +235,56 @@
 		}
 	}
 
+	// —— 微信接入：扫码登录 iLink（个人微信官方 Bot API）。bot_token 落库重启生效。复用 feishuDoneRestart 自动重启。——
+	let wStatus = $state('');
+	let wQrImg = $state('');
+	let wQrUrl = $state('');
+	let wErr = $state('');
+	let wPolling = false;
+
+	async function wechatOneClick() {
+		wErr = '';
+		wStatus = 'starting';
+		wQrImg = '';
+		wQrUrl = '';
+		try {
+			await api.wechatRegisterStart();
+			pollWechat();
+		} catch (e) {
+			wStatus = 'failed';
+			wErr = (e as Error).message;
+		}
+	}
+	async function pollWechat() {
+		if (wPolling) return;
+		wPolling = true;
+		try {
+			const QRCode = (await import('qrcode')).default;
+			for (let i = 0; i < 200; i++) {
+				const r = await api.wechatRegisterStatus();
+				wStatus = r.status;
+				wErr = r.error || '';
+				if (r.qr_img) {
+					wQrImg = r.qr_img.startsWith('data:') ? r.qr_img : 'data:image/png;base64,' + r.qr_img;
+				} else if (r.qr_url && !wQrImg) {
+					try {
+						wQrImg = await QRCode.toDataURL(r.qr_url, { margin: 1, width: 200 });
+					} catch {
+						/* 渲染失败仍可点链接 */
+					}
+				}
+				if (r.status === 'done') {
+					feishuDoneRestart(); // 复用自助重启
+					break;
+				}
+				if (r.status === 'failed') break;
+				await new Promise((res) => setTimeout(res, 1500));
+			}
+		} finally {
+			wPolling = false;
+		}
+	}
+
 	async function saveToken() {
 		const v = token.trim();
 		if (!v || tokenChecking) return;
@@ -441,6 +491,34 @@
 					</details>
 				</div>
 			{/if}
+			{#if cfg.llm}
+				<div class="rounded-lg border border-line bg-white/5 p-3">
+					<div class="font-semibold text-fog">微信（个人号 · iLink）</div>
+					<p class="mt-1 mb-2 text-fog">扫码登录你的个人微信，让生命经微信与你对话。一个号绑一个生命；扫一次长期有效。</p>
+					<button
+						onclick={wechatOneClick}
+						disabled={wStatus === 'starting' || wStatus === 'waiting'}
+						class="rounded-full border border-glow/40 bg-glow/10 px-3 py-1 font-medium text-glow transition hover:bg-glow/20 disabled:opacity-40"
+					>
+						{wStatus === 'waiting' ? '扫码登录中…' : wStatus === 'starting' ? '启动中…' : '🔗 扫码登录微信'}
+					</button>
+					{#if wStatus === 'waiting' && wQrImg}
+						<div class="mt-2 flex flex-col items-center gap-1">
+							<img src={wQrImg} alt="微信登录二维码" class="rounded-lg bg-white p-1" width="180" height="180" />
+							<p class="text-[10px] text-dim">
+								用微信扫码登录{#if wQrUrl}；或 <a class="text-glowsoft underline" href={wQrUrl} target="_blank" rel="noopener">点此打开</a>{/if}
+							</p>
+						</div>
+					{/if}
+					{#if wStatus === 'done'}
+						<p class="mt-2 text-glow">✓ 登录成功！{fRestarting ? '正在自动重启接入…' : '微信通道即将生效。'}</p>
+					{/if}
+					{#if wStatus === 'failed'}
+						<p class="mt-2 text-[#ff7a96]">✗ {wErr || '登录失败'}</p>
+					{/if}
+				</div>
+			{/if}
+
 			{#if cfg.auth_required && !cfg.llm}
 				<p class="text-xs text-dim">{$t('config_locked_hint')}</p>
 			{/if}
