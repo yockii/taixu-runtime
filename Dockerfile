@@ -41,8 +41,12 @@ COPY internal/ ./internal/
 # 将前端 build 产物拷到 embed 目录（cmd/runtime/webbuild/）。
 COPY --from=frontend /web/build/ ./cmd/runtime/webbuild/
 
+# 版本注入：CI（docker.yml）按 git tag 传 --build-arg VERSION=v0.3.0；裸 build 默认 dev。
+# 注入到 main.version（web.go），让面板「运行时版本」+ 自更新比对拿到真实版本，
+# 否则永远是 dev → 自更新永远误报「有新版」。
+ARG VERSION=dev
 ENV CGO_ENABLED=0
-RUN go build -ldflags="-s -w" -trimpath -o /out/taixu        ./cmd/runtime
+RUN go build -ldflags="-s -w -X main.version=${VERSION}" -trimpath -o /out/taixu ./cmd/runtime
 RUN go build -ldflags="-s -w" -trimpath -o /out/taixu-setup  ./cmd/setup
 
 # ---------- 阶段 3：llama.cpp server 二进制来源 ----------
