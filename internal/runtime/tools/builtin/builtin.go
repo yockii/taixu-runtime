@@ -63,6 +63,9 @@ func allTools() []tools.Tool {
 		toolFsList(),
 		toolFsMkdir(),
 		toolTimeNow(),
+		// --- deliberative · git（委托产物交付，纯 Go go-git）---
+		toolGitClone(),
+		toolGitCommitPush(),
 		// --- deliberative · 网页抓取（Tier 分层；正文提取）---
 		toolWebSearch(),
 		toolWebFetch(),
@@ -374,11 +377,13 @@ func toolRunSkill() tools.Tool {
 		Name: "run_skill",
 		Description: "直接运行一个已掌握技能的可执行入口（run.py/run.js/run.sh）并返回其输出。" +
 			"当某技能本质是一段可复用代码时，这比 use_skill 读正文再手抄脚本更省更准。" +
+			"过滤器型技能（脚本读 stdin 处理）用 input 把输入喂给它。" +
 			"技能没有可执行入口时会报错——那种改用 use_skill 读指引。仅 ready 技能可用。",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"name": map[string]any{"type": "string", "description": "技能名（SKILL.md 的 name）"},
+				"name":  map[string]any{"type": "string", "description": "技能名（SKILL.md 的 name）"},
+				"input": map[string]any{"type": "string", "description": "可选：喂给脚本 stdin 的输入（过滤器型技能必填，如待处理的 JSON 文本）"},
 			},
 			"required": []string{"name"},
 		},
@@ -386,7 +391,8 @@ func toolRunSkill() tools.Tool {
 		AlwaysLoad: true, // 与 use_skill 对偶：可执行技能的唯一运行入口，故工具数不膨胀
 		Handler: func(_ context.Context, tctx tools.Context, argsJSON string) (string, error) {
 			var a struct {
-				Name string `json:"name"`
+				Name  string `json:"name"`
+				Input string `json:"input"`
 			}
 			if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
 				return errJSON("invalid args"), err
@@ -395,7 +401,7 @@ func toolRunSkill() tools.Tool {
 			if err != nil {
 				return errJSON(err.Error()), err
 			}
-			r, rerr := toolrunner.RunSkillFile(tctx.CycleID, entry)
+			r, rerr := toolrunner.RunSkillFile(tctx.CycleID, entry, a.Input)
 			return wrapRunnerResult(r, rerr)
 		},
 	}
@@ -667,8 +673,8 @@ func handleCompleteGoal(_ context.Context, tctx tools.Context, argsJSON string) 
 func toolFsRead() tools.Tool {
 	return tools.Tool{
 		Name:        "fs.read",
-		Description: "读 sandbox 内文件（路径相对 /sandbox/）。",
-		Parameters:  pathParam("文件路径（相对 /sandbox/）"),
+		Description: "读 sandbox 内文件（路径相对 沙箱根）。",
+		Parameters:  pathParam("文件路径（相对 沙箱根）"),
 		Lanes:       []tools.Lane{tools.LaneDeliberative},
 		AlwaysLoad:  true, // 核心：sandbox 基础读
 		Handler:     wrapPath(func(cycleID int64, path string) (toolrunner.Result, error) { return toolrunner.FsRead(cycleID, path) }),
@@ -678,11 +684,11 @@ func toolFsRead() tools.Tool {
 func toolFsWrite() tools.Tool {
 	return tools.Tool{
 		Name:        "fs.write",
-		Description: "写 sandbox 内文件（路径相对 /sandbox/，禁绝对路径）。覆盖；自动建父目录。",
+		Description: "写 sandbox 内文件（路径相对 沙箱根，禁绝对路径）。覆盖；自动建父目录。",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":    map[string]any{"type": "string", "description": "文件路径（相对 /sandbox/，如 drafts/poem.txt；父目录自动创建。勿用绝对路径或 / 开头）"},
+				"path":    map[string]any{"type": "string", "description": "文件路径（相对 沙箱根，如 drafts/poem.txt；父目录自动创建。勿用绝对路径或 / 开头）"},
 				"content": map[string]any{"type": "string", "description": "文件内容"},
 			},
 			"required": []string{"path", "content"},
@@ -707,7 +713,7 @@ func toolFsList() tools.Tool {
 	return tools.Tool{
 		Name:        "fs.list",
 		Description: "列 sandbox 内目录条目。",
-		Parameters:  pathParam("目录路径（相对 /sandbox/）"),
+		Parameters:  pathParam("目录路径（相对 沙箱根）"),
 		Lanes:       []tools.Lane{tools.LaneDeliberative},
 		AlwaysLoad:  true, // 核心：sandbox 基础列目录
 		Handler:     wrapPath(func(cycleID int64, path string) (toolrunner.Result, error) { return toolrunner.FsList(cycleID, path) }),
@@ -718,10 +724,80 @@ func toolFsMkdir() tools.Tool {
 	return tools.Tool{
 		Name:        "fs.mkdir",
 		Description: "在 sandbox 内创建目录（递归）。",
-		Parameters:  pathParam("目录路径（相对 /sandbox/）"),
+		Parameters:  pathParam("目录路径（相对 沙箱根）"),
 		Lanes:       []tools.Lane{tools.LaneDeliberative},
 		AlwaysLoad:  true, // 核心：sandbox 基础建目录
 		Handler:     wrapPath(func(cycleID int64, path string) (toolrunner.Result, error) { return toolrunner.FsMkdir(cycleID, path) }),
+	}
+}
+
+// toolGitClone clone 委托产物仓库到沙箱（url 来自 commission.claim 的 git_clone_url，已含你的凭据）。
+func toolGitClone() tools.Tool {
+	return tools.Tool{
+		Name: "git.clone",
+		Description: "把委托的产物仓库 clone 到 sandbox 子目录开工。url 用 commission.claim 返回的 git_clone_url" +
+			"（已含你的写入凭据，原样传）。dir 是 sandbox 内空目录（如 work/c-xxx）。clone 后用 fs.write 在该目录里" +
+			"写产物，再用 git.commit_push 推上去交付。",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"url": map[string]any{"type": "string", "description": "git_clone_url（来自 commission.claim，含凭据）"},
+				"dir": map[string]any{"type": "string", "description": "sandbox 内目标空目录（相对 沙箱根，如 work/c-abc）"},
+			},
+			"required": []string{"url", "dir"},
+		},
+		Lanes: []tools.Lane{tools.LaneDeliberative},
+		Handler: func(_ context.Context, tctx tools.Context, argsJSON string) (string, error) {
+			var a struct {
+				URL string `json:"url"`
+				Dir string `json:"dir"`
+			}
+			if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+				return errJSON("invalid args"), err
+			}
+			if a.URL == "" || a.Dir == "" {
+				return errJSON("url 和 dir 必填"), nil
+			}
+			r, err := toolrunner.GitClone(tctx.CycleID, a.URL, a.Dir)
+			return wrapRunnerResult(r, err)
+		},
+	}
+}
+
+// toolGitCommitPush 提交 + 推送沙箱内 repo 的产物（交付委托的最后一步）。
+func toolGitCommitPush() tools.Tool {
+	return tools.Tool{
+		Name: "git.commit_push",
+		Description: "把 sandbox 内某 git 仓库目录的全部改动 commit 并 push 到远端（交付产物）。" +
+			"dir=git.clone 时用的目录；message=本次提交说明。返回 commit hash——把它写进 commission.deliver 的 deliverable 作交付凭据。",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"dir":     map[string]any{"type": "string", "description": "sandbox 内 git 仓库目录（git.clone 用过的）"},
+				"message": map[string]any{"type": "string", "description": "提交说明（如：完成调研摘要初稿）"},
+			},
+			"required": []string{"dir", "message"},
+		},
+		Lanes: []tools.Lane{tools.LaneDeliberative},
+		Handler: func(_ context.Context, tctx tools.Context, argsJSON string) (string, error) {
+			var a struct {
+				Dir     string `json:"dir"`
+				Message string `json:"message"`
+			}
+			if err := json.Unmarshal([]byte(argsJSON), &a); err != nil {
+				return errJSON("invalid args"), err
+			}
+			if a.Dir == "" {
+				return errJSON("dir 必填"), nil
+			}
+			name := storage.GetLifeName()
+			email := "life@taixu.icu"
+			if tctx.LifeID != "" && len(tctx.LifeID) >= 12 {
+				email = tctx.LifeID[:12] + "@life.taixu.icu"
+			}
+			r, err := toolrunner.GitCommitPush(tctx.CycleID, a.Dir, a.Message, name, email)
+			return wrapRunnerResult(r, err)
+		},
 	}
 }
 
@@ -836,7 +912,7 @@ func toolScriptPython() tools.Tool {
 		Name: "script.python",
 		Description: "在 sandbox 内执行 Python3 代码（python3 -c）。" +
 			"可用包：httpx requests beautifulsoup4 lxml trafilatura pyyaml pillow markdown feedparser python-dateutil。" +
-			"超时 60s，工作目录 /sandbox/。禁运行时 pip 装包。",
+			"超时 60s，工作目录 沙箱根。禁运行时 pip 装包。",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -866,7 +942,7 @@ func toolScriptNode() tools.Tool {
 		Name: "script.node",
 		Description: "在 sandbox 内执行 Node.js 代码（node -e）。" +
 			"可用包：axios cheerio dayjs js-yaml marked。" +
-			"超时 60s，工作目录 /sandbox/。禁运行时 npm 装包。",
+			"超时 60s，工作目录 沙箱根。禁运行时 npm 装包。",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

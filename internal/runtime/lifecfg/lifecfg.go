@@ -35,7 +35,24 @@ const (
 
 	// 微信 iLink bot_token：扫码登录后落库（config 优先、env WECHAT_BOT_TOKEN 兜底）。持久长效。
 	KeyWechatBotToken = "wechat_bot_token"
+
+	// KeyAutoUpgrade 自动升级开关：'1'=自动应用平台新版 runtime；其他/空=只通知、等用户确认。默认关。
+	KeyAutoUpgrade = "auto_upgrade"
 )
+
+// AutoUpgrade 是否开了自动升级（sqlite config，默认关=通知模式）。
+func AutoUpgrade() bool {
+	return cfgOrEnv(KeyAutoUpgrade, "TAIXU_AUTO_UPGRADE", "") == "1"
+}
+
+// SetAutoUpgrade 设自动升级开关（界面切）。
+func SetAutoUpgrade(on bool) error {
+	v := "0"
+	if on {
+		v = "1"
+	}
+	return storage.SetConfigString(KeyAutoUpgrade, v)
+}
 
 // WechatBotToken 微信 iLink bot_token：sqlite config 优先、env 兜底。空=未登录。
 func WechatBotToken() string {

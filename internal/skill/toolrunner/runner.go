@@ -34,6 +34,31 @@ type Result struct {
 	DurationMs int64
 }
 
+// interp 解析脚本解释器可执行名，按候选顺序返回首个在 PATH 中存在的（exec.LookPath）。
+// 跨平台关键：Windows 宿主通常无 `python3`（叫 `python`/`py`），写死会 "executable not found"。
+// 全不存在则返回第一个候选，让 exec 报清晰的 not-found 错误。
+func interp(candidates ...string) string {
+	for _, c := range candidates {
+		if _, err := exec.LookPath(c); err == nil {
+			return c
+		}
+	}
+	return candidates[0]
+}
+
+// skillsRootDir 跨平台推导技能根目录，与 cmd/runtime 的 runtimeDir("TAIXU_SKILLS","skills") 同源：
+// env 优先（容器 pin /workspace/skills），否则 home/mindverse/skills，再 fallback ./skills。
+// 不能写死 unix 字面量——裸机 Windows 会解析到错误盘符。
+func skillsRootDir() string {
+	if v := os.Getenv("TAIXU_SKILLS"); v != "" {
+		return v
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, "mindverse", "skills")
+	}
+	return "skills"
+}
+
 var (
 	mu         sync.Mutex
 	lifeID     string
@@ -48,6 +73,10 @@ func Init(id, sbox string) error {
 	}
 	if sbox == "" {
 		sbox = SandboxRoot
+	}
+	// 建沙箱根：script.* / run_skill 都 chdir 进此目录执行，若从没写过文件则目录不存在 → exec chdir 失败。
+	if err := os.MkdirAll(sbox, 0o755); err != nil {
+		return fmt.Errorf("toolrunner: create sandbox dir %q: %w", sbox, err)
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -170,15 +199,15 @@ func FsMkdir(cycleID int64, relPath string) (Result, error) {
 }
 
 func ScriptShell(cycleID int64, cmd string) (Result, error) {
-	return runScript(cycleID, "script.shell", cmd, "sh", "-c", cmd)
+	return runScript(cycleID, "script.shell", cmd, "", interp("sh", "bash"), "-c", cmd)
 }
 
 func ScriptPython(cycleID int64, code string) (Result, error) {
-	return runScript(cycleID, "script.python", code, "python3", "-c", code)
+	return runScript(cycleID, "script.python", code, "", interp("python3", "python", "py"), "-c", code)
 }
 
 func ScriptNode(cycleID int64, code string) (Result, error) {
-	return runScript(cycleID, "script.node", code, "node", "-e", code)
+	return runScript(cycleID, "script.node", code, "", interp("node"), "-e", code)
 }
 
 // RunSkillFile 执行一个技能的可执行入口脚本文件（C4 可执行技能绑定）。
@@ -187,29 +216,27 @@ func ScriptNode(cycleID int64, code string) (Result, error) {
 //
 // 路径围栏（加固）：entry 经 EvalSymlinks 解析后必须落在 skills 根内，挡掉
 // symlink 指向仓外（TOCTOU：探测到普通文件后被换成 symlink）或未来误传外部路径。
-func RunSkillFile(cycleID int64, entry string) (Result, error) {
+// stdin 喂给脚本标准输入（过滤器型 skill 经此拿到输入数据；空串=不喂）。解释器经 interp 跨平台解析。
+func RunSkillFile(cycleID int64, entry, stdin string) (Result, error) {
 	if err := entryWithinSkills(entry); err != nil {
 		return Result{}, err
 	}
 	switch strings.ToLower(filepath.Ext(entry)) {
 	case ".py":
-		return runScript(cycleID, "run_skill", entry, "python3", entry)
+		return runScript(cycleID, "run_skill", entry, stdin, interp("python3", "python", "py"), entry)
 	case ".js":
-		return runScript(cycleID, "run_skill", entry, "node", entry)
+		return runScript(cycleID, "run_skill", entry, stdin, interp("node"), entry)
 	case ".sh":
-		return runScript(cycleID, "run_skill", entry, "sh", entry)
+		return runScript(cycleID, "run_skill", entry, stdin, interp("sh", "bash"), entry)
 	default:
 		return Result{}, fmt.Errorf("run_skill: unsupported entry %q", entry)
 	}
 }
 
 // entryWithinSkills 校验入口脚本经 symlink 解析后仍在 skills 根目录内（C4 路径围栏）。
-// skills 根取 TAIXU_SKILLS（默认 /workspace/skills），与 scriptEnv 一致。
+// skills 根经 skillsRootDir() 跨平台推导，与 scriptEnv 一致。
 func entryWithinSkills(entry string) error {
-	root := os.Getenv("TAIXU_SKILLS")
-	if root == "" {
-		root = "/workspace/skills"
-	}
+	root := skillsRootDir()
 	rootAbs, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		rootAbs, _ = filepath.Abs(root) // 根不存在（如测试环境）时退化为字面绝对路径
@@ -226,13 +253,16 @@ func entryWithinSkills(entry string) error {
 	return nil
 }
 
-func runScript(cycleID int64, toolName, args string, name string, scriptArgs ...string) (Result, error) {
+func runScript(cycleID int64, toolName, args, stdin string, name string, scriptArgs ...string) (Result, error) {
 	return audit(cycleID, toolName, args, func() (string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), ScriptTimeout)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, name, scriptArgs...)
 		cmd.Dir = sandboxDir
 		cmd.Env = scriptEnv(name) // 注入各 skill 私有依赖目录（R81）
+		if stdin != "" {
+			cmd.Stdin = strings.NewReader(stdin) // 过滤器型脚本经 stdin 取输入（否则 json.load(sys.stdin) 读空崩溃）
+		}
 		out, err := cmd.CombinedOutput()
 		if len(out) > MaxBodyBytes {
 			out = append(out[:MaxBodyBytes], []byte("\n[truncated]")...)
@@ -251,10 +281,7 @@ func runScript(cycleID int64, toolName, args string, name string, scriptArgs ...
 // site-packages（py）/ node_modules（node）拼进路径。baseline 包仍走系统全局。
 func scriptEnv(bin string) []string {
 	env := os.Environ()
-	root := os.Getenv("TAIXU_SKILLS")
-	if root == "" {
-		root = "/workspace/skills"
-	}
+	root := skillsRootDir()
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return env
@@ -282,14 +309,16 @@ func scriptEnv(bin string) []string {
 	return env
 }
 
-// appendPath 把 dirs 追加到 env 中 key 的现值（冒号分隔），保持原值在前。
+// appendPath 把 dirs 追加到 env 中 key 的现值，保持原值在前。用 os.PathListSeparator
+// 跨平台分隔（unix `:` / Windows `;`），否则 Windows 多目录会拼错。
 func appendPath(env []string, key string, dirs []string) []string {
-	add := strings.Join(dirs, ":")
+	sep := string(os.PathListSeparator)
+	add := strings.Join(dirs, sep)
 	for i, kv := range env {
 		if strings.HasPrefix(kv, key+"=") {
 			cur := kv[len(key)+1:]
 			if cur != "" {
-				env[i] = key + "=" + cur + ":" + add
+				env[i] = key + "=" + cur + sep + add
 			} else {
 				env[i] = key + "=" + add
 			}
@@ -301,12 +330,13 @@ func appendPath(env []string, key string, dirs []string) []string {
 
 func checkSandbox(relPath string) (string, error) {
 	if filepath.IsAbs(relPath) {
-		return "", errors.New("path must be relative to /sandbox/")
+		return "", errors.New("path 必须是沙箱内的相对路径（如 drafts/poem.txt），不要传绝对路径")
 	}
 	abs := filepath.Join(sandboxDir, relPath)
 	cleanAbs, _ := filepath.Abs(abs)
 	cleanRoot, _ := filepath.Abs(sandboxDir)
-	if !strings.HasPrefix(cleanAbs, cleanRoot) {
+	// 越界校验补分隔符：否则 /a/sandbox-evil 会被误判为 /a/sandbox 的子路径。
+	if cleanAbs != cleanRoot && !strings.HasPrefix(cleanAbs, cleanRoot+string(filepath.Separator)) {
 		return "", errors.New("path escapes sandbox")
 	}
 	return cleanAbs, nil

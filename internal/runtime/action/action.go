@@ -37,7 +37,9 @@ import (
 )
 
 // MaxDeliberativeRounds 慎思 agent loop 单 goal 最大轮次。
-const MaxDeliberativeRounds = 6
+// 8（原 6）：委托 git 交付链(commission.mine→git.clone→fs.write→git.commit_push→commission.deliver ≈5 工具)
+// 与接单(browse→claim)等多工具目标需更多轮才走得完；6 太紧会半途截断（实测委托接单卡在读 skill+browse 就没轮次了）。
+const MaxDeliberativeRounds = 8
 
 // LLMRoundTimeout 单轮 LLM 调用超时。
 const LLMRoundTimeout = 120 * time.Second

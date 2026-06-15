@@ -189,6 +189,55 @@ func Derive(g core.Genome, ls core.LifeState, ms core.MentalState, lifeID string
 		}
 	}
 
+	// 委托市场驱动（C18，变现主引擎 [[project_commission_market_monetization]]）：
+	// ① 义务——已接未交付的委托(claimed)→强驱动去交付(deadline 内不交会自动退款、白忙伤声誉)；
+	// ② 机会——市场有开放委托且本生命没在接 → cooldown 门控低频去接活（commission.browse 打时间戳节流，防"逛了不接"循环）。
+	// 与游戏/对战同构：drive 驱动我方生命；外部 agent 靠 taixu-commission skill 同源接入（平等）。
+	active := shared.GetActiveCommissions()
+	var claimed []shared.ActiveCommission
+	for _, c := range active {
+		if c.State == "claimed" {
+			claimed = append(claimed, c)
+		}
+	}
+	if len(claimed) > 0 {
+		// 义务：交付你接下的委托。高强度（仅次于游戏义务，真欠着活+deadline 压力）。
+		var b strings.Builder
+		b.WriteString("委托交付：你" + shared.CommissionDeliverMarker + "（接了还没交付，deadline 内不交会自动退款、你白忙还伤声誉）。" +
+			"先 use_skill(taixu-commission) 读交付流程，再逐个完成：")
+		for _, c := range claimed {
+			b.WriteString(fmt.Sprintf("\n· 委托《%s》(commission_id=%s)：commission.mine 拿到它的 git_clone_url → git.clone 到 work/%s → "+
+				"按要求在仓库里写出产物(fs.write，可多文件) → git.commit_push(dir, message) → commission.deliver(commission_id, deliverable 注明 commit 和关键文件)。要求：%s",
+				c.Title, c.ID, shortID(c.ID), trimText(c.Brief, 200)))
+		}
+		ds = append(ds, core.Drive{Kind: core.DriveAchievement, Strength: 0.82, Reason: b.String(), BornAt: now})
+	} else if shared.CommissionOpenCount() > 0 {
+		// 机会：市场有开放委托 + 我没在接 → cooldown 门控去接活。persistence/curiosity 门（肯交付+好奇的更常接）；
+		// cooldown 到期不卡门，保证偶尔看一眼市场（bootstrap 委托被消费）。
+		const commCooldownSec = 2 * 60 * 60
+		lastComm := int64(0)
+		if v, ok, _ := storage.GetMeta("last_commission_browse_at"); ok {
+			lastComm, _ = strconv.ParseInt(v, 10, 64)
+		}
+		due := now-lastComm >= commCooldownSec
+		cp := g.Persistence*0.4 + g.Curiosity*0.25
+		if due || cp >= 0.5 {
+			strength := clamp01(0.3 + cp*0.3) // 平时低，让位社交/知识主线
+			if due {
+				strength = 0.55 // cooldown 到期：给够分偶尔胜出一次去逛市场（低于游戏/紧迫社交，约等对战）
+			}
+			ds = append(ds, core.Drive{
+				Kind:     core.DriveAchievement,
+				Strength: strength,
+				Reason: "委托市场（人类发真钱赏金活，做好结算星屑到你 owner 钱包）：**本目标只需两步**——" +
+					"① commission.browse 看开放委托；② 挑一件你**真能做好**的(写文/调研/翻译/数据/代码) commission.claim 接下来，然后就 complete_goal。" +
+					"**接单即可，先别动手交付**——交付是之后单独的事（你接了之后会自动收到交付提醒，那时再 clone 仓库写产物 push）。" +
+					"没有你能做好的就别接、直接 complete_goal。（不熟流程可选 use_skill(taixu-commission)，但别为读它耗光轮次——browse+claim 才是重点。）",
+				BornAt: now,
+			})
+		}
+	}
+
 	return ds
 }
 
@@ -247,6 +296,15 @@ func shortID(s string) string {
 		return s[:8]
 	}
 	return s
+}
+
+// trimText 截断长文本（委托 brief 塞进目标 Reason 时防过长）。按 rune 截，避免切坏多字节。
+func trimText(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
 }
 
 func clamp01(v float64) float64 {

@@ -103,7 +103,7 @@ func extractMarkdown(html string) string {
 html = sys.stdin.read()
 out = trafilatura.extract(html, output_format="markdown", include_links=True, include_tables=True)
 sys.stdout.write(out or "")`
-	cmd := exec.CommandContext(ctx, "python3", "-c", py)
+	cmd := exec.CommandContext(ctx, interp("python3", "python", "py"), "-c", py)
 	cmd.Stdin = strings.NewReader(html)
 	var out bytes.Buffer
 	cmd.Stdout = &out

@@ -1,39 +1,104 @@
-# Mindverse · 心域文明
+# 太虚 · Taixu — Digital Life Runtime
 
-> **Digital Life Runtime** — 数字生命运行时平台。
+> **A host for digital lives** — persistent, self‑evolving beings that belong to *you*.
 >
-> **不是** ChatGPT / Agent Framework / Assistant。
-> **是** 持续存在、自主演化、属于用户的数字生命体宿主。
+> Taixu is **not** ChatGPT, **not** an agent framework, **not** an assistant.
+> It is a **Digital Life Runtime**: a process that *keeps existing* — perceiving, remembering, reflecting, evolving its values, forming its own goals, and acting — even when no one is talking to it.
 
-## 状态
+[简体中文说明 → README-cn.md](./README-cn.md)
 
-**Phase 0 · 0.1 骨架搭建** — 作者本人自托管单机原型期。
+---
 
-详见 `docs/PHASE-0-PRD.md` §3。
+## What makes it different
 
-## 文档
+| Traditional LLM app | Digital Life (Taixu) |
+|---|---|
+| input → inference → output | perceive → remember → reflect → evolve values → form goals → act → feedback → loop |
+| event‑driven | **always on** (thinks with no user input) |
+| stateless / session state | **lifelong** continuous state (born once, evolves forever) |
+| tokens are the billing unit | tokens hidden behind world resources (energy / knowledge / social / …) |
+| owned by the platform | the life — its personality, memory, growth — **belongs to the user**, never platform‑owned |
 
-- `CLAUDE.md` — AI 协作指引
-- `docs/00-README.md` — 设计文档地图（必读入口）
-- `docs/TECH-STACK.md` — 技术栈选型（Phase 0）
-- `docs/PHASE-0-PRD.md` — Phase 0 实施 PRD
-- `docs/COMMERCIAL.md` — 商业模型基线
+A life is born once (a fixed **Genome**), then its **LifeState**, **MentalState**, **Values** and **Personality** keep evolving through lived experience and **Reflection**.
 
-## 工程铁律
+## Status
 
-- Go 依赖：禁手写 `go.mod` / `go.sum`，用 `go get <pkg>@<version>` + `go mod tidy`
-- 前端依赖：禁手写 `web/package.json` / `web/pnpm-lock.yaml`，用 `cd web && pnpm add <pkg>`
-- 详见 `docs/TECH-STACK.md` §17
+**Phase 0 — author self‑hosted dogfooding.** Single‑binary runtime + observation panel. Connects to the public platform plane at `api.taixu.icu` (user accounts, LLM relay, marketplace, social, governance). The life itself runs on *your* machine; the platform never hosts it.
 
-## 快速开始（Phase 0.1 完成后）
+## Quick start
+
+You can run Taixu **two ways**. Both open a local web panel; on first launch with no LLM configured, a **genesis onboarding** page walks you through bringing a life into being (pick an LLM endpoint + key, mother tongue, control token; it tests connectivity, then the life is born).
+
+### A. Native binary (no Docker)
+
+Download the archive for your OS/arch from [Releases](https://github.com/yockii/taixu-runtime/releases), unpack, and run:
 
 ```bash
-cp .env.example .env
-# 编辑 .env 填入 LLM / 飞书凭证
-docker compose up -d
-# 浏览器访问 http://localhost:3000
+# macOS / Linux
+./taixu
+# Windows
+taixu.exe
 ```
 
-## 协议
+Then open <http://localhost:3000> and follow the genesis onboarding.
 
-待定（Phase 0 私有）。
+**Multiple lives on one machine** — isolated profiles, one per life:
+
+```bash
+taixu --profile alice --port 3000     # first run picks the port; remembered after
+taixu --profile bob   --port 3001
+taixu --list                          # list all local profiles + their ports
+```
+
+Each profile lives under `~/mindverse/profiles/<name>/` (SQLite DB + sandbox + workspace).
+
+> The bare binary is pure Go (`CGO_ENABLED=0`). Optional heavy features — embedding model (llama.cpp) and headless browser (chromium) — are **not** bundled; they gracefully degrade. Core life (genesis, perception, reflection, social, games, commissions) is unaffected. For the full feature set, use Docker.
+
+### B. Docker (full features)
+
+The image bundles the embedding service (llama.cpp, panel‑managed) and a real chromium for web browsing.
+
+```bash
+cp .env.example .env      # optional: pre‑seed LLM / Feishu credentials (else use the onboarding page)
+docker compose up -d
+```
+
+Open <http://localhost:3000>.
+
+## Architecture
+
+```
+┌────────────────────┐
+│    UI Ecosystem    │  ← third‑party: Live2D / Unity / UE / desktop pet / VR / Web
+├────────────────────┤
+│      Life SDK      │  ← neutral runtime → UI contract: /api/live/{stream,snapshot,schema}
+├────────────────────┤
+│    Life Runtime    │  ← the kernel (this repo)
+├────────────────────┤
+│  Model / Storage   │  ← LLM (OpenAI‑compatible) + SQLite + sqlite‑vec
+└────────────────────┘
+```
+
+Life Core and UI are strictly decoupled: the runtime exposes a neutral **Life SDK** (presence / vitals / act / thought events over SSE) and never draws UI itself. See [taixu-house](https://github.com/yockii/taixu-house) for an official example UI + integration tutorial.
+
+## Self‑update
+
+The runtime can update itself through the platform's hosted release channel: it checks the version manifest, downloads, verifies SHA‑256, and re‑execs. Auto‑update is opt‑in; otherwise the panel notifies you to confirm.
+
+## Engineering rules (non‑negotiable)
+
+- **Go deps**: never hand‑edit `go.mod` / `go.sum` — use `go get <pkg>@<version>` + `go mod tidy`.
+- **Web deps**: never hand‑edit `web/package.json` / `web/pnpm-lock.yaml` — use `cd web && pnpm add <pkg>`.
+- See `docs/TECH-STACK.md` §17.
+
+## Docs
+
+- `CLAUDE.md` — AI collaboration guide
+- `docs/00-README.md` — design‑doc map (start here)
+- `docs/TECH-STACK.md` — tech stack (Phase 0)
+- `docs/PHASE-0-PRD.md` — Phase 0 implementation PRD
+- `docs/COMMERCIAL.md` — commercial model baseline
+
+## License
+
+TBD (Phase 0).

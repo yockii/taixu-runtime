@@ -134,6 +134,26 @@
 		}
 	}
 
+	// —— runtime 自更新 ——
+	let upCur = $state('');
+	let upAvail = $state<{ version: string; notes: string } | null>(null);
+	let upAuto = $state(false);
+	let upBusy = $state(false);
+	let upMsg = $state('');
+	async function loadUpdate() {
+		try { const r = await api.updateStatus(); upCur = r.current_version; upAvail = r.available; upAuto = r.auto_upgrade; } catch { /* ignore */ }
+	}
+	async function doUpgrade() {
+		if (!confirm('升级到 ' + upAvail?.version + '？将下载新版、校验后自动重启。')) return;
+		upBusy = true; upMsg = '';
+		try { const r = await api.updateApply(); upMsg = r.ok ? '已替换，正在重启到新版…' : (r.err || '升级失败'); } catch (e: any) { upMsg = e.message || '升级失败'; }
+		finally { upBusy = false; }
+	}
+	async function toggleAuto() {
+		try { await api.updateAuto(!upAuto); upAuto = !upAuto; } catch { /* ignore */ }
+	}
+	$effect(() => { loadUpdate(); });
+
 	// —— 飞书接入：一键创建（扫码 OAuth 设备授权）+ 手填。凭据落库重启生效。——
 	let fStatus = $state(''); // ''|starting|waiting|done|failed
 	let fQrUrl = $state('');
@@ -428,6 +448,25 @@
 					<p class="mt-1.5 text-[10px] text-dim">换模型即时生效（先测通再写、热重装），不必重启。</p>
 				</div>
 			{/if}
+			<div class="rounded-lg border border-line bg-white/5 p-3">
+				<div class="font-semibold text-fog">运行时版本</div>
+				<p class="mt-1 text-[11px] text-dim">当前版本 <span class="text-fog">{upCur || '…'}</span></p>
+				{#if upAvail}
+					<div class="mt-2 rounded-md border border-glowsoft/40 bg-glowsoft/10 p-2">
+						<p class="text-[12px] text-glowsoft">🆕 新版可用：{upAvail.version}</p>
+						{#if upAvail.notes}<p class="mt-0.5 text-[10px] text-dim">{upAvail.notes}</p>{/if}
+						<button class="mt-2 rounded-md bg-glowsoft px-3 py-1 text-[12px] font-semibold text-ink disabled:opacity-50" disabled={upBusy} onclick={doUpgrade}>{upBusy ? '升级中…' : '立即升级（重启到新版）'}</button>
+					</div>
+				{:else}
+					<p class="mt-1 text-[10px] text-dim">已是最新版。</p>
+				{/if}
+				<label class="mt-2 flex items-center gap-2 text-[11px] text-fog">
+					<input type="checkbox" checked={upAuto} onchange={toggleAuto} />
+					自动升级（关则有新版时在此通知，由你确认）
+				</label>
+				{#if upMsg}<p class="mt-1 text-[10px] text-dim">{upMsg}</p>{/if}
+			</div>
+
 			{#if cfg.feishu}
 				<div class="rounded-lg border border-line bg-white/5 p-3">
 					<div class="font-semibold text-fog">{$t('feishu_section')}</div>

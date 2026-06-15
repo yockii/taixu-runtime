@@ -23,6 +23,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"sync"
 
 	"taixu.icu/runtime/internal/runtime/skill"
 	"taixu.icu/runtime/internal/runtime/state"
@@ -35,12 +36,13 @@ const WealthScale = 1_000_000
 // skillExchangeTools 需运行时本地配合、跳过 manifest passthrough 的平台工具名（改注册自定义版）。
 // wealth.balance 在内：自定义版顺手 SetWealthCache 刷新本地显示缓存（透传版只回数不更新缓存）。
 var skillExchangeTools = map[string]bool{
-	"skill.publish":  true,
-	"skill.list":     true,
-	"skill.fetch":    true,
-	"wealth.balance": true, // 自定义版：查平台权威余额 + 刷新本地缓存
-	"game.join":      true, // C15：改注册带平台扣费 + 缓存刷新的自定义版
-	"game.leave":     true, // C15：改注册带缓存刷新的自定义版
+	"skill.publish":     true,
+	"skill.list":        true,
+	"skill.fetch":       true,
+	"wealth.balance":    true, // 自定义版：查平台权威余额 + 刷新本地缓存
+	"game.join":         true, // C15：改注册带平台扣费 + 缓存刷新的自定义版
+	"game.leave":        true, // C15：改注册带缓存刷新的自定义版
+	"commission.browse": true, // C18：改注册带 cooldown 时间戳（drives 机会驱动节流，防"逛了不接"循环）
 }
 
 func isSkillExchangeTool(name string) bool { return skillExchangeTools[name] }
@@ -63,6 +65,9 @@ func jsonResp(m map[string]any) string {
 // MCP/skill 的外部 agent 拿不到、不平等）。生命体 use_skill 读它即可，与外部 agent 读 SKILL.md 对等。
 // best-effort：取/装失败只 warn、不阻断接入（生命照常活，prompt 仍留纯意图兜底）。
 // 幂等：skill.Load 按 (life,name) 稳定 id 覆盖，重复调只刷新到平台最新版。
+//
+// 版本感知（2026-06）：目录每项带 version=正文内容指纹。本地缓存 (name→version)，只对版本变了的
+// 重拉正文——周期 ticker 多数轮次零正文下载（仅一次廉价目录 GET）。外部 agent 同样可凭此廉价感知更新。
 func installPlatformSkills() (installed, available int) {
 	st, body, err := doJSON(context.Background(), http.MethodGet, "/api/agent/skills", curToken(), nil)
 	if err != nil || st != http.StatusOK || len(body) == 0 {
@@ -71,7 +76,8 @@ func installPlatformSkills() (installed, available int) {
 	}
 	var cat struct {
 		Skills []struct {
-			Name string `json:"name"`
+			Name    string `json:"name"`
+			Version string `json:"version"`
 		} `json:"skills"`
 	}
 	if err := json.Unmarshal(body, &cat); err != nil {
@@ -82,6 +88,12 @@ func installPlatformSkills() (installed, available int) {
 		if s.Name == "" {
 			continue
 		}
+		// 版本未变 → 已装过该版，跳过正文下载（省带宽；幂等性不变）。version 为空(老平台)则总拉。
+		if s.Version != "" {
+			if v, ok := skillVersions.Load(s.Name); ok && v.(string) == s.Version {
+				continue
+			}
+		}
 		sst, sbody, serr := doJSON(context.Background(), http.MethodGet, "/api/agent/skill?name="+url.QueryEscape(s.Name), curToken(), nil)
 		if serr != nil || sst != http.StatusOK || len(sbody) == 0 {
 			slog.Warn("socialnet: fetch platform skill", "name", s.Name, "status", sst, "err", serr)
@@ -91,6 +103,9 @@ func installPlatformSkills() (installed, available int) {
 			slog.Warn("socialnet: install platform skill", "name", s.Name, "err", err)
 			continue
 		}
+		if s.Version != "" {
+			skillVersions.Store(s.Name, s.Version)
+		}
 		installed++
 	}
 	if installed > 0 {
@@ -98,6 +113,9 @@ func installPlatformSkills() (installed, available int) {
 	}
 	return installed, len(cat.Skills)
 }
+
+// skillVersions 缓存已装载平台 skill 的内容版本 (name→version)，供 installPlatformSkills 跳过未变项。
+var skillVersions sync.Map
 
 // handleSyncSkills 生命体可调的「主动去获取平台技能」工具（social.sync_skills）。
 // 与 bootstrap 自动同步同一路径——给生命体 agency 自己按需拉取/刷新，平台新增技能时调它即可获取。

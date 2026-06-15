@@ -280,6 +280,12 @@ export const api = {
 		),
 	/** 自助重启（监管自动拉起；用于飞书/微信等需重启生效的配置）。 */
 	restart: () => apiPost<{ ok: boolean; error?: string }>('/api/restart'),
+	/** runtime 自更新：查状态（当前版本 / 是否有新版 / 自动升级开关）。 */
+	updateStatus: () => getJSON<{ current_version: string; auto_upgrade: boolean; available: { version: string; notes: string } | null }>('/api/update/status'),
+	/** 确认升级：下载校验替换 → 重启到新版。 */
+	updateApply: () => apiPost<{ ok: boolean; version?: string; err?: string; note?: string }>('/api/update/apply'),
+	/** 切自动升级开关。 */
+	updateAuto: (on: boolean) => apiPost<{ ok: boolean; auto_upgrade: boolean }>('/api/update/auto', { on }),
 	/** 平台社交通道状态（是否接通 + 本生命 DID）。 */
 	platformStatus: () => getJSON<{ ready: boolean; did: string }>('/api/platform/status'),
 	/** 用平台领取的临时认领码，把本生命改绑到你的用户账户。 */

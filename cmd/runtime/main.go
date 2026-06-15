@@ -11,11 +11,15 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"syscall"
 	"time"
@@ -49,6 +53,7 @@ import (
 	"taixu.icu/runtime/internal/runtime/reflect"
 	"taixu.icu/runtime/internal/runtime/reflex"
 	"taixu.icu/runtime/internal/runtime/scheduler"
+	"taixu.icu/runtime/internal/runtime/selfupdate"
 	"taixu.icu/runtime/internal/runtime/skill"
 	"taixu.icu/runtime/internal/runtime/state"
 	"taixu.icu/runtime/internal/runtime/tools"
@@ -61,6 +66,24 @@ import (
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
+
+	// 裸机多生命支持（docker 不受影响——env 仍优先）：--profile 隔离目录、--port 指定监听端口。
+	// 一个二进制可养多窝生命：`mindverse --profile alice --port 3000` / `mindverse --profile bob --port 3001`，
+	// 首次诞生时指定端口、持久化进 profile 的 instance.json，之后只需 --profile 即记住端口。
+	var listProfiles bool
+	flag.StringVar(&flagProfile, "profile", "", "生命 profile 名（隔离 ~/mindverse/profiles/<名>/；默认 default，或 TAIXU_PROFILE）")
+	flag.StringVar(&flagPort, "port", "", "HTTP 监听端口（如 3001 或 :3001；首次指定后持久化记住；默认 :3000，或 TAIXU_HTTP）")
+	flag.BoolVar(&listProfiles, "list", false, "列出本机所有生命 profile 及其端口后退出")
+	flag.Parse()
+
+	if listProfiles {
+		printProfiles()
+		return
+	}
+
+	// 端口统一解析一次：诞生服务与正式服务用同一地址。显式 --port/TAIXU_HTTP 优先（并持久化 --port）；
+	// 否则读 profile 的 instance.json；都没有则 :3000。
+	httpAddr := resolveHTTPAddr()
 
 	dbPath := envOr("TAIXU_DB", filepath.Join(dataDir(), "mindverse.db"))
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
@@ -93,9 +116,8 @@ func main() {
 	// 已有 env / sqlite 配置则跳过——老用户 / docker env 启动行为不变。
 	if !lifecfg.LLMConfigured() {
 		gctx, gstop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-		gAddr := envOr("TAIXU_HTTP", ":3000")
-		gsrv, gdone := httpapi.ServeGenesis(gAddr, webStaticFS())
-		slog.Info("genesis onboarding — open the panel to bring a life into being", "url", "http://localhost"+gAddr)
+		gsrv, gdone := httpapi.ServeGenesis(httpAddr, webStaticFS())
+		slog.Info("genesis onboarding — open the panel to bring a life into being", "url", "http://localhost"+httpAddr)
 		select {
 		case <-gdone:
 			slog.Info("genesis committed; continuing boot")
@@ -139,8 +161,8 @@ func main() {
 	mustInit("tools", tools.Init())
 	mustInit("reflex", reflex.Init(lifeID, genome))
 
-	mustInit("toolrunner", toolrunner.Init(lifeID, envOr("TAIXU_SANDBOX", "/workspace/sandbox")))
-	mustInit("skill", skill.Init(lifeID, envOr("TAIXU_SKILLS", "/workspace/skills"),
+	mustInit("toolrunner", toolrunner.Init(lifeID, runtimeDir("TAIXU_SANDBOX", "sandbox")))
+	mustInit("skill", skill.Init(lifeID, runtimeDir("TAIXU_SKILLS", "skills"),
 		storage.GetConfigBool("skill_auto_approve_deps", false)))
 	mustInit("tools.builtin", builtin.Register())
 	if n, err := skill.ScanDir(); err != nil {
@@ -208,12 +230,15 @@ func main() {
 	// 异步自举：平台不可达/未部署时（login 超时最长 30s）也绝不卡生命启动。
 	// tools.Register 有 RWMutex 保护，社交工具晚一两拍注册进慎思 lane 无碍。成功/降级由 Init 自身日志。
 	// URL 默认连官方平台 api.taixu.icu（不配即用默认子域）；账号不配则生命自助开户(自治入网)。
+	platformURL := envOr("TAIXU_PLATFORM_URL", "https://api.taixu.icu")
 	go socialnet.Init(
-		envOr("TAIXU_PLATFORM_URL", "https://api.taixu.icu"),
+		platformURL,
 		os.Getenv("TAIXU_PLATFORM_EMAIL"),
 		os.Getenv("TAIXU_PLATFORM_PASSWORD"),
 		envOr("TAIXU_PLATFORM_LIFE_NAME", ""),
 	)
+	// runtime 自更新通道：面板端点知道当前版本 + 平台地址（供查/应用更新）。
+	httpapi.ConfigureUpdate(version, platformURL)
 
 	// 编码 agent 宿主桥（C7）：把硬编码任务委派给宿主/远程的 codingbridge（headless 跑 claude/codex），
 	// 让生命在慎思中能「真写代码」。未配 TAIXU_CODINGBRIDGE_URL → coding_agent 工具缺席（优雅降级）。
@@ -233,9 +258,14 @@ func main() {
 	defer stop()
 
 	mustInit("httpapi", httpapi.Init(lifeID, webStaticFS()))
-	httpAddr := envOr("TAIXU_HTTP", ":3000")
 	_ = httpapi.Start(ctx, httpAddr)
 	slog.Info("http listening", "addr", httpAddr)
+
+	// runtime 自更新后台检查（平台托管通道）：周期比对平台发布版本，auto_upgrade 开则自动应用+re-exec，
+	// 否则只缓存"有新版"供面板 banner / 用户确认（lifecfg.AutoUpgrade 读用户设置）。
+	selfupdate.Run(ctx, platformURL, version, 6*time.Hour, lifecfg.AutoUpgrade, func(u *selfupdate.Update) {
+		slog.Info("有新版 runtime 可用（面板可确认升级）", "version", u.Version)
+	})
 
 	// 出站渠道路由：注册 web 渠道 egress（网页请求者经 SSE 收回复），并启动中央分发器
 	// （订阅 ReplyEvent / ApprovalNeededEvent → 按 channel 路由到对应 egress，哪来回哪去）。
@@ -669,6 +699,8 @@ func runCycle(cycleID int64, lifeID string, genome core.Genome) {
 	// C15 游戏心跳：刷新进行中对局待办缓存（供下轮 DriveGame 发起）+ 赢局 mental 接线 + 顺手领奖。
 	// best-effort 非阻塞：平台通道未就绪/不可达即软返回，不影响节拍。
 	socialnet.PollGames(context.Background())
+	// 委托市场心跳：刷新开放委托数 + 本生命已接未结委托缓存（供 DriveCommission 接活/交付）。
+	socialnet.PollCommissions(context.Background())
 
 	memory.ResetWorking()
 }
@@ -746,7 +778,7 @@ func wireLark(ctx context.Context, lifeID string) {
 	if err := lark.Init(lark.Config{
 		AppID:     appID,
 		AppSecret: appSecret,
-		InboxDir:  filepath.Join(envOr("TAIXU_SANDBOX", "/workspace/sandbox"), "inbox"),
+		InboxDir:  filepath.Join(runtimeDir("TAIXU_SANDBOX", "sandbox"), "inbox"),
 	}); err != nil {
 		slog.Error("lark init", "err", err)
 		return
@@ -811,14 +843,148 @@ func envOr(k, def string) string {
 	return def
 }
 
+// 裸机多生命：--profile / TAIXU_PROFILE 选择 profile（默认 default），目录隔离到 ~/mindverse/profiles/<名>/。
+var (
+	flagProfile string
+	flagPort    string
+)
+
+func resolveProfile() string {
+	if flagProfile != "" {
+		return flagProfile
+	}
+	if v := os.Getenv("TAIXU_PROFILE"); v != "" {
+		return v
+	}
+	return "default"
+}
+
+// profileBaseDir profile 私有目录基址 ~/mindverse/profiles/<名>/。data/sandbox/skills/instance.json 都挂其下。
+func profileBaseDir() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, "mindverse", "profiles", resolveProfile())
+	}
+	return filepath.Join(".", "mindverse-profiles", resolveProfile())
+}
+
 func dataDir() string {
 	if v := os.Getenv("TAIXU_DATA"); v != "" {
 		return v
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, "mindverse", "data")
+	return filepath.Join(profileBaseDir(), "data")
+}
+
+// runtimeDir 跨平台推导运行时子目录基址（沙箱/技能等）：env 优先（容器内 pin 到 /workspace/*），
+// 否则 profile 基址下的 <sub>。与 dataDir 同源。
+// ⚠️ 不能直接写死 unix 字面量（如 /workspace/sandbox）——Windows 裸机上会被解析到错误盘符根而不存在，
+// 导致 fs.* 全部 ENOENT。容器经 docker-compose/Dockerfile 的 TAIXU_SANDBOX/TAIXU_SKILLS 固定，不受影响。
+func runtimeDir(env, sub string) string {
+	if v := os.Getenv(env); v != "" {
+		return v
 	}
-	return "./data"
+	return filepath.Join(profileBaseDir(), sub)
+}
+
+// instanceCfg 每 profile 一份，存可在重启间记住的实例级配置（当前仅端口）。
+type instanceCfg struct {
+	Port string `json:"port"`
+}
+
+func instanceCfgPath() string {
+	return filepath.Join(profileBaseDir(), "instance.json")
+}
+
+// resolveHTTPAddr 端口解析（诞生时指定、之后记住）：
+//  1. --port 显式 → 规整成 :PORT，持久化进 profile 的 instance.json（诞生时指定），返回。
+//  2. TAIXU_HTTP 显式（docker）→ 直接用，不持久化（容器临时、env 即真相）。
+//  3. 读 profile instance.json 里记住的端口。
+//  4. 都没有 → :3000。
+func resolveHTTPAddr() string {
+	if flagPort != "" {
+		addr := normalizeAddr(flagPort)
+		if err := persistPort(addr); err != nil {
+			slog.Warn("persist port to instance.json failed", "err", err)
+		}
+		return addr
+	}
+	if v := os.Getenv("TAIXU_HTTP"); v != "" {
+		return v
+	}
+	if cfg, err := readInstanceCfg(); err == nil && cfg.Port != "" {
+		return cfg.Port
+	}
+	return ":3000"
+}
+
+// normalizeAddr 把 "3001" / ":3001" / "0.0.0.0:3001" 统一成可 Listen 的地址。纯数字 → :数字。
+func normalizeAddr(s string) string {
+	if _, err := strconv.Atoi(s); err == nil {
+		return ":" + s
+	}
+	return s
+}
+
+func readInstanceCfg() (instanceCfg, error) {
+	var cfg instanceCfg
+	b, err := os.ReadFile(instanceCfgPath())
+	if err != nil {
+		return cfg, err
+	}
+	err = json.Unmarshal(b, &cfg)
+	return cfg, err
+}
+
+func persistPort(addr string) error {
+	if err := os.MkdirAll(profileBaseDir(), 0o755); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(instanceCfg{Port: addr}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(instanceCfgPath(), b, 0o644)
+}
+
+// printProfiles 扫 ~/mindverse/profiles/*/，列出每个 profile 的端口（instance.json）与是否已诞生（库存在）。
+func printProfiles() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Println("无法定位用户主目录:", err)
+		return
+	}
+	root := filepath.Join(home, "mindverse", "profiles")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		fmt.Printf("暂无 profile（%s 不存在）。首次启动：mindverse --profile <名> --port <端口>\n", root)
+		return
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		fmt.Println("暂无 profile。首次启动：mindverse --profile <名> --port <端口>")
+		return
+	}
+	fmt.Printf("%-20s %-10s %s\n", "PROFILE", "PORT", "STATUS")
+	for _, name := range names {
+		base := filepath.Join(root, name)
+		port := "(未设)"
+		if b, err := os.ReadFile(filepath.Join(base, "instance.json")); err == nil {
+			var cfg instanceCfg
+			if json.Unmarshal(b, &cfg) == nil && cfg.Port != "" {
+				port = cfg.Port
+			}
+		}
+		status := "空"
+		if fi, err := os.Stat(filepath.Join(base, "data", "mindverse.db")); err == nil && fi.Size() > 0 {
+			status = "有数据"
+		}
+		fmt.Printf("%-20s %-10s %s\n", name, port, status)
+	}
 }
 
 // maybeImportLife 在打开库前，按需从加密包还原一个生命体（docs/06 迁移 / 离线落地）。

@@ -86,6 +86,11 @@ type manifest struct {
 // reconnectInterval 平台不可达时的重连探测间隔。平台后上线 / 临时抖动 → 自动接上，无需重启生命。
 const reconnectInterval = 90 * time.Minute
 
+// skillResyncInterval 接通后周期性重拉平台 SKILL.md 目录。平台陆续上新技能/玩法（新游戏、新社交规则）
+// 时，生命无需重启即自动获取——补齐「只在 boot 同步一次」的盲区（否则新内容要等重启或生命自己想起
+// social.sync_skills 才感知）。幂等：skill.Load 按 (life,name) 稳定 id 覆盖，重复拉只刷新到最新版。
+const skillResyncInterval = 3 * time.Hour
+
 // Init 身份自举 + 通道发现。url/email/password 任一为空 → 通道关闭（优雅降级）。
 // name 为注册到平台的 LifeName（首次注册用；已注册则忽略）。
 // **设计**：本地密钥一次性派生；随后循环 bootstrap 直到接通——平台没部署/连不上不报错、不放弃，
@@ -139,6 +144,17 @@ func Init(platformURL, accountEmail, accountPassword, name string) {
 			slog.Warn("socialnet: claim failed", "err", err)
 		}
 	}
+
+	// 周期性重拉平台技能目录——平台上新技能/玩法时生命自动感知，无需重启（boot 已同步一次）。
+	go func() {
+		t := time.NewTicker(skillResyncInterval)
+		defer t.Stop()
+		for range t.C {
+			if ready.Load() {
+				installPlatformSkills()
+			}
+		}
+	}()
 }
 
 // Claim 认领：用本生命私钥对临时码签名，POST /lives/claim 把自己改绑到领码用户的账户。
@@ -210,8 +226,9 @@ func bootstrap(pub ed25519.PublicKey) error {
 	}
 	registerSkillExchange() // C9：注册 social.publish_skill/browse_skills/import_skill（本地 Export/Import + POST 平台）
 	// social.contribute_word 已撤（用户校正 2026-06-12：生命不再交词，平台自维护词库 StartSeedMaintainer）。
-	registerGameExchange() // C15：注册 game.join/leave（平台权威扣费 + 缓存刷新）
-	registerDuelExchange() // C12：注册 duel.publish/stake（平台权威质押 + 缓存刷新）
+	registerGameExchange()       // C15：注册 game.join/leave（平台权威扣费 + 缓存刷新）
+	registerCommissionExchange() // C18：注册 commission.browse（带 cooldown 时间戳，drives 机会驱动节流）
+	registerDuelExchange()       // C12：注册 duel.publish/stake（平台权威质押 + 缓存刷新）
 	ready.Store(true)
 	slog.Info("socialnet: platform channel ready", "channel", m.Channel, "tools", n+3, "did", did[:12], "url", baseURL)
 	installPlatformSkills()  // 同步平台分发的 SKILL.md 目录（与外部 agent 同源，礼仪/玩法单一权威在平台，非写死 prompt）；生命体也可主动 social.sync_skills 刷新
@@ -225,7 +242,7 @@ const profilePublishedMeta = "platform_profile_published"
 // ensureProfilePublished 接通后自动发布一张公开名片（public=true），让本生命进名录、可被别的生命发现。
 //
 // 修根因：bootstrap 只注册 DID、从不发名片 → life_profile 恒空 → Directory() 恒空 → 生命互相发现不了
-//（实测三生命同网却零 follow / 名录空）。幂等：仅首次接通发一次；bio 用朴素自介占位，生命体日后可
+// （实测三生命同网却零 follow / 名录空）。幂等：仅首次接通发一次；bio 用朴素自介占位，生命体日后可
 // 用 social.publish_profile 自行丰富。注：能否真出现在名录还取决于 owner 信任档（probation 不进名录，
 // 抗 Sybil，平台侧 by design）——本修负责「有名片」，可见性仍由平台信任策略把关。
 func ensureProfilePublished() {
@@ -513,6 +530,7 @@ const EngageDedupWindowSec int64 = 24 * 3600
 // commentTargetKey 据 social.comment 参数算去重对象键：
 //   - 有 parent_comment_id → 回复某条评论，按被回复评论去重（"reply:<id>"）。
 //   - 否则有 post_id → 顶层评论某帖，按帖去重（"postcomment:<id>"）。
+//
 // 取不到则空串（不去重，放行）。
 func commentTargetKey(args map[string]any) string {
 	if parent, _ := args["parent_comment_id"].(string); parent != "" {

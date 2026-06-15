@@ -122,8 +122,16 @@ func Start(ctx context.Context, addr string) *http.Server {
 	mux.HandleFunc("/api/wechat/register/status", apiWechatRegisterStatus)
 	// 自助重启（飞书/微信等需重启生效的配置改后调用；监管自动拉起）。
 	mux.HandleFunc("/api/restart", apiRestart)
+	// runtime 自更新：查状态（读）/ 应用（写,确认升级）/ 切自动升级开关（写）。
+	mux.HandleFunc("/api/update/status", apiUpdateStatus)
+	mux.HandleFunc("/api/update/apply", apiUpdateApply)
+	mux.HandleFunc("/api/update/auto", apiUpdateAuto)
 	mux.HandleFunc("/api/dialogue", apiDialogue)
 	mux.HandleFunc("/api/stream", apiStream)
+	// Life SDK（/api/live/*）：runtime 内置、面向第三方 UI 生态的中立版本化生命事件契约（详 livesdk.go）。
+	mux.HandleFunc("/api/live/stream", apiLiveStream)
+	mux.HandleFunc("/api/live/snapshot", apiLiveSnapshot)
+	mux.HandleFunc("/api/live/schema", apiLiveSchema)
 	mux.HandleFunc("/api/external-request", apiExternalRequest)
 	mux.HandleFunc("/api/embed/backfill", apiEmbedBackfill)
 	mux.HandleFunc("/api/embed/status", apiEmbedStatus)
@@ -173,6 +181,18 @@ var accessToken string
 // token（header 或 ?token=）时过滤含正文的隐私事件（见 privateSSEEvents）。
 func withAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// CORS：Life SDK（/api/live/*）面向第三方 UI 生态，UI 天然跨域（如像素小屋在 :5173 连 runtime :3000）。
+		// 全 /api/ 开放跨域读/交互。令牌走 header/query（非 cookie），故 Allow-Origin: * 安全（无凭据模式）。
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "X-Taixu-Token, Content-Type")
+			w.Header().Set("Access-Control-Max-Age", "86400")
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent) // 预检：放行在鉴权前（OPTIONS 不带令牌）
+				return
+			}
+		}
 		if accessToken != "" && strings.HasPrefix(r.URL.Path, "/api/") &&
 			(isMutating(r.Method) || isProtectedRead(r)) {
 			got := r.Header.Get("X-Taixu-Token")
