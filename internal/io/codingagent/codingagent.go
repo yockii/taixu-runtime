@@ -39,11 +39,22 @@ func Configured() bool {
 }
 
 // Init 绑定 bridge 端点 + token + 默认 agent，并（若已配）注册 coding_agent 慎思工具。
-// url 空 → 不注册，优雅缺席。建议在 main 里同步调用（注册轻量、无网络）。
+// 建议在 main 里同步调用（注册轻量、无网络）。内部委派 Reconfigure。
 func Init(url, tok, agent string) {
+	Reconfigure(url, tok, agent)
+}
+
+// Reconfigure 热重配 bridge 端点（界面改配置后由 httpapi 编排调用，免重启即生效）。
+// url 非空 → 设 endpoint/token/agent + 确保 coding_agent 工具已注册（注册幂等，重复忽略 already-exists）。
+// url 空 → 清 endpoint 并注销工具（优雅缺席）。
+func Reconfigure(url, tok, agent string) {
 	url = strings.TrimRight(strings.TrimSpace(url), "/")
 	if url == "" {
-		slog.Info("codingagent: TAIXU_CODINGBRIDGE_URL empty; coding_agent tool absent")
+		mu.Lock()
+		endpoint = ""
+		mu.Unlock()
+		tools.UnregisterAll("coding_agent")
+		slog.Info("codingagent: bridge URL empty; coding_agent tool absent")
 		return
 	}
 	if agent == "" {
@@ -53,7 +64,7 @@ func Init(url, tok, agent string) {
 	if tok == "" {
 		// bridge 要求 token（空 token 拒绝启动）→ 无 token 的容器会被 401 挡掉（fail-closed，安全）。
 		// 但这通常是误配，显式警示免静默 401 难排查。
-		slog.Warn("codingagent: TAIXU_CODINGBRIDGE_TOKEN empty; bridge requires a token → invocations will 401 until set")
+		slog.Warn("codingagent: bridge token empty; bridge requires a token → invocations will 401 until set")
 	}
 	mu.Lock()
 	endpoint = url
@@ -61,11 +72,49 @@ func Init(url, tok, agent string) {
 	defaultAgent = agent
 	mu.Unlock()
 
-	if err := tools.Register(toolCodingAgent()); err != nil {
+	// 注册幂等：重复 Register 会报 already-registered，忽略即可（热重配时工具早已在 lane）。
+	if err := tools.Register(toolCodingAgent()); err != nil && !strings.Contains(err.Error(), "already registered") {
 		slog.Warn("codingagent: register tool", "err", err)
 		return
 	}
 	slog.Info("codingagent: coding_agent tool registered", "endpoint", url, "default_agent", agent)
+}
+
+// Health 探测 bridge 连通性（GET endpoint+"/health"，bearer token，~5s 超时）。
+// bridge /health 回 {"ok":true,"agents":["claude","codex"]}。endpoint 空 → connected=false, err=nil。
+func Health(ctx context.Context) (connected bool, agents []string, err error) {
+	mu.RLock()
+	ep, tok := endpoint, token
+	mu.RUnlock()
+	if ep == "" {
+		return false, nil, nil
+	}
+	hctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(hctx, http.MethodGet, ep+"/health", nil)
+	if err != nil {
+		return false, nil, err
+	}
+	if tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return false, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 32*1024))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false, nil, fmt.Errorf("bridge /health status %d", resp.StatusCode)
+	}
+	var h struct {
+		OK     bool     `json:"ok"`
+		Agents []string `json:"agents"`
+	}
+	if e := json.Unmarshal(body, &h); e != nil {
+		return false, nil, e
+	}
+	return h.OK, h.Agents, nil
 }
 
 func toolCodingAgent() tools.Tool {

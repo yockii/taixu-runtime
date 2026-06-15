@@ -117,6 +117,7 @@ export interface Config {
 	// 未授权时服务端不返回 llm/feishu（配置隐私）→ 设为可选。
 	llm?: { base_url: string; model: string; temperature: string; api_key: string };
 	feishu?: { app_id: string; app_secret: string; configured?: boolean };
+	bridge?: { url: string; agent: string; token: string; configured?: boolean };
 	skill_auto_approve_deps?: boolean;
 	proactive_im?: boolean;
 	proactive_quiet?: { enabled: boolean; start: number; end: number; tz_offset_min: number };
@@ -259,6 +260,17 @@ export const api = {
 	setLLM: (b: { base_url: string; api_key: string; model: string; temperature?: string }) =>
 		apiPost<{ ok: boolean; error?: string; base_url?: string; model?: string; temperature?: string }>(
 			'/api/config/llm',
+			b
+		),
+	/** 编码桥（C7）：状态 + 实时连通探测（GET bridge /health）。 */
+	bridgeStatus: () =>
+		getJSON<{ configured: boolean; url: string; agent: string; connected: boolean; agents: string[] }>(
+			'/api/bridge/status'
+		),
+	/** 编码桥：落库 + 热重配（token 留空=沿用现有；url 写空=清除）。回 {ok,error?}。 */
+	setBridge: (b: { url: string; token: string; agent: string }) =>
+		apiPost<{ ok: boolean; error?: string; url?: string; agent?: string; configured?: boolean }>(
+			'/api/config/bridge',
 			b
 		),
 	/** 飞书一键创建：启动扫码会话。 */

@@ -38,6 +38,12 @@ const (
 
 	// KeyAutoUpgrade 自动升级开关：'1'=自动应用平台新版 runtime；其他/空=只通知、等用户确认。默认关。
 	KeyAutoUpgrade = "auto_upgrade"
+
+	// 编码桥（C7 codingbridge）：宿主侧强力编码 agent 端点。config 优先、env TAIXU_CODINGBRIDGE_* 兜底。
+	// url 空 → coding_agent 工具缺席（优雅降级）。改后经 httpapi 热重配生效（见 codingagent.Reconfigure）。
+	KeyBridgeURL   = "bridge_url"
+	KeyBridgeToken = "bridge_token"
+	KeyBridgeAgent = "bridge_agent"
 )
 
 // AutoUpgrade 是否开了自动升级（sqlite config，默认关=通知模式）。
@@ -62,6 +68,28 @@ func WechatBotToken() string {
 // SetWechatBotToken 落库微信 bot_token（扫码成功后写）。重启生效。
 func SetWechatBotToken(token string) error {
 	return storage.SetConfigString(KeyWechatBotToken, token)
+}
+
+// BridgeConfig 编码桥端点 url/token/agent：sqlite config 优先、env 兜底。
+// url 空 = 未配（coding_agent 工具缺席）；agent 默认 claude。
+func BridgeConfig() (url, token, agent string) {
+	return cfgOrEnv(KeyBridgeURL, "TAIXU_CODINGBRIDGE_URL", ""),
+		cfgOrEnv(KeyBridgeToken, "TAIXU_CODINGBRIDGE_TOKEN", ""),
+		cfgOrEnv(KeyBridgeAgent, "TAIXU_CODINGBRIDGE_AGENT", "claude")
+}
+
+// SetBridge 落库编码桥配置（界面手填）。token 留空=沿用现有（仿 ApplyLLM：掩码回显时不必重输）。
+// url/agent 直接写（url 写空=清除，coding_agent 工具失效）。只持久化，热生效由 httpapi 编排 Reconfigure。
+func SetBridge(url, token, agent string) error {
+	if err := storage.SetConfigString(KeyBridgeURL, url); err != nil {
+		return err
+	}
+	if token != "" { // 留空 = 不覆盖现有 token
+		if err := storage.SetConfigString(KeyBridgeToken, token); err != nil {
+			return err
+		}
+	}
+	return storage.SetConfigString(KeyBridgeAgent, agent)
 }
 
 // FeishuConfig 飞书 app_id/secret：sqlite config 优先、env 兜底。两者皆非空才算配齐。

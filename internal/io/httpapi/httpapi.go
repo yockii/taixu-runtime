@@ -113,6 +113,9 @@ func Start(ctx context.Context, addr string) *http.Server {
 	// 界面换 LLM（受 withAuth 写守卫：设了 control_token 则需 X-Taixu-Token）。
 	mux.HandleFunc("/api/config/llm", apiLLMConfig)
 	mux.HandleFunc("/api/config/llm/test", apiLLMTest)
+	// 编码桥（C7 codingbridge）：落库+热重配（写）/ 状态+连通探测（读）。
+	mux.HandleFunc("/api/config/bridge", apiBridgeConfig)
+	mux.HandleFunc("/api/bridge/status", apiBridgeStatus)
 	// 飞书接入：一键创建（扫码）+ 手填。凭据落库重启生效。
 	mux.HandleFunc("/api/feishu/register/start", apiFeishuRegisterStart)
 	mux.HandleFunc("/api/feishu/register/status", apiFeishuRegisterStatus)
@@ -417,6 +420,13 @@ func apiConfig(w http.ResponseWriter, r *http.Request) {
 			"app_id":     fsID,
 			"app_secret": maskSecret(fsSecret),
 			"configured": fsID != "" && fsSecret != "",
+		}
+		brURL, _, brAgent := lifecfg.BridgeConfig()
+		resp["bridge"] = map[string]any{
+			"url":        brURL,
+			"agent":      brAgent,
+			"token":      maskSecret(storage.GetConfigString("bridge_token", os.Getenv("TAIXU_CODINGBRIDGE_TOKEN"))),
+			"configured": brURL != "",
 		}
 		resp["skill_auto_approve_deps"] = storage.GetConfigBool("skill_auto_approve_deps", false)
 		resp["proactive_im"] = storage.GetConfigBool("proactive_im", false)

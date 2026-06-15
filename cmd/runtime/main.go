@@ -243,11 +243,9 @@ func main() {
 	// 编码 agent 宿主桥（C7）：把硬编码任务委派给宿主/远程的 codingbridge（headless 跑 claude/codex），
 	// 让生命在慎思中能「真写代码」。未配 TAIXU_CODINGBRIDGE_URL → coding_agent 工具缺席（优雅降级）。
 	// 安全在 bridge 侧（token + workdir jail + 危险动作默认拒）；本端只投递。注册轻量、同步调。
-	codingagent.Init(
-		os.Getenv("TAIXU_CODINGBRIDGE_URL"),
-		os.Getenv("TAIXU_CODINGBRIDGE_TOKEN"),
-		envOr("TAIXU_CODINGBRIDGE_AGENT", "claude"),
-	)
+	// 端点 config 优先、env 兜底（面板可改、热重配生效，见 codingagent.Reconfigure）。
+	bridgeURL, bridgeTok, bridgeAgent := lifecfg.BridgeConfig()
+	codingagent.Init(bridgeURL, bridgeTok, bridgeAgent)
 
 	// 浏览器 agent 层（C 阶梯④兜底 / D 拟人浏览器操作）。默认关（config browser_enabled=false）：
 	// 能力强、风险高，用户显式开启才注册工具；危险动作（注册/提交/发布）走审批闸。

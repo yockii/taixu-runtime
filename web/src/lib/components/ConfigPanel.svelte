@@ -74,6 +74,10 @@
 				llmModel = c.llm.model;
 				llmTemp = c.llm.temperature;
 			}
+			if (c.bridge) {
+				brUrl = c.bridge.url;
+				brAgent = c.bridge.agent || 'claude';
+			}
 		});
 	});
 
@@ -302,6 +306,53 @@
 			}
 		} finally {
 			wPolling = false;
+		}
+	}
+
+	// —— 编码桥（C7）：宿主侧强力编码 agent 桥。url/token/agent 落库 + 热重配（免重启）。——
+	let brUrl = $state('');
+	let brToken = $state('');
+	let brAgent = $state('claude');
+	let brConnected = $state<boolean | null>(null);
+	let brAgents = $state<string[]>([]);
+	let brTesting = $state(false);
+	let brSaving = $state(false);
+	let brMsg = $state('');
+	let brOk = $state<boolean | null>(null);
+
+	async function loadBridgeStatus() {
+		brTesting = true;
+		brMsg = '';
+		try {
+			const r = await api.bridgeStatus();
+			brConnected = r.connected;
+			brAgents = r.agents || [];
+		} catch (e) {
+			brConnected = false;
+			brMsg = (e as Error).message;
+		} finally {
+			brTesting = false;
+		}
+	}
+	async function saveBridge() {
+		brSaving = true;
+		brMsg = '';
+		brOk = null;
+		try {
+			const r = await api.setBridge({ url: brUrl.trim(), token: brToken, agent: brAgent.trim() || 'claude' });
+			brOk = r.ok;
+			if (r.ok) {
+				brToken = '';
+				brMsg = '✓ ' + $t('bridge_saved');
+				await loadBridgeStatus();
+			} else {
+				brMsg = '✗ ' + (r.error || $t('bridge_save_fail'));
+			}
+		} catch (e) {
+			brOk = false;
+			brMsg = '✗ ' + (e as Error).message;
+		} finally {
+			brSaving = false;
 		}
 	}
 
@@ -555,6 +606,70 @@
 					{#if wStatus === 'failed'}
 						<p class="mt-2 text-[#ff7a96]">✗ {wErr || $t('wx_login_fail')}</p>
 					{/if}
+				</div>
+			{/if}
+
+			{#if cfg.bridge}
+				<div class="rounded-lg border border-line bg-white/5 p-3">
+					<div class="font-semibold text-fog">{$t('bridge_section')}</div>
+					{#if cfg.bridge.configured}
+						<p class="mt-1 text-glow">
+							✓ {$t('bridge_configured')}<span class="font-mono break-all">{cfg.bridge.url}</span>
+							· {cfg.bridge.agent}
+						</p>
+					{:else}
+						<p class="mt-1 mb-2 text-fog">{$t('bridge_intro')}</p>
+					{/if}
+					<div class="mt-2 space-y-1.5">
+						<input
+							bind:value={brUrl}
+							placeholder={$t('bridge_url_ph')}
+							class="w-full rounded-md border border-line bg-white/5 px-2 py-1 font-mono text-fog placeholder:text-dim outline-none focus:border-glow/50"
+						/>
+						<div class="flex gap-2">
+							<input
+								type="password"
+								bind:value={brToken}
+								placeholder={$t('bridge_token_ph')}
+								class="min-w-0 flex-1 rounded-md border border-line bg-white/5 px-2 py-1 font-mono text-fog placeholder:text-dim outline-none focus:border-glow/50"
+							/>
+							<select
+								bind:value={brAgent}
+								class="rounded-md border border-line bg-white/5 px-2 py-1 font-mono text-fog outline-none focus:border-glow/50"
+							>
+								<option value="claude">claude</option>
+								<option value="codex">codex</option>
+							</select>
+						</div>
+					</div>
+					<div class="mt-2 flex flex-wrap items-center gap-2">
+						<button
+							onclick={loadBridgeStatus}
+							disabled={brTesting || brSaving}
+							class="rounded-full border border-line bg-white/5 px-3 py-1 font-medium text-fog transition hover:border-glow/50 disabled:opacity-40"
+							>{brTesting ? $t('bridge_testing') : $t('bridge_test')}</button
+						>
+						<button
+							onclick={saveBridge}
+							disabled={brSaving || brTesting}
+							class="rounded-full border border-glow/40 bg-glow/10 px-3 py-1 font-medium text-glow transition hover:bg-glow/20 disabled:opacity-40"
+							>{$t('bridge_save')}</button
+						>
+						{#if brConnected !== null}
+							<span class="text-xs {brConnected ? 'text-glow' : 'text-[#ff7a96]'}">
+								{brConnected ? '✓ ' + $t('bridge_connected') : '✗ ' + $t('bridge_disconnected')}
+							</span>
+						{/if}
+						{#if brMsg}
+							<span class="text-xs {brOk ? 'text-glow' : 'text-[#ff7a96]'}">{brMsg}</span>
+						{/if}
+					</div>
+					{#if brConnected && brAgents.length}
+						<p class="mt-1.5 text-[11px] text-dim">
+							{$t('bridge_agents')}: <span class="font-mono text-fog">{brAgents.join(', ')}</span>
+						</p>
+					{/if}
+					<p class="mt-1.5 text-[10px] text-dim">{$t('bridge_run_hint')}</p>
 				</div>
 			{/if}
 

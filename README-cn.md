@@ -85,6 +85,37 @@ Life Core 与 UI 严格解耦：runtime 暴露中立 **Life SDK**（presence / v
 
 runtime 可经平台托管的发布通道自更新：查版本清单 → 下载 → 校验 SHA‑256 → re‑exec。自动升级 opt‑in，否则面板通知确认。
 
+## 编码桥（可选）
+
+**编码桥**让生命体在自己的慎思中把真正的编码任务——实现一个模块、改一段逻辑、写测试——委派给跑在**宿主机**上的强力编码 agent（`claude` / `codex`）。容器内 runtime 无法直接拉起宿主的编码 agent，于是一个宿主侧小服务（`cmd/codingbridge`）经 HTTP 接收任务，在受限工作目录里 headless 跑 agent。未配置 → `coding_agent` 工具缺席（优雅降级）。
+
+**1. 在宿主跑桥：**
+
+```bash
+CODINGBRIDGE_TOKEN=$(openssl rand -hex 16) go run ./cmd/codingbridge
+# 或编译出二进制在宿主 / 远程编码机上跑
+```
+
+桥的环境变量：
+
+| 变量 | 默认 | 含义 |
+|---|---|---|
+| `CODINGBRIDGE_TOKEN` | *（必填）* | bearer token；无 token 拒绝启动 |
+| `CODINGBRIDGE_ADDR` | `127.0.0.1:8765` | 监听地址（默认仅本机） |
+| `CODINGBRIDGE_WORKROOT` | `./agent-workspace` | jail 根；agent 的 CWD 强制落在其下 |
+| `CODINGBRIDGE_BIN_CLAUDE` | `claude` | `claude` agent 的实际二进制名/路径（支持别名） |
+| `CODINGBRIDGE_BIN_CODEX` | `codex` | `codex` agent 的实际二进制名/路径 |
+
+**2. 让生命指向它** —— 在面板「编码桥」区填 URL + token + agent（即时生效、免重启），或用环境变量：
+
+```
+TAIXU_CODINGBRIDGE_URL=http://host.docker.internal:8765
+TAIXU_CODINGBRIDGE_TOKEN=<与桥一致的 token>
+TAIXU_CODINGBRIDGE_AGENT=claude   # claude | codex
+```
+
+**安全模型：** 桥位于更高信任的一侧（宿主），控制集中在那里——bearer token 鉴权、workdir jail（agent 的 CWD 强制落在 `CODINGBRIDGE_WORKROOT` 下）、危险动作（仓外写 / git 提交 / 推送）默认拒。请只在你能接受「编码 agent 可读写宿主文件系统」风险的机器上跑桥。
+
 ## 工程铁律（不可破）
 
 - **Go 依赖**：禁手写 `go.mod` / `go.sum`，用 `go get <pkg>@<version>` + `go mod tidy`。
