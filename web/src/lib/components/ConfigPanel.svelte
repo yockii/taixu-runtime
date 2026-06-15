@@ -669,7 +669,15 @@
 							{$t('bridge_agents')}: <span class="font-mono text-fog">{brAgents.join(', ')}</span>
 						</p>
 					{/if}
-					<p class="mt-1.5 text-[10px] text-dim">{$t('bridge_run_hint')}</p>
+					<p class="mt-1.5 text-[10px] text-dim">
+						{$t('bridge_run_hint')}
+						<a
+							class="text-glowsoft underline"
+							href="https://github.com/yockii/taixu-runtime/releases"
+							target="_blank"
+							rel="noopener">{$t('bridge_download')}</a
+						>
+					</p>
 				</div>
 			{/if}
 

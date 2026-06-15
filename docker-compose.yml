@@ -38,8 +38,9 @@ services:
       # TAIXU_EMBED_URL: http://embed:11435
       #
       # 编码桥（C7 codingbridge）：让生命在慎思中把真正的编码任务委派给宿主上的强力编码 agent
-      # （claude / codex）。桥（cmd/codingbridge）跑在**宿主机**上，本容器经 host.docker.internal
-      # 投递任务。也可在面板「编码桥」区配置（即时生效）。详 README。未配 → coding_agent 工具缺席。
+      # （claude / codex）。桥二进制 taixu-coding-bridge（cmd/codingbridge，从 GitHub Releases 下载）
+      # 跑在**宿主机**上，本容器经 host.docker.internal 投递任务。也可在面板「编码桥」区配置
+      # （即时生效）。详 README。未配 → coding_agent 工具缺席。
       # TAIXU_CODINGBRIDGE_URL: http://host.docker.internal:8765
       # TAIXU_CODINGBRIDGE_TOKEN: <与桥 CODINGBRIDGE_TOKEN 一致>
       # TAIXU_CODINGBRIDGE_AGENT: claude   # claude | codex

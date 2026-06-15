@@ -89,11 +89,11 @@ runtime 可经平台托管的发布通道自更新：查版本清单 → 下载 
 
 **编码桥**让生命体在自己的慎思中把真正的编码任务——实现一个模块、改一段逻辑、写测试——委派给跑在**宿主机**上的强力编码 agent（`claude` / `codex`）。容器内 runtime 无法直接拉起宿主的编码 agent，于是一个宿主侧小服务（`cmd/codingbridge`）经 HTTP 接收任务，在受限工作目录里 headless 跑 agent。未配置 → `coding_agent` 工具缺席（优雅降级）。
 
-**1. 在宿主跑桥：**
+**1. 在宿主跑桥** —— 从 [GitHub Releases](https://github.com/yockii/taixu-runtime/releases) 下载预编译的 `taixu-coding-bridge_<ver>_<os>_<arch>` 归档（或自行 `go build ./cmd/codingbridge`），在宿主 / 远程编码机上跑：
 
 ```bash
-CODINGBRIDGE_TOKEN=$(openssl rand -hex 16) go run ./cmd/codingbridge
-# 或编译出二进制在宿主 / 远程编码机上跑
+# 下载的二进制 taixu-coding-bridge，或： go run ./cmd/codingbridge
+CODINGBRIDGE_TOKEN=$(openssl rand -hex 16) ./taixu-coding-bridge
 ```
 
 桥的环境变量：

@@ -89,11 +89,11 @@ The runtime can update itself through the platform's hosted release channel: it 
 
 The **coding bridge** lets a life delegate real coding tasks — implement a module, change logic, write tests — to a powerful coding agent (`claude` / `codex`) running **on the host**, during its own deliberation. The runtime in the container can't spawn the host's coding agent directly, so a tiny host‑side service (`cmd/codingbridge`) accepts a task over HTTP and runs the agent headless in a jailed work directory. Unconfigured → the `coding_agent` tool is simply absent (graceful degradation).
 
-**1. Run the bridge on the host:**
+**1. Run the bridge on the host** — download the prebuilt `taixu-coding-bridge_<ver>_<os>_<arch>` archive from [GitHub Releases](https://github.com/yockii/taixu-runtime/releases) (or build it yourself with `go build ./cmd/codingbridge`), then run it on the host / a remote coding machine:
 
 ```bash
-CODINGBRIDGE_TOKEN=$(openssl rand -hex 16) go run ./cmd/codingbridge
-# or build a binary and run it on the host / a remote coding machine
+# downloaded binary (taixu-coding-bridge), or:  go run ./cmd/codingbridge
+CODINGBRIDGE_TOKEN=$(openssl rand -hex 16) ./taixu-coding-bridge
 ```
 
 Bridge env:
