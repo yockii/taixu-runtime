@@ -19,10 +19,11 @@ import (
 // web.fetch，既不真实又常猜错（证书/EOF 失败）。有了 web.search，research 变成
 // 「web.search 多关键词 → 据标题/摘要判断哪些源靠谱 → web.fetch 进去读」。
 
-// perEngineTimeout 单引擎页面加载/抓取超时。收紧到 9s（原 25s）：浏览器只启一次后，
-// 三引擎依次试须挤进 action.ToolDispatchTimeout=30s 预算（启动~4s + 3×9s ≈ 31s 最坏，
-// 常见 bing 首发命中 ~9-13s）。原「每引擎冷启 chromium×3 + 25s」必爆 30s → "context deadline exceeded"。
-const perEngineTimeout = 9 * time.Second
+// perEngineTimeout 单引擎页面加载/抓取超时。提到 14s（原 9s）：长跑 runtime 在 deliberation
+// 突发期内存/GC 压力下，chromium renderer 偶被饿死，9s 内 li.b_algo 选择器未现 →
+// "context deadline exceeded"（standalone idle 时 bing ~0.9s，负载下可慢 10×）。14s 给突发留余量。
+// handler 忽略 dispatch ctx，WebSearch 不受 30s 预算约束，故放宽安全（最坏 launch+3×14≈46s，罕见）。
+const perEngineTimeout = 14 * time.Second
 
 // searchEngine 一个引擎的查询 URL 模板 + 结果元素选择器。
 type searchEngine struct {

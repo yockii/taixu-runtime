@@ -77,6 +77,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nodejs npm \
     chromium \
     libgomp1 \
+    tini \
     && rm -rf /var/lib/apt/lists/*
 
 # rod 默认会下载自己的 chromium；指向系统 chromium 避免运行时联网下载。
@@ -122,4 +123,7 @@ VOLUME ["/app/data", "/workspace"]
 
 EXPOSE 3000
 
-ENTRYPOINT ["/usr/local/bin/taixu"]
+# tini 当 PID 1：rod/chromium 抓取后留下的孤儿子进程会 reparent 到 PID 1，
+# 而 Go 二进制不 reap SIGCHLD → 浏览器僵尸进程无限堆积 → 资源耗尽 → web.search 全超时。
+# tini 自动回收僵尸，用户无需 `docker run --init`（普通 docker run / compose 即生效）。
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/taixu"]

@@ -12,12 +12,29 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	openai "github.com/sashabaranov/go-openai"
 )
+
+// taixuHeaderTransport 给每个 LLM 请求注入 OpenRouter 应用标识头：
+//   HTTP-Referer / X-OpenRouter-Title（应用排行榜归属）+ X-OpenRouter-Categories（应用分类）。
+// 其他 OpenAI 兼容上游忽略未知头，无副作用。
+type taixuHeaderTransport struct{ base http.RoundTripper }
+
+func (t taixuHeaderTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.Header.Set("HTTP-Referer", "https://taixu.icu")
+	req.Header.Set("X-OpenRouter-Title", "taixu") // 新标准，取代旧 X-Title
+	req.Header.Set("X-OpenRouter-Categories", "personal-agent")
+	b := t.base
+	if b == nil {
+		b = http.DefaultTransport
+	}
+	return b.RoundTrip(req)
+}
 
 // 模型档名。ModelDefault 必配；ModelStrong 可选（未配则 resolveModel 回退 default）。
 const (
@@ -99,6 +116,7 @@ func InitModel(name string, c Config) error {
 	}
 	clientCfg := openai.DefaultConfig(c.APIKey)
 	clientCfg.BaseURL = strings.TrimRight(c.BaseURL, "/")
+	clientCfg.HTTPClient = &http.Client{Transport: taixuHeaderTransport{base: http.DefaultTransport}}
 	mu.Lock()
 	defer mu.Unlock()
 	models[name] = &modelClient{cfg: c, client: openai.NewClientWithConfig(clientCfg)}

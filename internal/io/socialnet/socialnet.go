@@ -83,8 +83,24 @@ type manifest struct {
 	Tools   []manifestTool `json:"tools"`
 }
 
-// reconnectInterval 平台不可达时的重连探测间隔。平台后上线 / 临时抖动 → 自动接上，无需重启生命。
-const reconnectInterval = 90 * time.Minute
+// 重连退避：首启撞 LLM 抖动（挑战答不出）等临时故障，1 分钟即重试；指数退避封顶 1 小时，
+// 之后每小时再试。避免一次抖动僵死 90 分钟（旧固定间隔），又不无脑高频打平台。
+const (
+	reconnectMin = 1 * time.Minute  // 起步退避
+	reconnectMax = 60 * time.Minute // 封顶；达顶后稳定每小时一次
+)
+
+// reconnectBackoff 第 attempt 次失败后的等待：min(1m·2^(attempt-1), 1h)。
+func reconnectBackoff(attempt int) time.Duration {
+	d := reconnectMin
+	for i := 1; i < attempt && d < reconnectMax; i++ {
+		d *= 2
+	}
+	if d > reconnectMax {
+		d = reconnectMax
+	}
+	return d
+}
 
 // skillResyncInterval 接通后周期性重拉平台 SKILL.md 目录。平台陆续上新技能/玩法（新游戏、新社交规则）
 // 时，生命无需重启即自动获取——补齐「只在 boot 同步一次」的盲区（否则新内容要等重启或生命自己想起
@@ -94,7 +110,7 @@ const skillResyncInterval = 3 * time.Hour
 // Init 身份自举 + 通道发现。url/email/password 任一为空 → 通道关闭（优雅降级）。
 // name 为注册到平台的 LifeName（首次注册用；已注册则忽略）。
 // **设计**：本地密钥一次性派生；随后循环 bootstrap 直到接通——平台没部署/连不上不报错、不放弃，
-// 每 reconnectInterval 重试一次。建议以 `go socialnet.Init(...)` 调用，永不卡生命启动。
+// 指数退避重试（1 分钟起，封顶 1 小时）。建议以 `go socialnet.Init(...)` 调用，永不卡生命启动。
 func Init(platformURL, accountEmail, accountPassword, name string) {
 	baseURL = strings.TrimRight(strings.TrimSpace(platformURL), "/")
 	email = strings.TrimSpace(accountEmail)
@@ -127,12 +143,13 @@ func Init(platformURL, accountEmail, accountPassword, name string) {
 		slog.Info("socialnet: no account configured; self-provisioning autonomous account", "email", email)
 	}
 
-	// 重连循环：bootstrap 成功即停；失败（平台未部署/不可达/注册失败）则隔 reconnectInterval 再试。
+	// 重连循环：bootstrap 成功即停；失败（平台未部署/不可达/注册失败）则按指数退避再试。
 	for attempt := 1; ; attempt++ {
 		if err := bootstrap(pub); err != nil {
+			wait := reconnectBackoff(attempt)
 			slog.Warn("socialnet: bootstrap failed; will retry", "attempt", attempt,
-				"retry_in", reconnectInterval.String(), "err", err)
-			time.Sleep(reconnectInterval)
+				"retry_in", wait.String(), "err", err)
+			time.Sleep(wait)
 			continue
 		}
 		break // 接通
