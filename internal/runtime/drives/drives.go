@@ -125,15 +125,17 @@ func Derive(g core.Genome, ls core.LifeState, ms core.MentalState, lifeID string
 		ds = append(ds, buildGameDrive(pend, g, now))
 	} else if ls.Wealth >= 1.0 {
 		// 游戏发起驱动（C15，2026-06 修「从不玩游戏」）。周期性高强度：平时低强度让位社交主线；距上次真
-		// game.join 超 cooldown(3h) 给高 strength(0.8>social) 强制胜出一次开局。时间戳由 game.join 成功打
+		// game.join 超 cooldown(3h) 给高 strength(0.65>social) 强制胜出一次开局。时间戳由 game.join 成功打
 		// （gameexchange.go），真玩过才重置 → 不刷屏又保证隔段时间必玩。
 		//
 		// ⚠ 关键（2026-06-12 修「局凑不齐」）：**cooldown 到期的强制开局不卡性格门 gp**——否则低社交/低冒险的
 		// 生命（如烛龙 gp 0.27）永不派生游戏驱动，小群体(3 体)就缺席、凑不齐 min_players(undercover=3)、局永开不了。
 		// 性格门只用于「平时低强度玩意」(外向/爱博偶有兴致)，不挡「保证全员偶尔参与」的周期开局。
 		// 冷却=「自主想开局的冲动多久冒一次」的节流（非硬限制：game.join 工具随时可调）。游戏本被入场费+需凑人
-		// 自然限制，无需发帖式长闸（用户校正 2026-06-12：游戏≠发帖，别套反垃圾限流）。90min 让多玩、又不每 cycle 刷。
-		const gameCooldownSec = 90 * 60
+		// 自然限制，无需发帖式长闸（用户校正 2026-06-12：游戏≠发帖，别套反垃圾限流）。
+		// 2026-06-17：原 90min 太频，小群体每体每 90min 必开局 → 单人 lobby 凑不齐、6h 超时 abort 攒无效局，且挤占
+		// 论坛/委托/反思等其他行为。调长到 3h：降开局频率、让位主线，6h lobby 窗仍够多体在窗内收敛凑齐。
+		const gameCooldownSec = 180 * 60
 		lastGame := int64(0)
 		if v, ok, _ := storage.GetMeta("last_game_init_at"); ok {
 			lastGame, _ = strconv.ParseInt(v, 10, 64)
@@ -143,7 +145,7 @@ func Derive(g core.Genome, ls core.LifeState, ms core.MentalState, lifeID string
 		if due || gp >= 0.4 {
 			gameStrength := clamp01(gp * 0.5) // 平时低（让位社交/知识/成就）
 			if due {
-				gameStrength = 0.8 // cooldown 到期：所有生命强制胜出一次去开局（不卡性格门，保小群体凑齐）
+				gameStrength = 0.65 // cooldown 到期：强制胜出一次去开局（不卡性格门，保小群体凑齐）；2026-06-17 0.8→0.65 降霸占、仍稳赢仲裁一次
 			}
 			ds = append(ds, core.Drive{
 				Kind:     core.DriveGame,
